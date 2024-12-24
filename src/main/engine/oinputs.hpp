@@ -10,15 +10,8 @@
 
 #pragma once
 
-#ifdef SDL2
 #include "sdl2/input.hpp"
-#else
-#include "sdl/input.hpp"
-#endif
-
 #include "outrun.hpp"
-
-struct Packet;
 
 class OInputs
 {
@@ -49,7 +42,7 @@ public:
     ~OInputs(void);
 
     void init();
-    void tick(Packet* packet);
+    void tick();
     void adjust_inputs();
     void do_gear();
     uint8_t do_credits();
@@ -72,7 +65,7 @@ private:
     // Amount to adjust brake per tick. (0x10 is a good test value)
     uint8_t brake_inc;
 
-    static const int DELAY_RESET = 60;
+    static const int DELAY_RESET = 40;
     int delay1, delay2, delay3;
 
     // Coin Inputs (Only used by CannonBoard)

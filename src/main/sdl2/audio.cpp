@@ -19,11 +19,7 @@
 #include <time.h>
 #include <mutex>
 
-#ifdef SDL2
 #include "sdl2/audio.hpp"
-#else
-#include "sdl/audio.hpp"
-#endif
 
 #include "frontend/config.hpp" // fps
 #include "engine/audio/osoundint.hpp"
@@ -102,7 +98,7 @@ void Audio::start_audio()
         // SDL Audio Properties
         SDL_AudioSpec desired, obtained;
 
-        desired.freq     = FREQ;
+        desired.freq     = FREQ = config.sound.rate;
         desired.format   = AUDIO_S16SYS;
         desired.channels = CHANNELS;
         desired.samples  = SAMPLES; // number of samples to be filled on each callback
@@ -116,6 +112,10 @@ void Audio::start_audio()
             std::cout << "Error opening audio device: " << SDL_GetError() << std::endl;
             return;
         }
+
+        // JJP info line
+        std::cout << "Requested Sample Rate: " << desired.freq << ", ";
+        std::cout << "SDL Returned Configured Sample Rate: " << obtained.freq << std::endl;
 
         if (desired.samples != obtained.samples) {
             std::cout << "Error initalizing audio: number of samples not supported." << std::endl
@@ -309,6 +309,7 @@ void Audio::tick()
 // This ensures that we avoid pops and crackles (in theory). 
 double Audio::adjust_speed()
 {
+/*  JJP - always return 1, since the audio is now decoupled via threading
     if (!sound_enabled)
         return 1.0;
 
@@ -333,13 +334,15 @@ double Audio::adjust_speed()
     if (avg_gap < gap_too_small) 
     {
         double speed = 0.9;
+std::cout << "Speed set to 0.9" << std::endl;
         return speed;
     }
     if (avg_gap > gap_too_large)
     {
+std::cout << "Speed set to 1.1" << std::endl;
         double speed = 1.1;
         return speed;
-    }
+    } */
     return 1.0;
 }
 
@@ -454,7 +457,7 @@ void fill_audio(void *udata, Uint8 *stream, int len)
         len = available_bytes;
     }
     newpos = dsp_read_pos + len;
-//printf("dsp_buffer_bytes %i newpos %i dsp_read_pos %i + len %i\n",dsp_buffer_bytes,newpos,dsp_read_pos,len);
+//printf("dsp_buffer_bytes %i newpos %i dsp_read_pos %i + len %i\n",dsp_buffer_bytes,newpos,dsp_read_pos,len); // JJP DEBUG
 
     // No Wrap
     if (newpos < dsp_buffer_bytes)

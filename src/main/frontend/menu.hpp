@@ -11,23 +11,20 @@
 #include <vector>
 #include "stdint.hpp"
 
-class Interface;
 class CabDiag;
 class TTrial;
-struct Packet;
 
 class Menu
 {
 public:
-    Menu(Interface* cannonboard);
+    Menu();
     ~Menu(void);
 
     void populate();
-    void init();
-    void tick(Packet* packet);
+    void init(bool init_main_menu = true);
+    void tick();
 
 private:
-    Interface* cannonboard;
     CabDiag* cabdiag;
 
     // Menu state
@@ -43,6 +40,9 @@ private:
     };
 
     TTrial* ttrial;
+
+    // Music track for music test menu
+    int music_track;
 
     // Redefine keys/joystick substate
     uint8_t redef_state;
@@ -61,6 +61,14 @@ private:
     // Cursor
     int16_t cursor;
 
+    struct menu_pair
+    {
+        int16_t cursor;
+        std::vector<std::string>* menu;
+    };
+
+    std::vector<menu_pair> menu_stack;
+
     // Stores whether this is a textual menu (i.e. no options that can be chosen)
     bool is_text_menu;
 
@@ -74,23 +82,36 @@ private:
     std::vector<std::string> menu_timetrial;
     std::vector<std::string> menu_about;
     std::vector<std::string> menu_settings;
-    std::vector<std::string> menu_cannonboard;
     std::vector<std::string> menu_video;
+    // JJP - CRT Emulation related menus
     std::vector<std::string> menu_crt_overlay;
     std::vector<std::string> menu_crt_colour;
     std::vector<std::string> menu_blargg_filter;
+    // JJP - end of insert
     std::vector<std::string> menu_sound;
     std::vector<std::string> menu_controls;
+    std::vector<std::string> menu_controls_gp;
     std::vector<std::string> menu_engine;
+    std::vector<std::string> menu_enhancements;
+    std::vector<std::string> menu_handling;
     std::vector<std::string> menu_musictest;
+    std::vector<std::string> menu_s_exsettings;     // smartypi specific
+    std::vector<std::string> menu_s_tests;          // smartypi specific
+    std::vector<std::string> menu_s_dips;           // smartypi specific
+    std::vector<std::string> menu_s_enhance;        // smartypi specific
 
     std::vector<std::string> text_redefine;
-
+    
+    void populate_for_pc();
+    void populate_controls();
+    void populate_for_cabinet();
     void tick_ui();
     void draw_menu_options();
     void draw_text(std::string);
     void tick_menu();
+    bool select_pressed();
     void set_menu(std::vector<std::string>*);
+    void menu_back();
     void refresh_menu();
     void set_menu_text(std::string s1, std::string s2);
     void redefine_keyboard();

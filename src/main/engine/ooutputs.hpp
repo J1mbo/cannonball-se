@@ -28,17 +28,18 @@ struct CoinChute
 
 class OOutputs
 {
-public:
-    
-    const static int MODE_FFEEDBACK = 0;
-    const static int MODE_CABINET   = 1;
+public:  
+    const static int MODE_DISABLED = 0; // Disabled
+    const static int MODE_CABINET = 1; // SmartyPi Interface / Original Cabinet
+    const static int MODE_FFEEDBACK = 2; // Force Feedback for Wheels
+    const static int MODE_RUMBLE = 3; // Simple rumble for controllers
 
     // Hardware Motor Control:
     // 0 = Switch off
     // 5 = Left
     // 8 = Centre
     // B = Right
-    uint8_t hw_motor_control;
+    uint8_t hw_motor_control, hw_motor_control_old;
 
     // Digital Outputs
     enum
@@ -52,7 +53,6 @@ public:
         D_UNUSED     = 0x40, // bit 6 = ?
         D_SOUND      = 0x80, // bit 7 = sound enable
     };
-    uint8_t dig_out;
 
     CoinChute chute1, chute2;
 
@@ -60,14 +60,21 @@ public:
     ~OOutputs(void);
 
     void init();
-    bool diag_motor(int16_t input_motor, uint8_t hw_motor_limit, uint32_t packets);
-    bool calibrate_motor(int16_t input_motor, uint8_t hw_motor_limit, uint32_t packets);
-    void tick(const int MODE, int16_t input_motor, int16_t cabinet_type = -1);
+    void set_mode(int);
+    bool diag_motor(int16_t input_motor, uint8_t hw_motor_limit);
+    bool calibrate_motor(int16_t input_motor, uint8_t hw_motor_limit);
+    void tick(int16_t input_motor = 0);
+    void writeDigitalToConsole();
     void set_digital(uint8_t);
     void clear_digital(uint8_t);
+    int is_set(uint8_t);
     void coin_chute_out(CoinChute* chute, bool insert);
 
 private:
+    int mode;
+
+    uint8_t dig_out, dig_out_old;
+
     const static uint16_t STATE_INIT   = 0;
     const static uint16_t STATE_DELAY  = 1;
     const static uint16_t STATE_LEFT   = 2;

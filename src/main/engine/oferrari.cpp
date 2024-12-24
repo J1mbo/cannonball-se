@@ -31,8 +31,18 @@
 
 OFerrari oferrari;
 
+static const uint16_t FERRARI_PALETTES[] =
+{
+    OFerrari::PAL_RED,      // Red
+    OFerrari::PAL_BLUE,     // Blue
+    OFerrari::PAL_YELLOW,   // Yellow
+    OFerrari::PAL_GREEN,    // Green
+    OFerrari::PAL_CYAN,     // Cyan
+};
+
 OFerrari::OFerrari(void)
 {
+
 }
 
 OFerrari::~OFerrari(void)
@@ -99,6 +109,14 @@ void OFerrari::init(oentry *f, oentry *p1, oentry *p2, oentry *s)
     cornering         = 0;
     cornering_old     = 0;
     car_ctrl_active   = true;
+    
+    // Change high gear torque value to enable faster speeds
+    torque_lookup[0x1F] = config.engine.turbo ? 0x558 : 0x66C;
+
+    int size = sizeof(FERRARI_PALETTES)/sizeof(FERRARI_PALETTES[0]);
+    if (config.engine.car_pal >= size)
+        config.engine.car_pal = 0;
+    ferrari_pal = FERRARI_PALETTES[config.engine.car_pal];
 }
 
 // Reset all values relating to car speed, revs etc.
@@ -179,7 +197,7 @@ void OFerrari::tick()
 
         // Ferrari End Sequence Logic
         case FERRARI_END_SEQ:
-                oanimseq.tick_end_seq();
+            oanimseq.tick_end_seq();
             break;
     }
 }
@@ -247,53 +265,49 @@ void OFerrari::logic()
                 // note fall through!
             }
             
-            case OBonus::BONUS_SEQ0:
-                if ((oroad.road_pos >> 16) < 0x18E)
-                {
-                    init_end_seq();
-                    return;
-                }
-                obonus.bonus_control = OBonus::BONUS_SEQ1;
-                // fall through
+        case OBonus::BONUS_SEQ0:
+            if ((oroad.road_pos >> 16) < 0x18E)
+            {
+                init_end_seq();
+                return;
+            }
+            obonus.bonus_control = OBonus::BONUS_SEQ1;
+            // fall through
             
-            case OBonus::BONUS_SEQ1:
-                if ((oroad.road_pos >> 16) < 0x18F)
-                {
-                    init_end_seq();
-                    return;
-                }
-                obonus.bonus_control = OBonus::BONUS_SEQ2;
+        case OBonus::BONUS_SEQ1:
+            if ((oroad.road_pos >> 16) < 0x18F)
+            {
+                init_end_seq();
+                return;
+            }
+            obonus.bonus_control = OBonus::BONUS_SEQ2;
 
-            case OBonus::BONUS_SEQ2:
-                if ((oroad.road_pos >> 16) < 0x190)
-                {
-                    init_end_seq();
-                    return;
-                }
-                obonus.bonus_control = OBonus::BONUS_SEQ3;
+        case OBonus::BONUS_SEQ2:
+            if ((oroad.road_pos >> 16) < 0x190)
+            {
+                init_end_seq();
+                return;
+            }
+            obonus.bonus_control = OBonus::BONUS_SEQ3;
             
-            case OBonus::BONUS_SEQ3:
-                if ((oroad.road_pos >> 16) < 0x191)
-                {
-                    init_end_seq();
-                    return;
-                }
-                else
-                {
-                    oferrari.car_ctrl_active = false; // -1
-                    oinitengine.car_increment = 0;
-                    obonus.bonus_control = OBonus::BONUS_END;
-                }
+        case OBonus::BONUS_SEQ3:
+            if ((oroad.road_pos >> 16) < 0x191)
+            {
+                init_end_seq();
+                return;
+            }
+            else
+            {
+                oferrari.car_ctrl_active = false; // -1
+                oinitengine.car_increment = 0;
+                obonus.bonus_control = OBonus::BONUS_END;
+            }
 
-            case OBonus::BONUS_END:
-                oinputs.acc_adjust = 0;
-                oinputs.brake_adjust = 0xFF;
-                do_end_seq();
-                break;
-
-        /*default:
-            std::cout << "Need to finish OFerrari:logic()" << std::endl;
-            break;*/
+        case OBonus::BONUS_END:
+            oinputs.acc_adjust = 0;
+            oinputs.brake_adjust = 0xFF;
+            do_end_seq();
+            break;
     }
 }
 
@@ -344,10 +358,6 @@ void OFerrari::ferrari_normal()
         case GS_INIT_MUSIC:
         case GS_MUSIC:
             return;
-
-        /*default:
-            std::cout << "Need to finish OFerrari:ferrari_normal()" << std::endl;
-            break;*/
     }
 }
 
@@ -383,7 +393,7 @@ void OFerrari::setup_ferrari_sprite()
     // If steering close to centre clear d4 to ignore h-flip of Ferrari
     if (d4 >= -8 && d4 <= 7)
         d4 = 0;
-    // If speed to slow clear d4 to ignore h-flip of Ferrari
+    // If speed too slow clear d4 to ignore h-flip of Ferrari
     if (oinitengine.car_increment >> 16 < 0x14)
         d4 = 0;
 
@@ -503,8 +513,6 @@ void OFerrari::setup_ferrari_bonus_sprite()
     spr_ferrari->x = x_off;
 
     set_ferrari_palette();
-    //osprites.map_palette(spr_ferrari);
-    //osprites.do_spr_order_shadows(spr_ferrari);
     draw_sprite(spr_ferrari);
 }
 
@@ -540,7 +548,7 @@ void OFerrari::do_end_seq()
     spr_ferrari->addr    = roms.rom0p->read32(addr);
     sprite_pass_y        = roms.rom0p->read8(4 + addr);  // Set Passenger Y Offset
     spr_ferrari->x       = roms.rom0p->read8(5 + addr);
-    spr_ferrari->pal_src = roms.rom0p->read8(6 + addr);
+    spr_ferrari->pal_src = ferrari_pal;//  roms.rom0p->read8(6 + addr);
     spr_ferrari->control = roms.rom0p->read8(7 + addr) | (spr_ferrari->control & 0xFE); // HFlip
 
     osprites.map_palette(spr_ferrari);
@@ -583,7 +591,7 @@ void OFerrari::set_ferrari_palette()
         else
             wheel_counter--;
     }
-    spr_ferrari->pal_src = pal + 2 + (wheel_pal & 1);
+    spr_ferrari->pal_src = pal + ferrari_pal + (wheel_pal & 1);
 }
 
 // Set Ferrari X Position
@@ -825,7 +833,7 @@ void OFerrari::set_curve_adjust()
     if (x_diff)
     {
         x_diff *= (oinitengine.car_increment >> 16);
-        x_diff /= 0xDC;
+        x_diff /= config.engine.grippy_tyres ? 0xFF : 0xDC;
         x_diff <<= 1;
         oinitengine.car_x_pos += x_diff;
     }
@@ -1042,6 +1050,7 @@ void OFerrari::move()
                 if (gear_counter == 0)
                     do_gear_torque(d1);
             }
+
             // set_torque:
             int16_t new_torque = torque_lookup[torque_index];
             torque = new_torque;
@@ -1228,14 +1237,17 @@ void OFerrari::car_acc_brake()
     // Adjust speed when offroad
     else if (wheel_state != WHEELS_ON)
     {
-        if (gear_value)
-            acc1 = (acc1 * 3) / 10;
-        else
-            acc1 = (acc1 * 6) / 10;
+        if (!config.engine.offroad)
+        {
+            if (gear_value)
+                acc1 = (acc1 * 3) / 10;
+            else
+                acc1 = (acc1 * 6) / 10;
 
-        // If only one wheel off road, increase acceleration by a bit more than if both wheels off-road
-        if (wheel_state != WHEELS_OFF)
-            acc1 = (acc1 << 1) + (acc1 >> 1);
+            // If only one wheel off road, increase acceleration by a bit more than if both wheels off-road
+            if (wheel_state != WHEELS_OFF)
+                acc1 = (acc1 << 1) + (acc1 >> 1);
+        }
     }
 
     // finalise_acc_value:
@@ -1316,7 +1328,7 @@ void OFerrari::do_gear_high(int16_t &d1)
     }
 
     // Increment torque until it reaches 0x1F
-    if (d1 == 0x1F) return;
+    if (d1 == 0x1f) return;
     d1++;
 }
 
@@ -1477,7 +1489,6 @@ void OFerrari::convert_revs_speed(int32_t new_torque, int32_t &d2)
                 revs_post_stop -= rev_stop_flag;
 
             // cont1:
-
             int16_t d5 = revs_post_stop >> 1;
             int16_t d4 = rev_stop_flag;
             if (revs_top >= d5)
@@ -1506,10 +1517,11 @@ void OFerrari::convert_revs_speed(int32_t new_torque, int32_t &d2)
         std::cout << "convert_revs_speed error!" << std::endl;
     }*/
 
+    const int max_speed = !config.engine.turbo ? MAX_SPEED : (int) (MAX_SPEED * 1.2f);
     d2 = (d2 / new_torque) * 0x480;
-    
+    //std::cout << std::hex << "d2: " << (int)d2 << " new_torque: " << new_torque << " torque index: " << std::hex << (int) torque_index << std::endl;
     if (d2 < 0) d2 = 0;
-    else if (d2 > MAX_SPEED) d2 = MAX_SPEED;
+    else if (d2 > max_speed) d2 = max_speed;
 }
 
 // Update road_pos, taking road_curve into account
@@ -1757,7 +1769,7 @@ const uint8_t OFerrari::rev_inc_lookup[] =
 };
 
 
-const uint16_t OFerrari::torque_lookup[] = 
+uint16_t OFerrari::torque_lookup[] = 
 {
     0x2600, // Offset 0x00 - Start line                                                           
     0x243C, // ..

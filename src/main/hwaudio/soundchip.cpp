@@ -9,6 +9,7 @@
 ***************************************************************************/
 
 #include "stdint.hpp"
+#include <iostream> // error reporting
 #include "hwaudio/soundchip.hpp"
 
 SoundChip::SoundChip()
@@ -22,13 +23,14 @@ SoundChip::~SoundChip()
     delete[] buffer;
 }
 
-void SoundChip::init(uint8_t channels, int32_t sample_freq, int32_t fps)
+void SoundChip::init(uint8_t channels, int32_t sample_freq)
 {
-    this->fps         = fps;
     this->sample_freq = sample_freq;
     this->channels    = channels;
 
-    frame_size =  31250 / 125; // jjpsample_freq / fps;
+std::cout << "SoundChip::init sample rate " << sample_freq << std::endl; // JJP DEBUG
+
+    frame_size =  sample_freq / 125;
     buffer_size = frame_size * channels;
 
     if (initalized)

@@ -3,7 +3,6 @@
 #include "globals.hpp"
 #include "frontend/config.hpp"
 
-#include <cstring> // JJP - memcpy
 /***************************************************************************
     Video Emulation: OutRun Sprite Rendering Hardware.
     Based on MAME source code.
@@ -49,6 +48,9 @@
 *
  *******************************************************************************************/
 
+// Enable for hardware pixel accuracy, where sprite shadowing delayed by 1 clock cycle (slower)
+#define PIXEL_ACCURACY 1 // JJP
+
 hwsprites::hwsprites()
 {
 }
@@ -81,14 +83,11 @@ void hwsprites::init(const uint8_t* src_sprites)
 void hwsprites::reset()
 {
     // Clear Sprite RAM buffers
-//    for (uint16_t i = 0; i < SPRITE_RAM_SIZE; i++)
-//    {
-//        ram[i] = 0;
-//        ramBuff[i] = 0;
-//    }
-    // JJP optimised
-    memset(ram, 0, sizeof(ram));
-    memset(ramBuff, 0, sizeof(ram));
+    for (uint16_t i = 0; i < SPRITE_RAM_SIZE; i++)
+    {
+        ram[i] = 0;
+        ramBuff[i] = 0;
+    }
 }
 
 // Clip areas of the screen in wide-screen mode
@@ -131,29 +130,93 @@ void hwsprites::write(const uint16_t adr, const uint16_t data)
 // Copy back buffer to main ram, ready for blit
 void hwsprites::swap()
 {
-    memcpy(ramScratch,ram,sizeof(ram));
-    memcpy(ram,ramBuff,sizeof(ram));
-    memcpy(ramBuff,ramScratch,sizeof(ram));
+    uint16_t *src = (uint16_t *)ram;
+    uint16_t *dst = (uint16_t *)ramBuff;
+
+    // swap the halves of the road RAM
+    for (uint16_t i = 0; i < SPRITE_RAM_SIZE; i++)
+    {
+        uint16_t temp = *src;
+        *src++ = *dst;
+        *dst++ = temp;
+    }
 }
+
+#if (PIXEL_ACCURACY==2)
+
+// Reproduces glowy edge around sprites on top of shadows as seen on Hardware.
+// Implementation based on having full S16 palette available (including highlights)
+// Code by Alex B / Chris White
+
+#define draw_pixel()                                                                               \
+{                                                                                                  \
+    if (x >= x1 && x < x2) {                                                                       \
+      if (pix != 0x0 && pix != 0xf) {                                                              \
+        inShadow = pPixel[x] & S16_PALETTE_ENTRIES; \
+        if (palette == 0x3f) {                                                                     \
+          if (inShadow) {                                                       \
+            pPixel[x] &= (S16_PALETTE_ENTRIES-1);                                                \
+            pPixel[x] |= (S16_PALETTE_ENTRIES<<1);                                               \
+          } else {                                                                                 \
+            pPixel[x] &= (S16_PALETTE_ENTRIES-1);                                                \
+            pPixel[x] |= S16_PALETTE_ENTRIES;                                                    \
+          }                                                                                        \
+        } else {                                                                                   \
+          if (shadow & pix == 0xa) { \
+            if (inShadow) {                                                       \
+              pPixel[x] &= (S16_PALETTE_ENTRIES-1);                                                \
+              pPixel[x] |= (S16_PALETTE_ENTRIES<<1);                                               \
+            } else {                                                       \
+              pPixel[x] &= (S16_PALETTE_ENTRIES-1);                                                \
+              pPixel[x] |= S16_PALETTE_ENTRIES;                                                    \
+            } \
+          } else { \
+            if (x > x1) pPixel[x-1] &= (S16_PALETTE_ENTRIES-1);                                    \
+            pPixel[x] = (pix | color);                                                             \
+          }                                                                                          \
+        }                                                                                          \
+      }                                                                                            \
+    }                                                                                              \
+}
+
+
+#elif (PIXEL_ACCURACY==1)
+
+// Reproduces glowy edge around sprites on top of shadows as seen on Hardware.
+// Believed to be caused by shadowing being out by one clock cycle / pixel.
+//
+// 1/ Sprites Drawn on top of Shadow clears the shadow flags for its opaque pixels.
+// 2/ Either the flag clear or the sprite itself is offset by one pixel horizontally.
+// 
+// Thanks to Alex B. for this implementation.
+
+#define draw_pixel()                                                                                  \
+{                                                                                                     \
+    if (x >= x1 && x < x2)                                                                            \
+    {                                                                                                 \
+        if (shadow && pix == 0xa)                                                                     \
+        {                                                                                             \
+            pPixel[x] &= 0xfff;                                                                       \
+            pPixel[x] += S16_PALETTE_ENTRIES;                                                         \
+        }                                                                                             \
+        else if (pix != 0 && pix != 15)                                                               \
+        {                                                                                             \
+            if (x > x1) pPixel[x-1] &= 0xfff;                                                         \
+            pPixel[x] = (pix | color);                                                                \
+        }                                                                                             \
+    }                                                                                                 \
+}
+
+#else
 
 #define draw_pixel()                                                                                  \
 {                                                                                                     \
     if (x >= x1 && x < x2 && pix != 0 && pix != 15)                                                   \
     {                                                                                                 \
-        if (palette == 0x3f) {                                                                        \
-            if ((video.read_pal16(pPixel[x]) & 0x8000) == 0x8000) {                                   \
-                pPixel[x] &= 0xfff;                                                                   \
-                pPixel[x] += ((S16_PALETTE_ENTRIES * 2) + ((video.read_pal16(pPixel[x]) & 0x8000) >> 3)); \
-            } else {                                                                                  \
-                pPixel[x] &= 0xfff;                                                                   \
-                pPixel[x] += ((S16_PALETTE_ENTRIES * 2) - ((video.read_pal16(pPixel[x]) & 0x8000) >> 3)); \
-                pPixel[x] = 0;                                                                        \
-            }                                                                                         \
-        }                                                                                             \
-        else if (shadow && pix == 0xa)                                                                \
+        if (shadow && pix == 0xa)                                                                     \
         {                                                                                             \
             pPixel[x] &= 0xfff;                                                                       \
-            pPixel[x] += ((S16_PALETTE_ENTRIES * 2) - ((video.read_pal16(pPixel[x]) & 0x8000) >> 3)); \
+            pPixel[x] += S16_PALETTE_ENTRIES;                                                         \
         }                                                                                             \
         else                                                                                          \
         {                                                                                             \
@@ -161,6 +224,8 @@ void hwsprites::swap()
         }                                                                                             \
     }                                                                                                 \
 }
+
+#endif
 
 void hwsprites::render(const uint8_t priority)
 {
@@ -179,22 +244,23 @@ void hwsprites::render(const uint8_t priority)
         int32_t height  = (ramBuff[data+5] >> 8) + 1;       
         if (hide != 0 || height == 0) continue;
         
-        int16_t bank     = (ramBuff[data+0] >> 9) & 7;
-        int32_t top      = (ramBuff[data+0] & 0x1ff) - 0x100;
+        int16_t bank    = (ramBuff[data+0] >> 9) & 7;
+        int32_t top     = (ramBuff[data+0] & 0x1ff) - 0x100;
         uint32_t addr    = ramBuff[data+1];
-        int32_t pitch    = ((ramBuff[data+2] >> 1) | ((ramBuff[data+4] & 0x1000) << 3)) >> 8;
-        int32_t xpos     =  ramBuff[data+6]; // moved from original structure to accomodate widescreen
-        uint8_t shadow   = (ramBuff[data+3] >> 14) & 1;
+        int32_t pitch  = ((ramBuff[data+2] >> 1) | ((ramBuff[data+4] & 0x1000) << 3)) >> 8;
+        int32_t xpos    =  ramBuff[data+6]; // moved from original structure to accomodate widescreen
+        uint8_t shadow  = (ramBuff[data+3] >> 14) & 1;
         int32_t vzoom    = ramBuff[data+3] & 0x7ff;
-        int32_t ydelta   = ((ramBuff[data+4] & 0x8000) != 0) ? 1 : -1;
-        int32_t flip     = (~ramBuff[data+4] >> 14) & 1;
-        int32_t xdelta   = ((ramBuff[data+4] & 0x2000) != 0) ? 1 : -1;
-        int32_t hzoom    = ramBuff[data+4] & 0x7ff;
+        int32_t ydelta = ((ramBuff[data+4] & 0x8000) != 0) ? 1 : -1;
+        int32_t flip   = (~ramBuff[data+4] >> 14) & 1;
+        int32_t xdelta = ((ramBuff[data+4] & 0x2000) != 0) ? 1 : -1;
+        int32_t hzoom    = ramBuff[data+4] & 0x7ff;     
         int32_t palette  = ramBuff[data+5] & 0x7f; // JJP
-        if (palette == 0x3f) { printf("Palette %i\n", palette); }
-        int32_t color    = COLOR_BASE + (palette << 4);
+        int32_t color   = COLOR_BASE + ((ramBuff[data+5] & 0x7f) << 4);
         int32_t x, y, ytarget, yacc = 0, pix;
             
+//        uint32_t a; // jjp
+        uint32_t inShadow; // jjp
         // adjust X coordinate
         // note: the threshhold below is a guess. If it is too high, rachero will draw garbage
         // If it is too low, smgp won't draw the bottom part of the road

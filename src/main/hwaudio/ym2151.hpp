@@ -76,7 +76,7 @@ public:
 
     YM2151(float volume, uint32_t clock);
     ~YM2151();
-    void init(int rate, int fps);
+    void init(int rate);
     void stream_update();
     void write_reg(int r, int v);
     int read_status();

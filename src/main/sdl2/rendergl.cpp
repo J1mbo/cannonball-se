@@ -11,7 +11,6 @@
 ***************************************************************************/
 
 #include <iostream>
-sdfkdf'
 
 #include "rendergl.hpp"
 #include "frontend/config.hpp"

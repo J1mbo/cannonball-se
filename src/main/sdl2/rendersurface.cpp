@@ -2,7 +2,7 @@
     SDL2 Hardware Surface Video Rendering
     Copyright (c) 2012,2020 Manuel Alfayate, Chris White.
 
-    Copyright (c) 2020 James Pearce:
+    Copyright (c) 2020,2024 James Pearce:
     - Blargg CRT filter integration
     - CRT Masks - shadow or aperture-grille
     - Scanlines - base image or screen resolution
@@ -141,13 +141,13 @@ void RenderSurface::init_blargg_filter()
     if (shader) {
         // first calculate the resultant image size.
         snes_src_width = SNES_NTSC_OUT_WIDTH( src_width );
-printf("SNES_NTSC_OUT_WIDTH: %i, SNES_NTSC_IN_WIDTH %i\n",snes_src_width,SNES_NTSC_IN_WIDTH(snes_src_width));
+//printf("SNES_NTSC_OUT_WIDTH: %i, SNES_NTSC_IN_WIDTH %i\n",snes_src_width,SNES_NTSC_IN_WIDTH(snes_src_width));
         // SNES_NTSC_OUT_WIDTH can return slightly rounded down, so we need to check for this error
         // but counting up to the next input pixel length boundary
         while (SNES_NTSC_IN_WIDTH(snes_src_width) < src_width) snes_src_width++;
         snes_src_width--; // while loop will have overshot by one pixel
         if (config.video.hires) snes_src_width = snes_src_width >> 1; // hires filter halves output width
-printf("src_width: %i, snes_src_width: %i\n",src_width,snes_src_width);
+//printf("src_width: %i, snes_src_width: %i\n",src_width,snes_src_width);
         // configure selcted filtering type
         switch (config.video.blargg) {
             case video_settings_t::BLARGG_COMPOSITE:
@@ -220,9 +220,17 @@ bool RenderSurface::init_sdl(int video_mode)
         // - 398 x 224 (widescreen)
 
 	dst_rect.w = scn_width;
-	dst_rect.h = int(uint32_t(src_height) * uint32_t(scn_width) / uint32_t(src_width));
-	dst_rect.y = (scn_height - dst_rect.h) >> 1; // centre on screen
 	dst_rect.x = 0;
+
+	// JJP - allow stretched (vertical) mode, to fill 4:3 CRT
+        if (video_mode == video_settings_t::MODE_FULL) {
+	    dst_rect.h = int(uint32_t(src_height) * uint32_t(scn_width) / uint32_t(src_width));
+	    dst_rect.y = (scn_height - dst_rect.h) >> 1; // centre on screen
+	} else {
+	    // stretch mode
+	    dst_rect.h = scn_height;
+	    dst_rect.y = 0;
+	}
         if (dst_rect.h > scn_height) {
             // too large; proportion the other way
             dst_rect.w = int(uint32_t(src_width) * uint32_t(scn_height) / uint32_t(src_height));
@@ -546,7 +554,7 @@ void RenderSurface::init_overlays()
         double midx = double(dst_rect.w >> 1);
         double midy = double(dst_rect.h >> 1);
         double dia = sqrt( ((midx * midx) + (midy * midy)) );
-        double outer = dia * 0.98;
+        double outer = dia * 1.00; // JJP - was 0.98
         double inner = dia * 0.30;
         uint32_t shadeval;
         double total_black = 0.0; double d;
@@ -567,6 +575,59 @@ void RenderSurface::init_overlays()
                 *scnlp++ = (shadeval << Rshift) + (shadeval << Bshift) + (shadeval << Gshift);
             }
         }
+	// Add blacked-out corners and top/bottom fade
+	double radius = 0.03 * dia;
+        int radius_int = uint32_t(round(radius));
+	uint32_t maskval;
+        scnlp = texture_pixels;
+        int right_offset = 5;
+        for (int y=0; y<dst_rect.h; y++) {
+            for (int x=0; x<dst_rect.w; x++) {
+		if ( (y < radius_int) || (y > (dst_rect.h - radius_int)) ) {
+                    // only process corners for top and bottom of image
+                    if (x < radius_int) {
+		        // left corners
+			if (y < radius_int) // top
+                            d = sqrt( ((radius - double(x)) * (radius - double(x))) +
+				      ((radius - double(y)) * (radius - double(y))) );
+			else // bottom
+                            d = sqrt( ((radius - double(x)) * (radius - double(x))) +
+                                      ((radius - double(dst_rect.h - y)) * (radius - double(dst_rect.h - y))) );
+                    } else if (x > (dst_rect.w - radius_int + right_offset)) {
+			// right corners
+			if (y < radius_int)
+                            d = sqrt( ( (radius - double(dst_rect.w - x + right_offset)) * (radius - double(dst_rect.w - x + right_offset)) ) +
+				      ( (radius - double(y)) * (radius - double(y))) );
+			else
+                            d = sqrt( ( (radius - double(dst_rect.w - x + right_offset)) * (radius - double(dst_rect.w - x + right_offset)) ) +
+				      ( (radius - double(dst_rect.h - y)) * (radius - double(dst_rect.h - y))) );
+        	    } else {
+			// top/bottom edges
+                        if (y < radius_int) {
+			    // top
+                            d = double( radius_int - y);
+			} else {
+			    // bottom
+                            d = double( (radius_int - (dst_rect.h - y)) );
+			}
+		    }
+		} else {
+		    // left/right edges
+                    if (x < radius_int) {
+			// left
+                        d = double( radius_int - x);
+		    } else if (x > (dst_rect.w - radius_int + right_offset)) {
+			// right
+                        d = radius - double( (dst_rect.w - x + right_offset) );
+		    } else d = 0.0; // no change needed
+		}
+		if (d > radius) d = radius; // clip
+                shadeval = 255 - uint32_t(round( (255 * d * d) / (radius * radius) ));
+                maskval = (shadeval << Rshift) + (shadeval << Bshift) + (shadeval << Gshift);
+		if (maskval < *scnlp) *scnlp = maskval;
+		scnlp++; // advance pointer
+	    }
+	}
     }
     // load the texture into SDL, even if it's just blank
     SDL_UpdateTexture(vignette_tx, NULL, texture_pixels, dst_rect.w * sizeof(Uint32));
@@ -867,7 +928,8 @@ void RenderSurface::draw_frame(uint16_t* pixels)
             uint32_t current_val;
             for (int i = 0; i < (src_width * src_height); i++) {
                 // first, convert the game generated image to RGB as per the standard display code
-                current_val = rgb[*(tpix+i) & ((S16_PALETTE_ENTRIES * 3) - 1)];
+                current_val = rgb[*(tpix+i)];
+//JJP                current_val = rgb[*(tpix+i) & ((S16_PALETTE_ENTRIES * 3) - 1)];
                 // then convert that ready for Blargg
                 *(spix+i) = uint16_t( ((uint16_t((current_val & Rmask) >> Rshift) & 0x00F8) << 8) +   // red
                                       ((uint16_t((current_val & Gmask) >> Gshift) & 0x00FC) << 3) +   // green
@@ -878,7 +940,8 @@ void RenderSurface::draw_frame(uint16_t* pixels)
         uint32_t* spix = game_pixels;
         // Standard image processing; lookup real RGB value from rgb array for backbuffer
         for (int i = 0; i < (src_width * src_height); i++)
-            *(spix+i) = rgb[*(tpix+i) & ((S16_PALETTE_ENTRIES * 3) - 1)] +      // RGB
+            *(spix+i) = rgb[*(tpix+i)] +      // RGB
+//JJP            *(spix+i) = rgb[*(tpix+i) & ((S16_PALETTE_ENTRIES * 3) - 1)] +      // RGB
                         (uint32_t(Alevel) << Ashift);                           // A
     }
 

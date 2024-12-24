@@ -13,7 +13,6 @@
 #include <stdlib.h>
 #include <cmath>
 #include <cstring>  // For memset on GCC
-#include <cstdio> // for printf devugging JJP
 #include "hwaudio/ym2151.hpp"
 
 signed int     chanout[8];
@@ -1294,13 +1293,13 @@ int YM2151::read_status()
 *   'clock' is the chip clock in Hz
 *   'rate' is sampling rate
 */
-void YM2151::init(int rate, int fps)
+void YM2151::init(int rate)
 {
-    SoundChip::init(STEREO, rate, fps);
+    SoundChip::init(STEREO, rate);
     this->sampfreq = rate;
     init_tables();
 
-    this->sampfreq = rate ? rate : 31250;  /* avoid division by 0 in init_chip_tables() */
+    //this->sampfreq = rate ? rate : 31250;  /* avoid division by 0 in init_chip_tables() */
 
     init_chip_tables();
 

@@ -6,11 +6,7 @@
     See license.txt for more details.
 ***************************************************************************/
 
-#ifdef SDL2
 #include "sdl2/input.hpp"
-#else
-#include "sdl/input.hpp"
-#endif
 
 #include "frontend/ttrial.hpp"
 
@@ -60,6 +56,7 @@ int TTrial::tick()
         case INIT_COURSEMAP:
             outrun.select_course(config.engine.jap != 0, config.engine.prototype != 0); // Need to setup correct course map graphics.
             config.load_tiletrial_scores();
+            ostats.init(true);
             osprites.init();
             video.enabled = true;
             video.sprite_layer->set_x_clip(false);

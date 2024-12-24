@@ -50,7 +50,7 @@ public:
 
 private:
     // Sample Rate. Can't be changed easily for now, due to lack of SDL resampling.
-    static const uint32_t FREQ = 31250;
+    uint32_t FREQ; // JJP
 
     // Stereo. Could be changed, requires some recoding.
     static const uint32_t CHANNELS = 2;

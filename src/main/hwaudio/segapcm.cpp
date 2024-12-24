@@ -84,11 +84,11 @@ SegaPCM::~SegaPCM()
     delete[] low;
 }
 
-void SegaPCM::init(int32_t fps)
+void SegaPCM::init(int rate)
 {
-    int FREQ = 31250; // JJP - match arcade hardware
-    downsample = 1;   // 31250.0 / double(FREQ);
-    SoundChip::init(STEREO, FREQ, fps);
+    int FREQ = rate;
+    downsample = 31250.0 / double(FREQ);
+    SoundChip::init(STEREO, FREQ);
 }
 
 void SegaPCM::stream_update()

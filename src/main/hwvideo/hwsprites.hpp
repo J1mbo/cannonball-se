@@ -31,9 +31,5 @@ private:
     // Two halves of RAM
     uint16_t ram[SPRITE_RAM_SIZE];
     uint16_t ramBuff[SPRITE_RAM_SIZE];
-
-    // JJP optimisation
-    uint16_t ramScratch[SPRITE_RAM_SIZE];
-
 };
 

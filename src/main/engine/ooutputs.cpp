@@ -17,6 +17,7 @@
     See license.txt for more details.
 ***************************************************************************/
 
+#include <iostream>
 #include <cstdlib> // abs
 
 #include "utils.hpp"
@@ -31,6 +32,8 @@
 
 OOutputs::OOutputs(void)
 {
+    mode = MODE_DISABLED;
+
     chute1.output_bit  = D_COIN1_SUCC;
     chute2.output_bit  = D_COIN2_SUCC;
 
@@ -52,7 +55,9 @@ void OOutputs::init()
 {
     motor_state        = STATE_INIT;
     hw_motor_control   = MOTOR_OFF;
+    hw_motor_control_old = MOTOR_OFF;
     dig_out            = 0;
+    dig_out_old        = -1;
     motor_control      = 0;
     motor_movement     = 0;
     is_centered        = false;
@@ -73,28 +78,62 @@ void OOutputs::init()
     chute2.counter[2]  = 0;
 }
 
-void OOutputs::tick(int MODE, int16_t input_motor, int16_t cabinet_type)
+void OOutputs::set_mode(int m)
 {
-    switch (MODE)
+    mode = m;
+}
+
+void OOutputs::tick(int16_t input_motor)
+{
+    switch (mode)
     {
+        case MODE_DISABLED:
+            break;
+
         // Force Feedback Steering Wheels
         case MODE_FFEEDBACK:
-            do_motors(MODE, input_motor);   // Use X-Position of wheel instead of motor position
+            do_motors(mode, input_motor);   // Use X-Position of wheel instead of motor position
             motor_output(hw_motor_control); // Force Feedback Handling
             break;
 
-        // CannonBoard: Real Cabinet
+        // SMARTYPI: Real Cabinet
         case MODE_CABINET:
-            if (cabinet_type == config.cannonboard.CABINET_MOVING)
+            if (config.smartypi.cabinet == Config::CABINET_MOVING)
             {
-                do_motors(MODE, input_motor);
-                do_vibrate_mini();
+                do_motors(mode, input_motor);
             }
-            else if (cabinet_type == config.cannonboard.CABINET_UPRIGHT)
-                do_vibrate_upright();
-            else if (cabinet_type == config.cannonboard.CABINET_MINI)
-                do_vibrate_mini();
+            else
+            {
+                if (config.smartypi.cabinet == Config::CABINET_UPRIGHT)
+                    do_vibrate_upright();
+                else if (config.smartypi.cabinet == Config::CABINET_MINI)
+                    do_vibrate_mini();
+            }
             break;
+
+        // GamePad: Basic Rumble
+        case MODE_RUMBLE:
+            do_vibrate_upright();
+            break;
+    }
+}
+
+void OOutputs::writeDigitalToConsole()
+{
+    if (config.smartypi.enabled && config.smartypi.ouputs)
+    {
+        if ((dig_out & D_BRAKE_LAMP) != (dig_out_old & D_BRAKE_LAMP))
+            std::cout << "brake_lamp = " << is_set(D_BRAKE_LAMP) << std::endl;
+        if ((dig_out & D_START_LAMP) != (dig_out_old & D_START_LAMP))
+            std::cout << "start_lamp = " << is_set(D_START_LAMP) << std::endl;
+        if ((dig_out & D_MOTOR) != (dig_out_old & D_MOTOR))
+            std::cout << "wheel_motor = " << is_set(D_MOTOR) << std::endl;
+
+        if (hw_motor_control != hw_motor_control_old)
+            std::cout << "bank_motor_speed = " << (int) hw_motor_control << std::endl;
+
+        dig_out_old = dig_out;
+        hw_motor_control_old = hw_motor_control;
     }
 }
 
@@ -112,12 +151,17 @@ void OOutputs::clear_digital(uint8_t output)
     dig_out &= ~output;
 }
 
+int OOutputs::is_set(uint8_t output)
+{
+    return (dig_out & output) ? 1 : 0;
+}
+
 // ------------------------------------------------------------------------------------------------
 // Motor Diagnostics
 // Source: 0x1885E
 // ------------------------------------------------------------------------------------------------
 
-bool OOutputs::diag_motor(int16_t input_motor, uint8_t hw_motor_limit, uint32_t packets)
+bool OOutputs::diag_motor(int16_t input_motor, uint8_t hw_motor_limit)
 {
     switch (motor_state)
     {
@@ -157,16 +201,16 @@ bool OOutputs::diag_motor(int16_t input_motor, uint8_t hw_motor_limit, uint32_t 
 
     // Print Motor Position & Limit Switch
     ohud.blit_text_new(col2, 16, "  H", 0x80);
-    ohud.blit_text_new(col2, 16, Utils::to_string(input_motor).c_str(), 0x80);
-    ohud.blit_text_new(col2, 18, (hw_motor_limit & BIT_3) ? "ON " : "OFF ", 0x80);
-    ohud.blit_text_new(col2, 19, (hw_motor_limit & BIT_4) ? "ON " : "OFF ", 0x80);
-    ohud.blit_text_new(col2, 20, (hw_motor_limit & BIT_5) ? "ON " : "OFF ", 0x80);
+    ohud.blit_text_new(col2, 16, Utils::to_hex_string(input_motor).c_str(), 0x80);
+    ohud.blit_text_new(col2, 18, (hw_motor_limit & BIT_5) ? "OFF" : "ON ", 0x80);
+    ohud.blit_text_new(col2, 19, (hw_motor_limit & BIT_4) ? "OFF" : "ON ", 0x80);
+    ohud.blit_text_new(col2, 20, (hw_motor_limit & BIT_3) ? "OFF" : "ON ", 0x80);
     return motor_state == STATE_DONE;
 }
 
 void OOutputs::diag_left(int16_t input_motor, uint8_t hw_motor_limit)
 {
-    // If Right Limit Set, Move Left
+    // If Right Limit Reached, Move Left
     if (hw_motor_limit & BIT_5)
     {
         if (--counter >= 0)
@@ -182,7 +226,7 @@ void OOutputs::diag_left(int16_t input_motor, uint8_t hw_motor_limit)
     else if (hw_motor_limit & BIT_3)
     {
         ohud.blit_text_new(col2, 9, "  H", 0x80);
-        ohud.blit_text_new(col2, 9, Utils::to_string(input_motor).c_str(), 0x80);
+        ohud.blit_text_new(col2, 9, Utils::to_hex_string(input_motor).c_str(), 0x80);
     }
     else
         ohud.blit_text_new(col2, 9, "FAIL 2", 0x80);
@@ -194,7 +238,7 @@ void OOutputs::diag_left(int16_t input_motor, uint8_t hw_motor_limit)
 
 void OOutputs::diag_right(int16_t input_motor, uint8_t hw_motor_limit)
 {
-    if (motor_centre_pos == 0 && ((hw_motor_limit & BIT_4) == 0))
+    if (motor_centre_pos == 0 && (hw_motor_limit & BIT_4) == 0)
         motor_centre_pos = input_motor;
    
     // If Left Limit Set, Move Right
@@ -213,7 +257,7 @@ void OOutputs::diag_right(int16_t input_motor, uint8_t hw_motor_limit)
     else if (hw_motor_limit & BIT_5)
     {
         ohud.blit_text_new(col2, 11, "  H", 0x80);
-        ohud.blit_text_new(col2, 11, Utils::to_string(input_motor).c_str(), 0x80);
+        ohud.blit_text_new(col2, 11, Utils::to_hex_string(input_motor).c_str(), 0x80);
     }
     else
     {
@@ -230,7 +274,7 @@ void OOutputs::diag_right(int16_t input_motor, uint8_t hw_motor_limit)
 
 void OOutputs::diag_centre(int16_t input_motor, uint8_t hw_motor_limit)
 {
-    if (hw_motor_limit & BIT_4) 
+    if (hw_motor_limit & BIT_4)
     {
         if (--counter >= 0)
         {
@@ -245,7 +289,7 @@ void OOutputs::diag_centre(int16_t input_motor, uint8_t hw_motor_limit)
     else
     {
         ohud.blit_text_new(col2, 13, "  H", 0x80);
-        ohud.blit_text_new(col2, 13, Utils::to_string((input_motor + motor_centre_pos) >> 1).c_str(), 0x86);
+        ohud.blit_text_new(col2, 13, Utils::to_hex_string((input_motor + motor_centre_pos) >> 1).c_str(), 0x86);
         hw_motor_control = MOTOR_OFF; // switch off
         counter          = 32;
         motor_state      = STATE_DONE;
@@ -265,7 +309,7 @@ void OOutputs::diag_done()
 // Calibrate Motors
 // ------------------------------------------------------------------------------------------------
 
-bool OOutputs::calibrate_motor(int16_t input_motor, uint8_t hw_motor_limit, uint32_t packets)
+bool OOutputs::calibrate_motor(int16_t input_motor, uint8_t hw_motor_limit)
 {
     switch (motor_state)
     {
@@ -285,7 +329,7 @@ bool OOutputs::calibrate_motor(int16_t input_motor, uint8_t hw_motor_limit, uint
 
         // Just a delay to wait for the serial for safety
         case STATE_DELAY:
-            if (--counter == 0 || packets > 60)
+            if (--counter == 0)
             {
                 counter = COUNTER_RESET;
                 motor_state++;
@@ -405,7 +449,7 @@ void OOutputs::calibrate_centre(int16_t input_motor, uint8_t hw_motor_limit)
 {
     bool fail = false;
 
-    if (hw_motor_limit & BIT_4) 
+    if (hw_motor_limit & BIT_4)
     {
         if (--counter >= 0)
         {
@@ -886,7 +930,7 @@ void OOutputs::do_vibrate_mini()
     const uint16_t speed = oinitengine.car_increment >> 16;
     uint16_t index = 0;
 
-    // Car Crashing: Diable Motor once speed below 10
+    // Car Crashing: Disable Motor once speed below 10
     if (ocrash.crash_counter)
     {
         if (speed <= 10)

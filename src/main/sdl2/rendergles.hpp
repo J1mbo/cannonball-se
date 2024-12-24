@@ -32,11 +32,11 @@ struct __ShaderInfo
    GLfloat scanline_bright;
 };
 
-class RenderGLES : public RenderBase
+class Render : public RenderBase
 {
 public:
-    RenderGLES();
-    ~RenderGLES();
+    Render();
+    ~Render();
     bool init(int src_width, int src_height, 
               int scale,
               int video_mode,
@@ -45,6 +45,9 @@ public:
     bool start_frame();
     bool finalize_frame();
     void draw_frame(uint16_t* pixels);
+    bool supports_window() { return false; }
+	bool supports_vsync();
+
 
 private:
     // Texture IDs

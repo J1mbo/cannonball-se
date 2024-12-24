@@ -20,8 +20,7 @@
 #include "engine/olevelobjs.hpp"
 #include "engine/osprites.hpp"
 #include "engine/otraffic.hpp"
-#include "engine/ozoom_lookup.hpp"
-#include <string.h> // JJP
+#include "engine/data/ozoom_lookup.hpp"
 
 OSprites osprites;
 
@@ -39,18 +38,14 @@ void OSprites::init()
     no_sprites = config.engine.level_objects ? SPRITE_ENTRIES : 0x4F;
 
     // Also handled by clear_palette_data() now
-    // JJP optimisation
-    memset(pal_lookup,0,0x100);
-    memset(sprite_order,0,0x2000);
-    memset(sprite_order2,0,0x2000);
-//    for (uint16_t i = 0; i < 0x100; i++)
-//        pal_lookup[i] = 0;
-//
-//    for (uint16_t i = 0; i < 0x2000; i++)
-//    {
-//        sprite_order[i] = 0;
-//        sprite_order2[i] = 0;
-//    }
+    for (uint16_t i = 0; i < PAL_LOOKUP_LENGTH; i++)
+        pal_lookup[i] = 0;
+
+    for (uint16_t i = 0; i < 0x2000; i++)
+    {
+        sprite_order[i] = 0;
+        sprite_order2[i] = 0;
+    }
 
     // Reset hardware entries
     for (uint16_t i = 0; i < JUMP_ENTRIES_TOTAL; i++)
@@ -281,10 +276,8 @@ void OSprites::sprite_control()
 void OSprites::clear_palette_data()
 {
     spr_col_pal = 0;
-    // JJP optimisation
-    memset(pal_lookup,0,0x100);
-//    for (int16_t i = 0; i < 0x100; i++)
-//        pal_lookup[i] = 0;
+    for (int16_t i = 0; i < PAL_LOOKUP_LENGTH; i++)
+        pal_lookup[i] = 0;
 }
 
 
@@ -300,20 +293,13 @@ void OSprites::copy_palette_data()
     // Return if no palette entries to copy
     if (pal_copy_count <= 0) return;
 
-    for (int16_t i = 0; i < pal_copy_count; i++)
+    for (int16_t i = 0; i < pal_copy_count * 2;)
     {
-        // Palette Data Source Offset (aligned to start of 32 byte boundry, * 5)
-        uint16_t src_offset = pal_addresses[(i * 2) + 0] << 5;
-        uint32_t src_addr = 2 + PAL_DATA + src_offset; // Source address in ROM
-
-        uint16_t dst_offset = pal_addresses[(i * 2) + 1] << 5;
-        uint32_t dst_addr = 2 + PAL_SPRITES + dst_offset;
-
-        // Move 28 Bytes from ROM to palette RAM
-        for (uint16_t j = 0; j < 7; j++)
-        {
-            video.write_pal32(&dst_addr, roms.rom0.read32(&src_addr));
-        }
+        // Palette Data Source Offset (aligned to start of 32 byte boundry, * 32)
+        uint32_t src_addr = pal_addresses[i++] << 3;
+        uint32_t dst_addr = PAL_SPRITES + (pal_addresses[i++] << 5);
+        for (uint16_t j = 0; j < 8; j++)
+            video.write_pal32(&dst_addr, PALETTE_EXPANSION[src_addr++]);
     }
     pal_copy_count = 0; // All entries copied
 }
@@ -624,7 +610,7 @@ void OSprites::do_sprite(oentry* input)
     
     if (top_bit == 0)
     {
-        if (ZOOM_LOOKUP[index] != 0)
+        if (ZOOM_LOOKUP[index] != SIZE1) // Not largest sized sprite
         {
             lookup_mask += 0x4000;
             d0 = lookup_mask;

@@ -7,7 +7,6 @@
     See license.txt for more details.
 ***************************************************************************/
 
-#include "setup.hpp"
 #include "main.hpp"
 #include "trackloader.hpp"
 #include "../utils.hpp"
@@ -31,7 +30,6 @@
 #include "engine/otiles.hpp"
 #include "engine/otraffic.hpp"
 #include "engine/outils.hpp"
-#include "cannonboard/interface.hpp"
 
 Outrun outrun;
 
@@ -75,11 +73,21 @@ void Outrun::init()
 
     tick_counter = 0;
 
-    // CannonBoard Config: When Used in original cabinet
-    if (config.cannonboard.enabled && config.cannonboard.cabinet == config.cannonboard.CABINET_MOVING)
-        init_motor_calibration();
-    else
-        boot();
+    if (config.smartypi.enabled)
+    {
+        outputs->set_mode(OOutputs::MODE_CABINET);
+        if (config.smartypi.cabinet == Config::CABINET_MOVING)
+        {
+            init_motor_calibration();
+            return;
+        }
+    }
+    else if (config.controls.haptic)
+        outputs->set_mode(OOutputs::MODE_FFEEDBACK);
+    else if (config.controls.rumble)
+        outputs->set_mode(OOutputs::MODE_RUMBLE);
+
+    boot();
 }
 
 void Outrun::boot()
@@ -88,7 +96,7 @@ void Outrun::boot()
     // Initialize default hi-score entries
     ohiscore.init_def_scores();
     // Load saved hi-score entries
-    config.load_scores(cannonball_mode == Outrun::MODE_ORIGINAL ? FILENAME_SCORES : FILENAME_CONT);        
+    config.load_scores(cannonball_mode == Outrun::MODE_ORIGINAL);        
     ostats.init(cannonball_mode == MODE_TTRIAL);
     init_jump_table();
     oinitengine.init(cannonball_mode == MODE_TTRIAL ? ttrial.level : 0);
@@ -96,22 +104,24 @@ void Outrun::boot()
     outils::reset_random_seed(); // Ensure we match the genuine boot up of the original game each time
 }
 
-void Outrun::tick(Packet* packet, bool tick_frame)
+void Outrun::tick(bool tick_frame)
 {
     this->tick_frame = tick_frame;
     
-    if (cannonball::tick_frame)
+    if (tick_frame)
+    {
         tick_counter++;
 
-    if (game_state >= GS_START1 && game_state <= GS_INGAME)
-    {
-        if (input.has_pressed(Input::VIEWPOINT))
+        if (game_state >= GS_START1 && game_state <= GS_INGAME)
         {
-            int mode = oroad.get_view_mode() + 1;
-            if (mode > ORoad::VIEW_INCAR)
-                mode = ORoad::VIEW_ORIGINAL;
+            if (input.has_pressed(Input::VIEWPOINT))
+            {
+                int mode = oroad.get_view_mode() + 1;
+                if (mode > ORoad::VIEW_INCAR)
+                    mode = ORoad::VIEW_ORIGINAL;
 
-            oroad.set_view_mode(mode);
+                oroad.set_view_mode(mode);
+            }
         }
     }
 
@@ -125,7 +135,7 @@ void Outrun::tick(Packet* packet, bool tick_frame)
     // Updates V-Blank 1/2 frames
     if (config.fps == 30 && config.tick_fps == 30)
     {
-        jump_table(packet);
+        jump_table();
         oroad.tick();
         vint();
         vint();
@@ -135,9 +145,9 @@ void Outrun::tick(Packet* packet, bool tick_frame)
     // Updates V-Blank 1/1 frames
     else if (config.fps == 60 && config.tick_fps == 30)
     {
-        if (cannonball::tick_frame)
+        if (tick_frame)
         {
-            jump_table(packet);
+            jump_table();
             oroad.tick();
         }
         vint();
@@ -147,9 +157,17 @@ void Outrun::tick(Packet* packet, bool tick_frame)
     // Updates V-Blank 1/1 frames
     else
     {
-        jump_table(packet);
+        jump_table();
         oroad.tick();
         vint();
+    }
+
+    // Moved out of vertical interrupt
+    if (tick_frame)
+    {
+        uint8_t coin = oinputs.do_credits();
+        outputs->coin_chute_out(&outputs->chute1, coin == 1);
+        outputs->coin_chute_out(&outputs->chute2, coin == 2);
     }
 
     // Draw FPS
@@ -163,22 +181,14 @@ void Outrun::vint()
     otiles.write_tilemap_hw();
     osprites.update_sprites();
     otiles.update_tilemaps(cannonball_mode == MODE_ORIGINAL ? ostats.cur_stage : 0);
-
-    if (config.fps < 120 || (cannonball::frame & 1))
-    {
-        opalette.cycle_sky_palette();
-        opalette.fade_palette();
-        // ... 
-        ostats.do_timers();
-        if (cannonball_mode != MODE_TTRIAL) ohud.draw_timer1(ostats.time_counter);
-        uint8_t coin = oinputs.do_credits();
-        outputs->coin_chute_out(&outputs->chute1, coin == 1);
-        outputs->coin_chute_out(&outputs->chute2, coin == 2);
-        oinitengine.set_granular_position();
-    }
+    opalette.cycle_sky_palette();
+    opalette.fade_palette();
+    ostats.do_timers();
+    if (cannonball_mode != MODE_TTRIAL) ohud.draw_timer1(ostats.time_counter);
+    oinitengine.set_granular_position();
 }
 
-void Outrun::jump_table(Packet* packet)
+void Outrun::jump_table()
 {
     if (tick_frame && game_state != GS_CALIBRATE_MOTOR)
     {
@@ -201,6 +211,7 @@ void Outrun::jump_table(Packet* packet)
 
 
         case GS_MUSIC:
+            if (tick_frame) omusic.check_start(); // Check for start button
             osprites.tick();
             olevelobjs.do_sprite_routine();
 
@@ -230,13 +241,12 @@ void Outrun::jump_table(Packet* packet)
         // Core Game Engine Routines
         // ----------------------------------------------------------------------------------------
         case GS_LOGO:
-            if (!cannonball::tick_frame)
+            if (!tick_frame)
                 ologo.blit();
 
         case GS_ATTRACT:
         case GS_BEST1:
-            if (tick_frame)
-                check_freeplay_start();
+            if (tick_frame) check_freeplay_start();
         
         default:
             if (tick_frame) osprites.tick();                // Address #3 Jump_SetupSprites
@@ -268,42 +278,24 @@ void Outrun::jump_table(Packet* packet)
     {
         if (game_state == GS_CALIBRATE_MOTOR)
         {
-            if (outputs->calibrate_motor(packet->ai1, packet->mci, 0))
+            uint8_t limit = (input.motor_limits[Input::SW_LEFT]   ? 0 : BIT_5) |
+                            (input.motor_limits[Input::SW_CENTRE] ? 0 : BIT_4) |
+                            (input.motor_limits[Input::SW_RIGHT]  ? 0 : BIT_3);
+            if (outputs->calibrate_motor(input.a_motor, limit))
             {
                 video.enabled     = false;
                 video.clear_text_ram();
                 oroad.horizon_set = 0;
                 boot();
             }
+
+            outputs->tick(input.a_motor);
         }
         else
         {
-            if (config.controls.haptic && config.controls.analog)
-                outputs->tick(OOutputs::MODE_FFEEDBACK, oinputs.input_steering);
-            else if (config.cannonboard.enabled)
-                outputs->tick(OOutputs::MODE_CABINET, packet->ai1, config.cannonboard.cabinet);
+            int16_t motor = (config.smartypi.enabled && config.smartypi.cabinet == Config::CABINET_MOVING) ? input.a_motor : oinputs.input_steering;
+            outputs->tick(motor);
         }
-    }
-
-    if (config.cannonboard.enabled && config.cannonboard.debug)
-    {
-        uint16_t x = 1;
-        uint16_t y = 5;
-        ohud.blit_text_new(x, y, "AI0 ACCEL");   ohud.blit_text_new(x + 10, y, Utils::to_hex_string(packet->ai0).c_str(), OHud::PINK); x += 13;
-        ohud.blit_text_new(x, y, "AI2 WHEEL");   ohud.blit_text_new(x + 10, y, Utils::to_hex_string(packet->ai2).c_str(), OHud::PINK); x += 13;
-        ohud.blit_text_new(x, y, "AI3 BRAKE");   ohud.blit_text_new(x + 10, y, Utils::to_hex_string(packet->ai3).c_str(), OHud::PINK); x += 13;
-      
-        x = 1;
-        y = 6;
-        ohud.blit_text_new(x, y, "AI1 MOTOR"); ohud.blit_text_new(x + 10, y, Utils::to_hex_string(packet->ai1).c_str(), OHud::PINK); x += 13;
-        ohud.blit_text_new(x, y, "MC OUT");    ohud.blit_text_new(x + 10, y, Utils::to_hex_string(outputs->hw_motor_control).c_str(), OHud::PINK); x += 13;
-        ohud.blit_text_new(x, y, "MC IN");     ohud.blit_text_new(x + 10, y, Utils::to_hex_string(packet->mci).c_str(), OHud::PINK);
-
-        x = 1;
-        y = 7;
-        ohud.blit_text_new(x, y, "DI1");     ohud.blit_text_new(x + 10, y, Utils::to_hex_string(packet->di1).c_str(), OHud::PINK); x += 13;
-        ohud.blit_text_new(x, y, "DI2");     ohud.blit_text_new(x + 10, y, Utils::to_hex_string(packet->di2).c_str(), OHud::PINK); x += 13;
-        ohud.blit_text_new(x, y, "DIG OUT"); ohud.blit_text_new(x + 10, y, Utils::to_hex_string(outputs->dig_out).c_str(), OHud::PINK); x += 13;
     }
 }
 
@@ -331,9 +323,7 @@ void Outrun::main_switch()
             ostats.frame_counter = ostats.frame_reset;
             ohiscore.init();
             osoundint.queue_sound(sound::FM_RESET);
-            #ifdef COMPILE_SOUND_CODE
             cannonball::audio.clear_wav();
-            #endif
             game_state = GS_BEST1;
 
         case GS_BEST1:
@@ -384,7 +374,6 @@ void Outrun::main_switch()
         case GS_MUSIC:
             ohud.draw_credits();
             ohud.draw_insert_coin();
-            omusic.check_start(); // Check for start button
             omusic.tick();
             if (decrement_timers())
             {
@@ -411,16 +400,8 @@ void Outrun::main_switch()
             oroad.tick();
             osoundint.queue_sound(sound::STOP_CHEERS);
             osoundint.queue_sound(sound::VOICE_GETREADY);
-            
-            #ifdef COMPILE_SOUND_CODE
-            if (omusic.music_selected >= 0 && omusic.music_selected <= 2)
-            {
-                cannonball::audio.load_wav(config.sound.custom_music[omusic.music_selected].filename.c_str());
-                osoundint.queue_sound(sound::REVS); // queue revs sound manually
-            }
-            else
-            #endif
-                osoundint.queue_sound(omusic.music_selected);
+            osoundint.queue_sound(sound::REVS);             // Moved from Z80 Code for extra flexibility
+            omusic.play_music();
             
             if (!freeze_timer)
                 ostats.time_counter = ostats.TIME[config.engine.dip_time * 40]; // Set time to begin level with
@@ -572,14 +553,12 @@ void Outrun::main_switch()
             oferrari.car_ctrl_active = false; // -1
             oinitengine.car_increment = 0;
             oferrari.car_inc_old = 0;
-            ostats.time_counter = 0x30;
+            ostats.time_counter = config.engine.hiscore_timer;
             ostats.frame_counter = ostats.frame_reset;
             ohiscore.init();
             osoundint.queue_sound(sound::NEW_COMMAND);
             osoundint.queue_sound(sound::FM_RESET);
-            #ifdef COMPILE_SOUND_CODE
             cannonball::audio.clear_wav();
-            #endif
             game_state = GS_BEST2;
             // fall through
 
@@ -643,7 +622,6 @@ void Outrun::main_switch()
             oinitengine.car_x_pos = oroad.car_x_bak;
         } 
     }
-
 }
 
 // Setup Jump Table. Move from ROM to RAM.
@@ -711,7 +689,8 @@ bool Outrun::decrement_timers()
 
     // Correct count-down timer running fast at 1/29th (3%)
     // Fix timer counting extra second
-    if (config.engine.fix_timer)
+    // JJP - but not on high-score table, to avoid hang on best score screen at timeout
+    if ((config.engine.fix_timer) && (game_state != GS_BEST2))
     {
         if (--ostats.frame_counter > 0)
             return false;
@@ -737,7 +716,7 @@ bool Outrun::decrement_timers()
 }
 
 // -------------------------------------------------------------------------------
-// CannonBoard: Motor Calibration
+// SMARTYPI: Motor Calibration
 // -------------------------------------------------------------------------------
 
 void Outrun::init_motor_calibration()
@@ -757,7 +736,7 @@ void Outrun::init_motor_calibration()
 
     oroad.init();
     oroad.horizon_set    = 1;
-    oroad.horizon_base   = -0x3FF;
+    oroad.horizon_base   = ORoad::HORIZON_OFF;
     game_state           = GS_CALIBRATE_MOTOR;
 
 
@@ -824,10 +803,9 @@ void Outrun::check_freeplay_start()
 {
     if (config.engine.freeplay)
     {
-        if (input.is_pressed_clear(Input::START))
+        if (!ostats.credits && input.has_pressed(Input::START))
         {
-            if (!ostats.credits)
-                ostats.credits = 1;
+            ostats.credits = 1;
         }
     }
 }

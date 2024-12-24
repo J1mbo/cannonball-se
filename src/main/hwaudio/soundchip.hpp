@@ -27,7 +27,7 @@ public:
     SoundChip();
     ~SoundChip();
 
-    void init(uint8_t, int32_t, int32_t);
+    void init(uint8_t, int32_t); // JJP - remove unused FPS
 
     // Pure virtual function. Denotes virtual class.
     virtual void stream_update() = 0;
@@ -56,6 +56,4 @@ private:
     // Sound buffer stream
     int16_t* buffer;
 
-    // Frames per second
-    uint32_t fps; 
 };

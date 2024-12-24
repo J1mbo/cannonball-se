@@ -13,14 +13,12 @@
 #pragma once
 
 #include "renderbase.hpp"
-
-//#define GL_GLEXT_PROTOTYPES 
 #include <SDL_opengl.h>
 
-class RenderGL : public RenderBase
+class Render : public RenderBase
 {
 public:
-    RenderGL();
+    Render();
     bool init(int src_width, int src_height, 
               int scale,
               int video_mode,
@@ -29,6 +27,7 @@ public:
     bool start_frame();
     bool finalize_frame();
     void draw_frame(uint16_t* pixels);
+    bool supports_vsync();
 
 private:
     // Texture IDs
