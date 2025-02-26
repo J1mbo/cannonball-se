@@ -26,8 +26,8 @@ The SIMD implementation of the Blargg library also supports compiling on x86. Fo
 - **Hardware**:
   - Raspberry Pi Zero 2W or Pi 3/4/5.
   - A screen such as a Dell 1708FP or similar. These are ideal because they have a removable VESA mount (great for arcade cases) and include a USB hub (for wheel, sound, cooling fan, etc.). They are often available very cheaply (sometimes even new).
-  - Cabinet revision B ROMs, copied to the `roms` directory and renamed if necessary.
-  - Ideally, a wheel. The included `config.xml` is set up for the ancient Thrustmaster Ferrari GT Experience, a rumble-capable PC/PS3 USB wheel, which is often available at low cost on auction sites.
+- Cabinet revision B ROMs, copied to the `roms` directory and renamed if necessary.
+- Ideally, a wheel. The included `config.xml` is set up for the ancient Thrustmaster Ferrari GT Experience, a rumble-capable PC/PS3 USB wheel, which is often available at low cost on auction sites.
 
 ## Getting Started
 
@@ -74,8 +74,7 @@ If using a USB audio device (such as an external amplifier), add the following t
 sudo sed -i 's/$/ dwc_otg.speed=1/' /boot/firmware/cmdline.txt
 ```
 
-*Note:* This appends the setting to the end of the existing line.  
-Source: [RaspyFi](http://www.raspyfi.com/anatomy-of-a-pi-usb-audio-quality-and-related-issues-on-pi/)
+*Note:* This appends the setting to the end of the existing line. Thanks to [RaspyFi](http://www.raspyfi.com/anatomy-of-a-pi-usb-audio-quality-and-related-issues-on-pi/) for documenting this fix.
 
 Next, set the GPU clock to 450MHz by appending the following settings to `/boot/firmware/config.txt`, then reboot:
 
@@ -113,8 +112,9 @@ This will start the game on the connected monitor and output some potentially us
 ```console
 $ build/cannonball
 ./play_stats.xml: cannot open file
-Cannonball requires wayland video driver for 60fps operation under desktop environment. Start cannonball like:
-$ SDL_VIDEODRIVER=wayland build/cannonball
+Cannonball requires wayland video driver for 60fps operation under desktop environment.
+Start cannonball like:
+  SDL_VIDEODRIVER=wayland build/cannonball
 Available SDL video drivers:
    x11
    wayland
@@ -143,12 +143,9 @@ Set the required sound device in `config.xml` accordingly, for example:
 
 ## Autostarting Cannonball at Power On
 
-To run the program automatically at boot, first enable auto-login, then add the following to your `~/.bashrc`:
+To run the program automatically at boot, the following will enable auto-login start cannonball using `~/.bashrc`:
 
 ```bash
 sudo raspi-config nonint do_boot_behaviour B2
 echo 'cd ~/cannonball && build/cannonball' >> ~/.bashrc
 ```
-
-This ensures that upon login, the system changes to the cannonball directory and runs the game.
-
