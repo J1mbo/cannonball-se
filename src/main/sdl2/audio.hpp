@@ -49,7 +49,7 @@ public:
     void resume_audio();
 
 private:
-    // Sample Rate. Can't be changed easily for now, due to lack of SDL resampling.
+    // Sample Rate
     uint32_t FREQ; // JJP
 
     // Stereo. Could be changed, requires some recoding.
@@ -58,8 +58,10 @@ private:
     // 16-Bit Audio Output. Could be changed, requires some recoding.
     static const uint32_t BITS = 16;
 
-    // four generated audio frames per callback, this implies 32ms delay in SDL
-    static const uint32_t SAMPLES  = 1000;
+    // Number of samples per callback.
+    // Each frame is 250 samples and 8ms at 31050kHz sample rate.
+    // e.g. 1500 samples = 6 frames = 48ms delay in the SDL layer.
+    static const uint32_t SAMPLES  = 1500;
 
     // how many fragments (of SAMPLES) in the dsp buffer
     static const int DSP_BUFFER_FRAGS = 6;
@@ -69,9 +71,10 @@ private:
     // The overall audio delay will be the SDL delay plus this offset.
     // More delay means less chance of drop-out (i.e. buffer underrun somewhere)
     // Typically, audio delayed more than 100ms will be noticably lagging.
-    // However, the video also have a delay of approx. 16 or 30ms, depending on the
-    // frame rate.
-    const static int SND_DELAY = 40;
+    // However, the video also have a delay of either 48 or 96ms (60fps and 30fps respectively)
+    // due to the concurrent execution of the S16 image generation, Blargg filtering, an
+    // GPU display (i.e., display is 2 frames behind the game engine).
+    const static int SND_DELAY = 48;
 
     // allowed "spread" between too many and too few samples in the buffer (ms)
     const static int SND_SPREAD = 7;

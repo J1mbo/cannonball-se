@@ -84,8 +84,8 @@ private:
     std::vector<std::string> menu_settings;
     std::vector<std::string> menu_video;
     // JJP - CRT Emulation related menus
-    std::vector<std::string> menu_crt_overlay;
-    std::vector<std::string> menu_crt_colour;
+    std::vector<std::string> menu_crt_shader1;
+    std::vector<std::string> menu_crt_shader2;
     std::vector<std::string> menu_blargg_filter;
     // JJP - end of insert
     std::vector<std::string> menu_sound;

@@ -79,8 +79,10 @@ void Menu::populate()
 
     menu_about.push_back("CANNONBALL 0.35 © CHRIS WHITE 2022");
     menu_about.push_back("REASSEMBLER.BLOGSPOT.COM");
-    menu_about.push_back("CABINET ADAPTATION JAMES PEARCE, 2024 ");
-    menu_about.push_back("CANNONBALL IS FREE AND MAY NOT BE SOLD.");
+    menu_about.push_back("BARTOP ADAPTATION JAMES PEARCE 2025");
+    menu_about.push_back("CANNONBALL IS FREE AND MAY NOT BE SOLD");
+    menu_about.push_back(ENTRY_TOTAL_PLAYS);
+    menu_about.push_back(ENTRY_RUN_TIME);
 
     // Redefine menu text
     text_redefine.push_back("PRESS UP");
@@ -124,33 +126,33 @@ void Menu::populate_for_pc()
     menu_settings.push_back(ENTRY_SCORES);
     menu_settings.push_back(ENTRY_SAVE);
 
-    menu_video.push_back(ENTRY_FPS);
+    // FPS not now needed - frame rate now automatically switches
+    // menu_video.push_back(ENTRY_FPS);
+    menu_video.push_back(ENTRY_SCALE);
+    menu_video.push_back(ENTRY_FPS_COUNTER);
     menu_video.push_back(ENTRY_FULLSCREEN);
     menu_video.push_back(ENTRY_WIDESCREEN);
-    menu_video.push_back(ENTRY_HIRES);
-//JJP    menu_video.push_back(ENTRY_SCALE);
-//JJP    menu_video.push_back(ENTRY_SCANLINES);
-    menu_video.push_back(ENTRY_CRT_OVERLAY); // JJP
+    // not needed - achieves 60fps even on Pi Zero 2W
+    // menu_video.push_back(ENTRY_HIRES);
+    menu_video.push_back(ENTRY_CRT_SHADER1); // JJP
     menu_video.push_back(ENTRY_BLARGG_FILTER); // JJP
     menu_video.push_back(ENTRY_BACK);
 
-    // JJP - the following settings configure the CRT filtering
-    menu_crt_overlay.push_back(ENTRY_SCANLINES);
-    menu_crt_overlay.push_back(ENTRY_MASK);
-    menu_crt_overlay.push_back(ENTRY_MASKSTRENGTH);
-    menu_crt_overlay.push_back(ENTRY_VIGNETTE);
-    menu_crt_overlay.push_back(ENTRY_OVERDRIVE);
-    menu_crt_overlay.push_back(ENTRY_CRT_COLOUR);
-    menu_crt_overlay.push_back(ENTRY_BACK);
+    // JJP - the following settings configure the CRT shader
+    menu_crt_shader1.push_back(ENTRY_SHADOW_MASK);
+    menu_crt_shader1.push_back(ENTRY_CRT_SHAPE);
+    menu_crt_shader1.push_back(ENTRY_VIGNETTE);
+    menu_crt_shader1.push_back(ENTRY_NOISE);
+    menu_crt_shader1.push_back(ENTRY_CRT_SHADER2);
+    menu_crt_shader1.push_back(ENTRY_BACK);
 
-    // JJP - the following settings enable adjustment of colour curves and gain
-    menu_crt_colour.push_back(ENTRY_RED_GAIN);
-    menu_crt_colour.push_back(ENTRY_GREEN_GAIN);
-    menu_crt_colour.push_back(ENTRY_BLUE_GAIN);
-    menu_crt_colour.push_back(ENTRY_RED_CURVE);
-    menu_crt_colour.push_back(ENTRY_GREEN_CURVE);
-    menu_crt_colour.push_back(ENTRY_BLUE_CURVE);
-    menu_crt_colour.push_back(ENTRY_BACK);
+    // JJP - the following settings enable adjustment of colour curves
+    menu_crt_shader2.push_back(ENTRY_WARPX);
+    menu_crt_shader2.push_back(ENTRY_WARPY);
+    menu_crt_shader2.push_back(ENTRY_DESATURATE);
+    menu_crt_shader2.push_back(ENTRY_DESATURATE_EDGES);
+    menu_crt_shader2.push_back(ENTRY_BRIGHTNESS_BOOST);
+    menu_crt_shader2.push_back(ENTRY_BACK);
 
     // JJP - the following settings configure the Blargg filter
     menu_blargg_filter.push_back(ENTRY_BLARGG);
@@ -159,6 +161,8 @@ void Menu::populate_for_pc()
     menu_blargg_filter.push_back(ENTRY_BRIGHTNESS);
     menu_blargg_filter.push_back(ENTRY_SHARPNESS);
     menu_blargg_filter.push_back(ENTRY_RESOLUTION);
+    menu_blargg_filter.push_back(ENTRY_GAMMA);
+    menu_blargg_filter.push_back(ENTRY_HUE);
     menu_blargg_filter.push_back(ENTRY_BACK);
 
     menu_sound.push_back(ENTRY_MUTE);
@@ -669,13 +673,20 @@ void Menu::tick_menu()
             else if (SELECTED(ENTRY_TIMER))         config.engine.fix_timer ^= 1;
             else if (SELECTED(ENTRY_BACK))          menu_back();
         }
+
+        // Video Settings
         else if (menu_selected == &menu_video)
         {
-            if (SELECTED(ENTRY_FPS))
+            if (SELECTED(ENTRY_SCALE))
             {
-                if (++config.video.fps > 2)
-                    config.video.fps = 0;
-                config.set_fps(config.video.fps);
+                if (++config.video.scale == 4)
+                    config.video.scale = 1; // 1..3
+                restart_video();
+            }
+            else if (SELECTED(ENTRY_FPS_COUNTER))
+            {
+                config.video.fps_count ^= 1; // cycle between 0 and 1
+                // restart video?
             }
             else if (SELECTED(ENTRY_FULLSCREEN))
             {
@@ -688,128 +699,101 @@ void Menu::tick_menu()
                 config.video.widescreen ^= 1;
                 restart_video();
             }
-            else if (SELECTED(ENTRY_HIRES))
-            {
-                config.video.hires ^= 1;
-                if (config.video.hires)
-                {
-                    if (config.video.scale > 1)
-                        config.video.scale >>= 1;
-                }
-                else
-                {
-                    config.video.scale <<= 1;
-                }
-
-                restart_video();
-                video.sprite_layer->set_x_clip(false);
-            }
-            else if (SELECTED(ENTRY_SCALE))
-            {
-                if (++config.video.scale > (config.video.hires ? 2 : 4))
-                    config.video.scale = 1;
-                restart_video();
-            }
             // JJP - CRT emulation related sub-menus
-            else if (SELECTED(ENTRY_CRT_OVERLAY))
-                set_menu(&menu_crt_overlay);
+            else if (SELECTED(ENTRY_CRT_SHADER1))
+                set_menu(&menu_crt_shader1);
             else if (SELECTED(ENTRY_BLARGG_FILTER))
                 set_menu(&menu_blargg_filter);
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
         }
-        // JJP - CRT Emulation related sub-menus
-        else if (menu_selected == &menu_crt_overlay)
+        
+        // JJP - CRT shader settings (page 1)
+        else if (menu_selected == &menu_crt_shader1)
         {
-            // JJP - CRT mask overlay related settings and options
-            if (SELECTED(ENTRY_SCANLINES))
-            {
-                config.video.scanlines += 10;
-                if (config.video.scanlines > 100)
-                    config.video.scanlines = 0;
-                // JJP - restart_video();
-            }
-            else if (SELECTED(ENTRY_MASK))
+            // JJP - CRT shader related settings and options
+            if (SELECTED(ENTRY_SHADOW_MASK))
             {
                 // defines the type of mask shown
-                config.video.mask += 1;
-                if (config.video.mask > 7)
-                    config.video.mask = 0;
-                //restart_video();
+                config.video.shadow_mask += 1;
+                if (config.video.shadow_mask > 2)
+                    config.video.shadow_mask = 0;
+
+                if (config.video.shadow_mask == 2)
+                    // 2 is shader based; implies activating shader
+                    config.video.alloff = 0;
+                else
+                    // otherwise, shader off as texture is always enabled in the shader
+                    config.video.alloff = 1;
+                restart_video(); // needed as all three states require re-generating crt shape mask
             }
-            else if (SELECTED(ENTRY_MASKSTRENGTH))
+            else if (SELECTED(ENTRY_CRT_SHAPE))
             {
-                // defines overlay stregth of the mask
-                config.video.mask_strength += 5;
-                if (config.video.mask_strength > 35)
-                    config.video.mask_strength = 0;
-                //restart_video();
+                // Curved edge effect. Actually applied as an SDL texture but from a user perspect fits better here.
+                config.video.crt_shape ^= 1;
+                //restart_video();?
             }
-            else if (SELECTED(ENTRY_VIGNETTE)) // JJP - simple vignette post-process filter
+            else if (SELECTED(ENTRY_VIGNETTE))
             {
-                config.video.vignette += 10;
-                if (config.video.vignette > 100)
+                config.video.vignette += 5;
+                if (config.video.vignette > 40)
                     config.video.vignette = 0;
-                //restart_video();
+                if (config.video.shadow_mask < 2)
+                    restart_video(); // needed as require re-generating crt shape mask
             }
-            else if (SELECTED(ENTRY_OVERDRIVE))
+            else if (SELECTED(ENTRY_NOISE))
             {
-                config.video.overdrive += 5;
-                if (config.video.overdrive > 50)
-                    config.video.overdrive = 0;
-                //restart_video();
+                config.video.noise += 5;
+                if (config.video.noise > 50)
+                    config.video.noise = 0;
             }
-            else if (SELECTED(ENTRY_CRT_COLOUR))
-                set_menu(&menu_crt_colour);
+            else if (SELECTED(ENTRY_CRT_SHADER2))
+                set_menu(&menu_crt_shader2);
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
         }
-        else if (menu_selected == &menu_crt_colour)
-        {
-            // JJP - CRT colour curves and gain
-            if (SELECTED(ENTRY_RED_GAIN))
+
+        // JJP - CRT shader settings (page 2)
+        else if (menu_selected == &menu_crt_shader2)
             {
-                config.video.red_gain += 10;
-                if (config.video.red_gain > 150)
-                    config.video.red_gain = 100;
+            if (SELECTED(ENTRY_WARPX))
+            {
+                config.video.warpX += 1;
+                if (config.video.warpX > 10)
+                    config.video.warpX = 0;
+                    }
+            else if (SELECTED(ENTRY_WARPY))
+            {
+                config.video.warpY += 1;
+                if (config.video.warpY > 10)
+                    config.video.warpY = 0;
             }
-            else if (SELECTED(ENTRY_GREEN_GAIN))
+                if (SELECTED(ENTRY_DESATURATE))
             {
-                config.video.green_gain += 10;
-                if (config.video.green_gain > 150)
-                    config.video.green_gain = 100;
+                config.video.desaturate += 1;
+                if (config.video.desaturate > 10)
+                    config.video.desaturate = 0;
             }
-            else if (SELECTED(ENTRY_BLUE_GAIN))
+            else if (SELECTED(ENTRY_DESATURATE_EDGES))
             {
-                config.video.blue_gain += 10;
-                if (config.video.blue_gain > 150)
-                    config.video.blue_gain = 100;
+                config.video.desaturate_edges += 1;
+                if (config.video.desaturate_edges > 10)
+                    config.video.desaturate_edges = 0;
             }
-            else if (SELECTED(ENTRY_RED_CURVE))
+            else if (SELECTED(ENTRY_BRIGHTNESS_BOOST))
             {
-                config.video.red_curve += 10;
-                if (config.video.red_curve > 190)
-                    config.video.red_curve = 50;
-            }
-            else if (SELECTED(ENTRY_GREEN_CURVE))
-            {
-                config.video.green_curve += 10;
-                if (config.video.green_curve > 190)
-                    config.video.green_curve = 50;
-            }
-            else if (SELECTED(ENTRY_BLUE_CURVE))
-            {
-                config.video.blue_curve += 10;
-                if (config.video.blue_curve > 190)
-                    config.video.blue_curve = 50;
+                config.video.brightboost += 1;
+                if (config.video.brightboost > 10)
+                    config.video.brightboost = 0;
             }
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
         }
+
+        // JJP - Blargg CRT filtering settings
         else if (menu_selected == &menu_blargg_filter)
         {
-            // JJP - Blargg CRT filtering settings
-            if (SELECTED(ENTRY_BLARGG)) // off/componsite/s-video/rgb
+            if (SELECTED(ENTRY_BLARGG)) // off/componsite/s-video/rgb/mono
             {
                 config.video.blargg++;
                 if (config.video.blargg > video_settings_t::BLARGG_RGB) {
@@ -818,7 +802,7 @@ void Menu::tick_menu()
                     restart_video();
                 }
                 if (config.video.blargg == video_settings_t::BLARGG_COMPOSITE)
-                    // enaable filter; requires video restart
+                    // enable filter; requires video restart
                     restart_video();
             }
             else if (SELECTED(ENTRY_SATURATION))
@@ -856,11 +840,22 @@ void Menu::tick_menu()
                     config.video.resolution = -200;
                 //restart_video();
             }
-           // JJP End of insert
-
+            else if (SELECTED(ENTRY_GAMMA))
+            {
+                config.video.gamma += 1;
+                if (config.video.gamma > 10)
+                    config.video.gamma = -20;
+            }
+            else if (SELECTED(ENTRY_HUE))
+            {
+                config.video.hue += 1;
+                if (config.video.hue > 10)
+                    config.video.hue = -10;
+            }
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
         }
+
         else if (menu_selected == &menu_sound)
         {
             if (SELECTED(ENTRY_MUTE))
@@ -1046,7 +1041,12 @@ void Menu::refresh_menu()
         // Get option that was selected
         const char* OPTION = menu_selected->at(cursor).c_str();
 
-        if (menu_selected == &menu_timetrial)
+        if (menu_selected == &menu_about)  // JJP - include machine stats in about menu
+        {
+            if (SELECTED(ENTRY_TOTAL_PLAYS))        set_menu_text(ENTRY_TOTAL_PLAYS, Utils::to_string(config.stats.playcount));
+            else if (SELECTED(ENTRY_RUN_TIME))      set_menu_text(ENTRY_RUN_TIME, Utils::to_string((config.stats.runtime / 60)));
+        }
+        else if (menu_selected == &menu_timetrial)
         {
             if (SELECTED(ENTRY_LAPS))               set_menu_text(ENTRY_LAPS, Utils::to_string(config.ttrial.laps));
             else if (SELECTED(ENTRY_TRAFFIC))       set_menu_text(ENTRY_TRAFFIC, config.ttrial.traffic == 0 ? "DISABLED" : Utils::to_string(config.ttrial.traffic));
@@ -1057,12 +1057,10 @@ void Menu::refresh_menu()
         }
         else if (menu_selected == &menu_video)
         {
-            if (SELECTED(ENTRY_FULLSCREEN))         set_menu_text(ENTRY_FULLSCREEN, VIDEO_LABELS[config.video.mode]);
+            if (SELECTED(ENTRY_FPS_COUNTER))        set_menu_text(ENTRY_FPS_COUNTER, config.video.fps_count ? "ON" : "OFF");
+            else if (SELECTED(ENTRY_FULLSCREEN))    set_menu_text(ENTRY_FULLSCREEN, VIDEO_LABELS[config.video.mode]);
             else if (SELECTED(ENTRY_WIDESCREEN))    set_menu_text(ENTRY_WIDESCREEN, config.video.widescreen ? "ON" : "OFF");
             else if (SELECTED(ENTRY_SCALE))         set_menu_text(ENTRY_SCALE, Utils::to_string(config.video.scale) + "X");
-            else if (SELECTED(ENTRY_HIRES))         set_menu_text(ENTRY_HIRES, config.video.hires ? "ON" : "OFF");
-            else if (SELECTED(ENTRY_FPS))           set_menu_text(ENTRY_FPS, FPS_LABELS[config.video.fps]);
-            else if (SELECTED(ENTRY_SCANLINES))     set_menu_text(ENTRY_SCANLINES, config.video.scanlines ? Utils::to_string(config.video.scanlines) +"%": "OFF");
         }
         else if (menu_selected == &menu_sound)
         {
@@ -1072,50 +1070,40 @@ void Menu::refresh_menu()
             else if (SELECTED(ENTRY_FIXSAMPLES))    set_menu_text(ENTRY_FIXSAMPLES, config.sound.fix_samples ? "ON" : "OFF");
         }
         // JJP CRT Emulation related menus
-        else if (menu_selected == &menu_crt_overlay)
+        else if (menu_selected == &menu_crt_shader1)
         {
-            // Screen feedback for selected options for the blargg filtering
-            if (SELECTED(ENTRY_MASK))
-                set_menu_text(ENTRY_MASK, config.video.mask ? Utils::to_string(config.video.mask) : "OFF");
-            else if (SELECTED(ENTRY_MASKSTRENGTH))
-                set_menu_text(ENTRY_MASKSTRENGTH, config.video.mask_strength ? Utils::to_string(config.video.mask_strength) + "%" : "OFF");
-            else if (SELECTED(ENTRY_SCANLINES))
-                set_menu_text(ENTRY_SCANLINES, config.video.scanlines ? Utils::to_string(config.video.scanlines) +"%": "OFF");
+            // Screen feedback for selected options
+            if (SELECTED(ENTRY_SHADOW_MASK))
+            {
+                if (config.video.shadow_mask == 0)
+                    set_menu_text(ENTRY_SHADOW_MASK, "OFF");
+                else if (config.video.shadow_mask == 1)
+                    set_menu_text(ENTRY_SHADOW_MASK, "OVERLAY");
+                else
+                    set_menu_text(ENTRY_SHADOW_MASK, "SHADER");
+            }
+            else if (SELECTED(ENTRY_CRT_SHAPE))
+                set_menu_text(ENTRY_CRT_SHAPE, config.video.crt_shape ? "ON" : "OFF");
             else if (SELECTED(ENTRY_VIGNETTE))
                 set_menu_text(ENTRY_VIGNETTE, config.video.vignette ? Utils::to_string(config.video.vignette) +"%": "OFF");
-            else if (SELECTED(ENTRY_OVERDRIVE))
-                set_menu_text(ENTRY_OVERDRIVE, Utils::to_string(config.video.overdrive) +"%");
+            else if (SELECTED(ENTRY_NOISE))
+                set_menu_text(ENTRY_NOISE, Utils::to_string(config.video.noise)); 
         }
-        else if (menu_selected == &menu_crt_colour)
+        else if (menu_selected == &menu_crt_shader2)
         {
-            // Screen feedback for selected options for the CRT colour gain/curve menu
-            if (SELECTED(ENTRY_RED_GAIN))
-                set_menu_text(ENTRY_RED_GAIN, Utils::to_string(config.video.red_gain) +"%");
-            else if (SELECTED(ENTRY_GREEN_GAIN))
-                set_menu_text(ENTRY_GREEN_GAIN, Utils::to_string(config.video.green_gain) +"%");
-            else if (SELECTED(ENTRY_BLUE_GAIN))
-                set_menu_text(ENTRY_BLUE_GAIN, Utils::to_string(config.video.blue_gain) +"%");
-            else if (SELECTED(ENTRY_RED_CURVE)) {
-                if (config.video.red_curve > 100)
-                    set_menu_text(ENTRY_RED_CURVE, "1." + Utils::to_string(config.video.red_curve - 100));
-                else if (config.video.red_curve == 100)
-                    set_menu_text(ENTRY_RED_CURVE, "1.00");
-                else set_menu_text(ENTRY_RED_CURVE, "0." + Utils::to_string(config.video.red_curve));
-            }
-            else if (SELECTED(ENTRY_GREEN_CURVE)) {
-                if (config.video.green_curve > 100)
-                    set_menu_text(ENTRY_GREEN_CURVE, "1." + Utils::to_string(config.video.green_curve - 100));
-                else if (config.video.green_curve == 100)
-                    set_menu_text(ENTRY_GREEN_CURVE, "1.00");
-                else set_menu_text(ENTRY_GREEN_CURVE, "0." + Utils::to_string(config.video.green_curve));
-            }
-            else if (SELECTED(ENTRY_BLUE_CURVE)) {
-                if (config.video.blue_curve > 100)
-                    set_menu_text(ENTRY_BLUE_CURVE, "1." + Utils::to_string(config.video.blue_curve - 100));
-                else if (config.video.blue_curve == 100)
-                    set_menu_text(ENTRY_BLUE_CURVE, "1.00");
-                else set_menu_text(ENTRY_BLUE_CURVE, "0." + Utils::to_string(config.video.blue_curve));
-            }
+            if (SELECTED(ENTRY_WARPX))
+                set_menu_text(ENTRY_WARPX, Utils::to_string(config.video.warpX) + "%");
+            else if (SELECTED(ENTRY_WARPY))
+                set_menu_text(ENTRY_WARPY, Utils::to_string(config.video.warpY) + "%");
+            else if (SELECTED(ENTRY_DESATURATE))
+                set_menu_text(ENTRY_DESATURATE,
+                    config.video.desaturate ? Utils::to_string(config.video.desaturate) + "%" : "OFF");
+            else if (SELECTED(ENTRY_DESATURATE_EDGES))
+                set_menu_text(ENTRY_DESATURATE_EDGES,
+                    config.video.desaturate_edges ? Utils::to_string(config.video.desaturate_edges) + "%" : "OFF");
+            else if (SELECTED(ENTRY_BRIGHTNESS_BOOST))
+                set_menu_text(ENTRY_BRIGHTNESS_BOOST,
+                    config.video.brightboost ? Utils::to_string(config.video.brightboost) + "%" : "OFF");
         }
         else if (menu_selected == &menu_blargg_filter)
         {
@@ -1126,7 +1114,6 @@ void Menu::refresh_menu()
                 else if (config.video.blargg == video_settings_t::BLARGG_COMPOSITE) s = "COMPOSITE";
                 else if (config.video.blargg == video_settings_t::BLARGG_SVIDEO)    s = "S-VIDEO";
                 else if (config.video.blargg == video_settings_t::BLARGG_RGB)       s = "ARCADE RGB";
-                else if (config.video.blargg == video_settings_t::BLARGG_MONO)      s = "MONO";
                 set_menu_text(ENTRY_BLARGG, s);
             }
             else if (SELECTED(ENTRY_SATURATION))
@@ -1139,8 +1126,37 @@ void Menu::refresh_menu()
                 set_menu_text(ENTRY_SHARPNESS, Utils::to_string(config.video.sharpness));
             else if (SELECTED(ENTRY_RESOLUTION))
                 set_menu_text(ENTRY_RESOLUTION, Utils::to_string(config.video.resolution));
+            else if (SELECTED(ENTRY_GAMMA)) {
+                if (config.video.gamma >= 30)
+                    set_menu_text(ENTRY_GAMMA, "3." + Utils::to_string(config.video.gamma - 30));
+                else if (config.video.gamma >= 20)
+                    set_menu_text(ENTRY_GAMMA, "2." + Utils::to_string(config.video.gamma - 20));
+                else if (config.video.gamma >= 10)
+                    set_menu_text(ENTRY_GAMMA, "1." + Utils::to_string(config.video.gamma - 10));
+                else if (config.video.gamma >= 0)
+                    set_menu_text(ENTRY_GAMMA, "0." + Utils::to_string(config.video.gamma));
+                else if (config.video.gamma > -10)
+                    set_menu_text(ENTRY_GAMMA, "-0." + Utils::to_string((config.video.gamma * -1)));
+                else if (config.video.gamma > -20)
+                    set_menu_text(ENTRY_GAMMA, "-1." + Utils::to_string((config.video.gamma * -1) - 10));
+                else if (config.video.gamma > -30)
+                    set_menu_text(ENTRY_GAMMA, "-2." + Utils::to_string((config.video.gamma * -1) - 20));
+                else
+                    set_menu_text(ENTRY_GAMMA, "-3." + Utils::to_string((config.video.gamma * -1) - 30));
+            }
+            else if (SELECTED(ENTRY_HUE)) {
+                if (config.video.hue >= 10)
+                    set_menu_text(ENTRY_HUE, "0.1" + Utils::to_string(config.video.hue - 10));
+                else if (config.video.hue >= 0)
+                    set_menu_text(ENTRY_HUE, "0.0" + Utils::to_string(config.video.hue));
+                else if (config.video.hue > -10)
+                    set_menu_text(ENTRY_HUE, "-0.0" + Utils::to_string((config.video.hue * -1)));
+                else // (config.video.hue > -20)
+                    set_menu_text(ENTRY_HUE, "-0.1" + Utils::to_string((config.video.hue * -1) - 10));
+            }
         }
         // JJP end of insert
+
         else if (menu_selected == &menu_controls)
         {
             if (SELECTED(ENTRY_GEAR))               set_menu_text(ENTRY_GEAR, GEAR_LABELS[config.controls.gear]);
@@ -1362,7 +1378,7 @@ void Menu::start_game(int mode, int settings)
 
         config.set_fps(config.video.fps = 1);
         config.video.widescreen     = 0;
-        config.video.hires          = 0;
+        //config.video.hires          = 0;
         config.engine.level_objects = 0;
         config.engine.new_attract   = 0;
         config.engine.fix_bugs      = 0;

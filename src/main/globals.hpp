@@ -22,12 +22,17 @@ const bool FORCE_AI = false;
 // General useful stuff
 // ------------------------------------------------------------------------------------------------
 
+// SYSTEM_WATCHDOG is used for Linux builds, mostly targeting RPi Zero 2W in a cabinet situation
+// where overclocking is needed. The watchdog will restart the machine if it hangs.
+#define SYSTEM_WATCHDOG "/dev/watchdog0"
+
 // Internal Sega OutRun Screen Properties
 const uint16_t S16_WIDTH      = 320;
 const uint16_t S16_HEIGHT     = 224;
 
 // Internal Widescreen Width
-const uint16_t S16_WIDTH_WIDE = 398;
+// JJP - was 398. Using 404 allows for optimisation of Blargg filter with SIMD.
+const uint16_t S16_WIDTH_WIDE = 404;
 
 // Palette Address in Memory
 const uint32_t S16_PALETTE_BASE    = 0x120000;
@@ -64,3 +69,13 @@ enum
     BIT_9 = 0x200,
     BIT_A = 0x400
 };
+
+// Alignment macro for 64-bit optimisation
+#if defined(_MSC_VER)
+#define ALIGN64 __declspec(align(64))
+#elif defined(__GNUC__)
+#define ALIGN64 __attribute__((aligned(64)))
+#else
+#define ALIGN64
+#pragma message("WARNING: ALIGN64 not defined for this compiler.")
+#endif

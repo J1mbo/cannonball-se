@@ -22,6 +22,7 @@
 #include "osprites.hpp"
 #include "oroad.hpp"
 #include "oinitengine.hpp"
+#include "engine/osmoke.hpp"
 #include "audio/osoundint.hpp"
 
 // Globals
@@ -219,6 +220,9 @@ public:
 	void vint();
     void init_best_outrunners();
     void select_course(const bool jap, const bool prototype);
+
+    // JJP - expose skidding state
+    bool SkiddingOnRoad();
 
 private:
 

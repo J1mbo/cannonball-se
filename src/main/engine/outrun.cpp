@@ -23,7 +23,6 @@
 #include "engine/omap.hpp"
 #include "engine/omusic.hpp"
 #include "engine/ooutputs.hpp"
-#include "engine/osmoke.hpp"
 #include "engine/outrun.hpp"
 #include "engine/opalette.hpp"
 #include "engine/ostats.hpp"
@@ -368,6 +367,7 @@ void Outrun::main_switch()
         // ----------------------------------------------------------------------------------------
 
         case GS_INIT_MUSIC:
+            config.stats.playcount++; // JJP - increment game counter
             omusic.enable();
             game_state = GS_MUSIC;
 
@@ -1038,4 +1038,10 @@ void Outrun::select_course(bool jap, bool prototype)
 
     // Use Prototype Coconut Beach Track
     trackloader.stage_data[0] = prototype ? 0x3A : 0x3C;
+}
+
+
+bool Outrun::SkiddingOnRoad()
+{
+    return osmoke.skiddingonroad;
 }

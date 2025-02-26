@@ -98,6 +98,7 @@ void Config::load()
     data.file_ttrial_jap  = data.save_path + "hiscores_timetrial_jap.xml";
     data.file_cont        = data.save_path + "hiscores_continuous.xml";
     data.file_cont_jap    = data.save_path + "hiscores_continuous_jap.xml";
+    data.file_stats       = data.save_path + "play_stats.xml";
 
     // ------------------------------------------------------------------------
     // Menu Settings
@@ -111,50 +112,46 @@ void Config::load()
     // ------------------------------------------------------------------------
    
     video.mode       = pt_config.get("video.mode",               2); // Video Mode: Default is Full Screen 
-    video.scale      = pt_config.get("video.window.scale",       2); // Video Scale: Default is 2x    
-    video.scanlines  = pt_config.get("video.scanlines",          0); // Scanlines
-    video.fps        = pt_config.get("video.fps",                2); // Default is 60 fps
+    video.scale      = pt_config.get("video.window.scale",       1); // Video Scale: Default is 1x
+    video.fps        = pt_config.get("video.fps",                0); // Open game at 30fps; will auto-switch to 60fps if possible
     video.fps_count  = pt_config.get("video.fps_counter",        0); // FPS Counter
-    video.widescreen = pt_config.get("video.widescreen",         1); // Enable Widescreen Mode
-    video.hires      = pt_config.get("video.hires",              0); // Hi-Resolution Mode
-    video.filtering  = pt_config.get("video.filtering",          0); // Open GL Filtering Mode
+    video.widescreen = pt_config.get("video.widescreen",         0); // Enable Widescreen Mode
+    video.hires      = pt_config.get("video.hires",              1); // Hi-Resolution Mode
     video.vsync      = pt_config.get("video.vsync",              1); // Use V-Sync where available (e.g. Open GL)
-    video.shadow     = pt_config.get("video.shadow",             0); // Shadow Settings
-    // JP Additional configuration for CRT emulation
-    video.mask          = pt_config.get("video.mask",            0); // JJP - SDL blend
-    video.mask_strength = pt_config.get("video.mask_strength",   0); // JJP - SDL blend strength
-    video.vignette      = pt_config.get("video.vignette",        0); // JJP - 0-100% dim edges
-    video.overdrive     = pt_config.get("video.overdrive",       0); // JJP - 0-100% overdrive
-    video.blargg        = pt_config.get("video.blargg",          0); // JJP - Blargg filtering mode
-    video.saturation    = pt_config.get("video.saturation",      0); // JJP - Blargg filter saturation, -1 to +1
-    video.contrast      = pt_config.get("video.contrast",        0); // JJP - Blargg filter contrast, -1 to +1
-    video.brightness    = pt_config.get("video.brightness",      0); // JJP - Blargg filter brightness, -1 to +1
-    video.sharpness     = pt_config.get("video.sharpness",       0); // JJP - Blargg edge bluring
-    video.resolution    = pt_config.get("video.resolution",      0); // JJP - Blargg resolution, -2 to 0
-    video.gamma         = pt_config.get("video.gamma",           0); // JJP - Blargg gamma, -3 to +3
-    // not in UI currently:
-    video.flicker       = pt_config.get("video.flicker",         0); // JJP - flicker on/off
-    video.fps_count     = pt_config.get("video.fps_counter",     0); // FPS Counter on/off
-    video.bleed_limit   = pt_config.get("video.bleed_limit",   255); // see config.hpp for descriptions of
-    video.red_curve     = pt_config.get("video.red_curve",     100); // these settings
-    video.green_curve   = pt_config.get("video.green_curve",   100); //  ..
-    video.blue_curve    = pt_config.get("video.blue_curve",    100); //  ..
-    video.red_gain      = pt_config.get("video.red_gain",      100); //  ..
-    video.green_gain    = pt_config.get("video.green_gain",    100); //  ..
-    video.blue_gain     = pt_config.get("video.blue_gain",     100); //  ..
+    // JJP Additional configuration for CRT emulation
+    video.alloff        = pt_config.get("video.alloff",          0); // all crt shader based effects off or on
+    video.shadow_mask   = pt_config.get("video.shadow_mask",     0); // shadow mask type
+    //video.mask_intensity = pt_config.get("video.mask_intensity", 15); // shadow mask intensity 1=1%
+    video.crt_shape     = pt_config.get("video.crt_shape",       0); // CRT shape overlay on or off
+    video.vignette      = pt_config.get("video.vignette",        0); // amount to dim edges (1=1%)
+    video.noise         = pt_config.get("video.noise",           0); // amount of random noise to add (1=1%)
+    video.warpX         = pt_config.get("video.warpX",           0); // amount of warp to add along X axis (1=1%)
+    video.warpY         = pt_config.get("video.warpY",           0); // amount of warp to add along Y axis (1=1%)
+    video.desaturate    = pt_config.get("video.desaturate",      0); // amount to desaturate the entire image (raises black level) (1=1%)
+    video.desaturate_edges = pt_config.get("video.desaturate_edges", 0); // amount further desaturate towards edges (1=1%)
+    video.brightboost   = pt_config.get("video.brightboost",     0); // relative output brightness (1=1%)
+    video.blargg        = pt_config.get("video.blargg",          0); // Blargg filtering mode, 0=off
+    video.saturation    = pt_config.get("video.saturation",      0); // Blargg filter saturation, -1 to +1
+    video.contrast      = pt_config.get("video.contrast",        0); // Blargg filter contrast, -1 to +1
+    video.brightness    = pt_config.get("video.brightness",      0); // Blargg filter brightness, -1 to +1
+    video.sharpness     = pt_config.get("video.sharpness",       0); // Blargg edge bluring
+    video.resolution    = pt_config.get("video.resolution",      0); // Blargg resolution, -2 to 0
+    video.gamma         = pt_config.get("video.gamma",           0); // Blargg gamma, -3 to +3
+    video.hue           = pt_config.get("video.hue",             0); // Blargg hue, -10 to +10 => -0.1 to +0.1
 
     // ------------------------------------------------------------------------
     // Sound Settings
     // ------------------------------------------------------------------------
     sound.enabled     = pt_config.get("sound.enable",      1);
     sound.rate        = pt_config.get("sound.rate",        44100);
-    std::cout << "Set sample rate as " << sound.rate << std::endl; // JJP DEBUG
     sound.advertise   = pt_config.get("sound.advertise",   1);
     sound.preview     = pt_config.get("sound.preview",     1);
     sound.fix_samples = pt_config.get("sound.fix_samples", 1);
     sound.music_timer = pt_config.get("sound.music_timer", 0);
     // JJP - Synth fix
-    sound.playback_speed = pt_config.get("sound.playback_speed",125); // JJP - BPM for synth
+    sound.playback_speed = pt_config.get("sound.playback_speed",125);
+    // Index of SDL playback device to request, -1 for default
+    sound.playback_device = pt_config.get("sound.playback_device", -1);
 
     // Custom Music. Search for enabled custom tracks
     for (int i = 0;; i++)
@@ -294,43 +291,41 @@ void Config::load()
 bool Config::save()
 {
     // Save stuff
-    pt_config.put("video.mode",               video.mode);
-    pt_config.put("video.window.scale",       video.scale);
-    pt_config.put("video.scanlines",          video.scanlines);
-    pt_config.put("video.fps",                video.fps);
-    pt_config.put("video.widescreen",         video.widescreen);
-    pt_config.put("video.hires",              video.hires);
     // JJP - CRT emulation settings
-    pt_config.put("video.mask",               video.mask);          // JJP CRT setup
-    pt_config.put("video.mask_strength",      video.mask_strength); // JJP CRT setup
-    pt_config.put("video.vignette",           video.vignette);      // JJP - vignette post-processing filter
-    pt_config.put("video.overdrive",          video.overdrive);     // JJP - overall gain
-    pt_config.put("video.blargg",             video.blargg);        // JJP Blargg setting
-    pt_config.put("video.saturation",         video.saturation);    // JJP Blargg settings
-    pt_config.put("video.contrast",           video.contrast);      // JJP Blargg settings
-    pt_config.put("video.brightness",         video.brightness);    // JJP Blargg settings
-    pt_config.put("video.sharpness",          video.sharpness);     // JJP Blargg settings
-    pt_config.put("video.resolution",         video.resolution);    // JJP Blargg settings
-    pt_config.put("video.gamma",              video.gamma);         // JJP Blargg settings
-    // not in UI currentlyy
-    pt_config.put("video.filtering",          video.filtering);     // JJP - crt filter on/off
-    pt_config.put("video.flicker",            video.flicker);       // JJP - screen flicker on/off
-    pt_config.put("video.fps_count",          video.fps_count);
-    pt_config.put("video.bleed_limit",        video.bleed_limit);   // see config.hpp for descriptions of
-    pt_config.put("video.red_curve",          video.red_curve);     // these settings
-    pt_config.put("video.green_curve",        video.green_curve);   //  ..
-    pt_config.put("video.blue_curve",         video.blue_curve);    //  ..
-    pt_config.put("video.red_gain",           video.red_gain);      //  ..
-    pt_config.put("video.green_gain",         video.green_gain);    //  ..
-    pt_config.put("video.blue_gain",          video.blue_gain);     //  ..
+    pt_config.put("video.mode",             video.mode);       // Video Mode: Full Screen (2)
+    pt_config.put("video.window.scale",     video.scale);      // Video Scale: 1x (1)
+    //pt_config.put("video.fps",              video.fps);        // FPS: 60 fps (2)
+    pt_config.put("video.fps_counter",      video.fps_count);  // FPS Counter (0)
+    pt_config.put("video.widescreen",       video.widescreen); // Widescreen Mode (1)
+    //pt_config.put("video.hires",            video.hires);      // Hi-Resolution Mode (0)
+    pt_config.put("video.vsync",            video.vsync);      // V-Sync (1)
+    // JJP Additional configuration for CRT emulation
+    pt_config.put("video.alloff",           video.alloff);        // All CRT shader effects off/on (1)
+    pt_config.put("video.shadow_mask",      video.shadow_mask);   // Shadow mask type (0)
+    pt_config.put("video.crt_shape",        video.crt_shape);     // CRT shape overlay (0)
+    pt_config.put("video.vignette",         video.vignette);      // Vignette amount (0)
+    pt_config.put("video.noise",            video.noise);         // Noise amount (0)
+    pt_config.put("video.warpX",            video.warpX);         // Warp on X axis (0)
+    pt_config.put("video.warpY",            video.warpY);         // Warp on Y axis (0)
+    pt_config.put("video.desaturate",       video.desaturate);    // Desaturation level (0)
+    pt_config.put("video.desaturate_edges", video.desaturate_edges); // Edge desaturation (0)
+    pt_config.put("video.brightboost",      video.brightboost);   // Bright boost element 1 (0)
+    pt_config.put("video.blargg",           video.blargg);        // Blargg filtering mode (0=off)
+    pt_config.put("video.saturation",       video.saturation);    // Filter saturation (-1 to +1)
+    pt_config.put("video.contrast",         video.contrast);      // Filter contrast (-1 to +1)
+    pt_config.put("video.brightness",       video.brightness);    // Filter brightness (-1 to +1)
+    pt_config.put("video.sharpness",        video.sharpness);     // Edge blurring
+    pt_config.put("video.resolution",       video.resolution);    // Resolution (-2 to 0)
+    pt_config.put("video.gamma",            video.gamma);         // Gamma (-3 to +3)
+    pt_config.put("video.hue",              video.hue);           // Hue (-10 to +10)
 
     pt_config.put("sound.enable",             sound.enabled);
     pt_config.put("sound.advertise",          sound.advertise);
     pt_config.put("sound.preview",            sound.preview);
     pt_config.put("sound.fix_samples",        sound.fix_samples);
     pt_config.put("sound.rate",               sound.rate);          // audio sampling rate e.g. 44100 (Hz)
-    // JJP - Synth playback speed
-    pt_config.put("sound.playback_speed",     sound.playback_speed);
+    pt_config.put("sound.playback_speed",     sound.playback_speed);// JJP - Synth playback speed
+    pt_config.put("sound.playback_device", sound.playback_device);  // JJP - Index of SDL playback device to request, -1 for default  
 
     if (config.smartypi.enabled)
         pt_config.put("smartypi.cabinet",     config.smartypi.cabinet);
@@ -483,6 +478,48 @@ void Config::save_scores(bool original_mode)
     }
 }
 
+void Config::load_stats()
+{
+    std::string filename = data.file_stats;
+
+    // Create empty property tree object
+    ptree pt;
+
+    try
+    {
+        read_xml(filename , pt, boost::property_tree::xml_parser::trim_whitespace);
+    }
+    catch (std::exception &e)
+    {
+        std::cout << e.what() << std::endl;
+        return;
+    }
+    
+    // Load machine stats from file
+    stats.playcount = pt.get("stats.playcount", 0);
+    stats.runtime   = pt.get("stats.runtime",   0);
+}
+
+void Config::save_stats()
+{
+    std::string filename = data.file_stats;
+
+    // Create empty property tree object
+    ptree pt;
+
+    pt.put("stats.playcount", stats.playcount);
+    pt.put("stats.runtime",   stats.runtime);
+
+    try
+    {
+        write_xml(filename, pt, std::locale(), xml_writer_settings('\t', 1)); // Tab space 1
+    }
+    catch (std::exception &e)
+    {
+        std::cout << "Error saving machine stats: " << e.what() << "\n";
+    }
+}
+
 void Config::load_tiletrial_scores()
 {
     // Counter value that represents 1m 15s 0ms
@@ -562,12 +599,8 @@ void Config::set_fps(int fps)
 
     cannonball::frame_ms = 1000.0 / this->fps;
 
-    if (config.sound.enabled)
-        cannonball::audio.stop_audio();
-    osoundint.init();
-    if (config.sound.enabled)
-        cannonball::audio.start_audio();
-}
+    /* JJP - Sound initialised in seperate thread so not required here */
+ }
 
 // Inc time setting from menu
 void Config::inc_time()

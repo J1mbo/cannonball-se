@@ -9,61 +9,35 @@
          1 is full-screen
          2 is full-screen stretched, no borders. (Aspect ratio will be lost. Scanlines will be disabled.)
     -->
-	<mode>2</mode>
+	<mode>1</mode>
 	<!-- 
         Windowed Mode Settings 
         Scale: Scale or zoom factor for window mode. 1 is original size. 
     -->
 	<window>
-		<scale>1</scale>
+		<scale>2</scale>
 	</window>
-	<!-- 
-        Scanline intensity.
-        0   = No scanlines
-        100 = Solid black
-        
-        A value of 35 looks good on my LCD monitor.
-        
-        Note that scanlines require a scale factor of 2 or more. 
-        Scanlines do not work in full-screen stretch mode.
-        Scanlines may result in some borders around the screen in full-screen mode.
-    -->
-	<scanlines>0</scanlines>
-	<!-- FPS 
-         0 = 30    FPS. Optimized Mode       (Slow computers)
-         1 = 30/60 FPS. Original Game Mode.  (The original experience)
-         2 = 60    FPS. Smooth Mode.         (Full 60fps)
-    -->
-	<fps>0</fps>
-	<!-- Enhanced Widescreen Mode -->
 	<widescreen>0</widescreen>
-	<!-- Higher Internal Resolution. Better Sprite Scaling, but has a performance hit. 
-         Disable for original experience. -->
-	<hires>1</hires>
-	<!-- Open GL Filtering for Scaling. 0 = Nearest Neighbour. 1 = Linear -->
-	<filtering>0</filtering>
-	<flicker>0</flicker>
-	<blargg>1</blargg>
-	<hue>0</hue>
-	<saturation>0</saturation>
-	<contrast>0</contrast>
-	<brightness>10</brightness>
-	<sharpness>0</sharpness>
-	<gamma>0</gamma>
-	<vignette>40</vignette>
-	<mask>5</mask>
-	<mask_strength>35</mask_strength>
 	<fps_counter>0</fps_counter>
-	<fps_count>0</fps_count>
-	<overdrive>5</overdrive>
-	<bleed_limit>255</bleed_limit>
-	<resolution>-40</resolution>
-	<red_curve>140</red_curve>
-	<green_curve>140</green_curve>
-	<blue_curve>120</blue_curve>
-	<red_gain>100</red_gain>
-	<green_gain>100</green_gain>
-	<blue_gain>100</blue_gain>
+	<vsync>1</vsync>
+	<alloff>0</alloff>
+	<shadow_mask>2</shadow_mask>
+	<crt_shape>1</crt_shape>
+	<vignette>10</vignette>
+	<noise>5</noise>
+	<warpX>2</warpX>
+	<warpY>1</warpY>
+	<desaturate>4</desaturate>
+	<desaturate_edges>4</desaturate_edges>
+	<brightboost>0</brightboost>
+	<blargg>1</blargg>
+	<saturation>30</saturation>
+	<contrast>0</contrast>
+	<brightness>0</brightness>
+	<sharpness>0</sharpness>
+	<resolution>0</resolution>
+	<gamma>0</gamma>
+	<hue>-2</hue>
 </video>
 <!-- 
     Sound Settings
@@ -73,7 +47,7 @@
 	<!-- Toggle Sound -->
 	<enable>1</enable>
 	<!-- Advertise Sound In Attract Mode -->
-	<advertise>0</advertise>
+	<advertise>1</advertise>
 	<!-- Custom Music: Play a WAV file instead of the inbuilt music -->
 	<custom_music>
 		<!-- Magical Sound Shower Replacement -->
@@ -97,10 +71,10 @@
 		</track4>
 	</custom_music>
 	<preview>1</preview>
-	<fix_samples>0</fix_samples>
+	<fix_samples>1</fix_samples>
 	<playback_speed>125</playback_speed>
 	<rate>31250</rate>
-	<!--	<rate>44100</rate> -->
+	<playback_device>0</playback_device>
 </sound>
 <!-- 
     Controls Settings
@@ -129,37 +103,20 @@
 		<view>118</view>
 	</keyconfig>
 	<!-- Gamepad / Joystick Button Configuration. Easiest to configure with inbuilt menu. -->
-	<!-- JJP - Thrustmaster 348 buttons --
-Y 3
-X 2
-B 1
-A 0
-BLACK-LEFT 4
-BLACK-RIGHT 6
-SLIVER (LABELLED 1-4) 5
-ENGINE START 11,12,13,14
-RED TWIST 4
-
-REAR:
-BLACK LEFT 7
-BLACK RIGHT 8
-LEFT SHIFT 9
-RIGHT SHIFT 10
--->
 	<padconfig>
-		<acc>3</acc>
-		<brake>2</brake>
+		<acc>1</acc>
+		<brake>0</brake>
 		<gear>22</gear>
-		<start>14</start>
+		<start>6</start>
 		<coin>4</coin>
-		<menu>7</menu>
+		<menu>5</menu>
 		<gear1>9</gear1>
 		<gear2>10</gear2>
-		<view>6</view>
-		<up>1</up>
-		<down>0</down>
-		<left>20</left>
-		<right>21</right>
+		<view>3</view>
+		<up>11</up>
+		<down>12</down>
+		<left>13</left>
+		<right>14</right>
 	</padconfig>
 	<!-- Digital Controls: Steering Adjust Speed (1 to 9) -->
 	<steerspeed>3</steerspeed>
@@ -177,8 +134,8 @@ RIGHT SHIFT 10
           -->
 		<axis>
 			<wheel>0</wheel>
-			<accel>5</accel>
-			<brake>4</brake>
+			<accel invert="1">2</accel>
+			<brake invert="1">1</brake>
 		</axis>
 		<!-- Analog Wheel Settings -->
 		<wheel>
@@ -192,7 +149,7 @@ RIGHT SHIFT 10
 			<dead>0</dead>
 		</wheel>
 		<!-- Force Feedback / Haptic Support -->
-		<haptic enabled="0">
+		<haptic enabled="1">
 			<!-- Make both of the below values negative, 
                  if force feedback is in the wrong direction -->
 			<!-- Maximum Force To Apply (0 to 10000) -->
@@ -203,7 +160,7 @@ RIGHT SHIFT 10
 			<force_duration>20</force_duration>
 		</haptic>
 	</analog>
-	<rumble>0</rumble>
+	<rumble>1</rumble>
 </controls>
 <!-- 
     Game Engine Settings

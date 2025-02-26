@@ -190,7 +190,7 @@ void hwsprites::swap()
 // 
 // Thanks to Alex B. for this implementation.
 
-#define draw_pixel()                                                                                  \
+#define draw_pixel_()                                                                                  \
 {                                                                                                     \
     if (x >= x1 && x < x2)                                                                            \
     {                                                                                                 \
@@ -206,6 +206,22 @@ void hwsprites::swap()
         }                                                                                             \
     }                                                                                                 \
 }
+
+// JJP - slightly faster version, eliminates one branch at start of loop
+#define draw_pixel() do {                                                    \
+    /* Single branch for the x-range check: */                               \
+    if ((unsigned)(x - x1) < (unsigned)(x2 - x1)) {                          \
+        if (shadow && pix == 0xa) {                                          \
+            pPixel[x] &= 0xfff;                                              \
+            pPixel[x] += S16_PALETTE_ENTRIES;                                \
+        }                                                                    \
+        else if (pix != 0 && pix != 15)                                      \
+        {                                                                    \
+            if (x > x1) pPixel[x-1] &= 0xfff;                                \
+            pPixel[x] = (pix | color);                                       \
+        }                                                                    \
+    }                                                                        \
+} while (0)
 
 #else
 
@@ -230,7 +246,7 @@ void hwsprites::swap()
 void hwsprites::render(const uint8_t priority)
 {
     const uint32_t numbanks = SPRITES_LENGTH / 0x10000;
-
+    // jjp
     for (uint16_t data = 0; data < SPRITE_RAM_SIZE; data += 8) 
     {
         // stop when we hit the end of sprite list
@@ -259,7 +275,6 @@ void hwsprites::render(const uint8_t priority)
         int32_t color   = COLOR_BASE + ((ramBuff[data+5] & 0x7f) << 4);
         int32_t x, y, ytarget, yacc = 0, pix;
             
-//        uint32_t a; // jjp
         uint32_t inShadow; // jjp
         // adjust X coordinate
         // note: the threshhold below is a guess. If it is too high, rachero will draw garbage
@@ -303,6 +318,7 @@ void hwsprites::render(const uint8_t priority)
             if (y >= 0 && y < config.s16_height)
             {
                 uint16_t* pPixel = &video.pixels[y * config.s16_width];
+                uint16_t dummy_pixel = 0; // JJP - optimisation of draw_pixel to allow for CMOV or equivalent
                 int32_t xacc = 0;
 
                 // non-flipped case

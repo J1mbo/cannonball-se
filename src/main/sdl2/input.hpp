@@ -90,7 +90,7 @@ public:
     bool has_pressed(presses p);
     void reset_axis_config();
     int get_axis_config();
-    void set_rumble(bool, float strength = 1.0f);
+    void set_rumble(bool, float strength = 1.0f, int mode = 0);
 
 private:
     static const int CENTRE = 0x80;
@@ -99,6 +99,7 @@ private:
     SDL_Joystick *stick;
     SDL_GameController* controller;
     SDL_Haptic* haptic;
+    int hidraw_device = -1; // used for gamepad haptics where not supported by SDL
 
     // Configurations for keyboard and joypad
     int pad_id;

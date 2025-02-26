@@ -7,6 +7,8 @@
     
     Copyright Chris White.
     See license.txt for more details.
+
+    James Pearce (C) 2025 - thread-safe modification.
 ***************************************************************************/
 
 #include "engine/outrun.hpp"
@@ -54,6 +56,15 @@ void OSoundInt::init()
 // Source: 0x5086
 void OSoundInt::reset()
 {
+    // Lock the mutex for the duration of this function
+#ifdef DEBUG
+    printf("1\n");
+#endif
+//    std::lock_guard<std::mutex> lock(mtx);
+#ifdef DEBUG
+    printf("2\n");
+#endif
+
     sound_counter = 0;
     sound_head    = 0;
     sound_tail    = 0;
@@ -93,6 +104,15 @@ void OSoundInt::tick()
 // Source: 0x564E
 void OSoundInt::play_queued_sound()
 {
+    // Lock the mutex for the duration of this function
+#ifdef DEBUG
+    printf("3\n");
+#endif
+//    std::lock_guard<std::mutex> lock(mtx);
+#ifdef DEBUG
+    printf("4\n");
+#endif
+
     if (!has_booted)
     {
         sound_head = 0;
@@ -161,6 +181,15 @@ void OSoundInt::queue_sound(uint8_t snd)
 
 void OSoundInt::add_to_queue(uint8_t snd)
 {
+    // Lock the mutex for the duration of this function
+#ifdef DEBUG
+    printf("5\n");
+#endif
+//    std::lock_guard<std::mutex> lock(mtx);
+#ifdef DEBUG
+    printf("6\n");
+#endif
+
     // Add sound to the tail end of the queue
     queue[sound_tail] = snd;
     sound_tail = (sound_tail + 1) & QUEUE_LENGTH;
@@ -169,6 +198,15 @@ void OSoundInt::add_to_queue(uint8_t snd)
 
 void OSoundInt::queue_clear()
 {
+    // Lock the mutex for the duration of this function
+#ifdef DEBUG
+    printf("7\n");
+#endif
+//    std::lock_guard<std::mutex> lock(mtx);
+#ifdef DEBUG
+    printf("8\n");
+#endif
+
     sound_tail = 0;
     sounds_queued = 0;
 }

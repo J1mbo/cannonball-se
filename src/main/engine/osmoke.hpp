@@ -17,6 +17,9 @@ public:
     // Load smoke sprites for next level?
     int8_t load_smoke_data;
 
+    // JJP - Flag that tyre smoke is being generated on-road
+    bool skiddingonroad;
+
     OSmoke(void);
     ~OSmoke(void);
     void init();

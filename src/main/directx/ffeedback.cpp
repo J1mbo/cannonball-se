@@ -1,35 +1,161 @@
 /***************************************************************************
-    Microsoft DirectX 8 Force Feedback (aka Haptic) Support
+    Force Feedback (aka Haptic) Support
     
-    - Currently, SDL does not support haptic devices. So this is Win32 only.
+    Linux Builds - attempts to locate a device at /dev/input/event. This requires
+    that the device (e.g. wheel) have kernel support.
 
-    - DirectX 8 still works on Windows XP, so I'm not attempting to support
-      a higher version for now. 
-
+    Windows Builds - works via DirectX 8 or above. See:
     Ref: http://msdn.microsoft.com/en-us/library/windows/desktop/ee417563%28v=vs.85%29.aspx
-    
-    Copyright Chris White.
-    See license.txt for more details.
+    Windows Code Copyright (C) Chris White.  See license.txt for more details.
 ***************************************************************************/
 
 #include "ffeedback.hpp"
 
 //-----------------------------------------------------------------------------
-// Dummy Functions For Non-Windows Builds
+// Alternative implementation for Linux builds, including Raspberry Pi.
 //-----------------------------------------------------------------------------
 #ifndef WIN32
-namespace forcefeedback
-{
-    bool init(int a, int b, int c) { return false; } // Did not initialize
-    void close()                   {}
-    int  set(int x, int f)         { return 0; }
-    bool is_supported()            { return false; } // Not supported
+// Linux Force Feedback support
+// Based on work (C) Ismas, May 2020 and (C) Johan Deneux (from linuxconsole utils fftest.c)
+// License IWTM (IT Works To Me)
+// Updated 2025, James Pearce
+
+namespace forcefeedback {
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <linux/input.h>
+
+#define N_EFFECTS 6
+
+    struct ff_effect effects[N_EFFECTS];
+    struct input_event play, stop, gain;
+    int fd;
+    const char* devpath = "/dev/input/event";
+    char device_file_name[20];
+    int i;
+    bool supported = false;
+
+    bool init(int max_force, int min_force, int force_duration)
+    {
+        // This function finds and configures the FIRST device with kernel rumble support via
+        // /dev/input/event[x].
+        // 
+        // Note - this is called before SDL input initialisation; if rumbler support cannot be confirmed
+        // here, more basic 'on-off' rumble will be attempted via /dev/hidraw in input.cpp.
+        // 
+        // printf("Rumbler config: INIT max %d min %d duration %d\n",max_force, min_force, force_duration);
+
+        int effectsLoaded = 0;
+
+        // Locate the wheel by testing 
+        memset(&gain, 0, sizeof(gain));
+        gain.type = EV_FF;
+        gain.code = FF_GAIN;
+        gain.value = 0xFFFF; /* [0, 0xFFFF]) */
+
+        for (i = 0; i < 99; i++)
+        {
+            // test each possible path in the range /dev/input/event[0..99]
+            // sprintf(device_file_name, "%s%d", devpath, i);
+            fd = open(device_file_name, O_RDWR);
+            if (fd == -1) continue; // couldn't open device
+            fflush(stdout);
+            if (write(fd, &gain, sizeof(gain)) == sizeof(gain))
+            {
+                // potential device found
+                if (fd != -1) {
+                    printf("Testing for rumbler device at %s\n", device_file_name);
+
+                    // Load rumble effects
+                    memset(&effects[0], 0, sizeof(effects[0]));
+                    // Rotative effect for crashes, strongest one 
+                    effects[0].type = FF_PERIODIC;
+                    effects[0].id = -1;
+                    effects[0].u.periodic.waveform = FF_SINE;
+                    effects[0].u.periodic.period = 10;  /* 0.1 second */
+                    effects[0].u.periodic.magnitude = 0x7fff;   /* 0.5 * Maximum magnitude */
+                    effects[0].u.periodic.offset = 0;
+                    effects[0].u.periodic.phase = 0;
+                    effects[0].direction = 0x4000;  /* Along X axis */
+                    effects[0].u.periodic.envelope.attack_length = 1000;
+                    effects[0].u.periodic.envelope.attack_level = 0x7fff;
+                    effects[0].u.periodic.envelope.fade_length = 1000;
+                    effects[0].u.periodic.envelope.fade_level = 0x7fff;
+                    effects[0].trigger.button = 0;
+                    effects[0].trigger.interval = 0;
+                    effects[0].replay.length = 500;  /* 0.5 seconds */
+                    effects[0].replay.delay = 000;
+                    fflush(stdout);
+                    if (ioctl(fd, EVIOCSFF, &effects[0]) != -1)
+                        effectsLoaded++;
+
+                    if (effectsLoaded != 0)
+                    {
+                        // Now progressively softer rumbles for drifts 
+                        for (i = 1; i < 6; i++)
+                        {
+                            effects[i].type = FF_RUMBLE;
+                            effects[i].id = -1;
+                            effects[i].u.rumble.strong_magnitude = max_force / i;
+                            effects[i].u.rumble.weak_magnitude = min_force / i;
+                            effects[i].replay.length = force_duration;
+                            effects[i].replay.delay = 0;
+                            fflush(stdout);
+                            if (ioctl(fd, EVIOCSFF, &effects[i]) != -1)
+                                effectsLoaded++;
+                        }
+                    }
+                } // if (fd != -1)
+            } // if (write(fd...
+            if (effectsLoaded > 0)
+                break;
+        } // for
+        if (effectsLoaded == 0) {
+            printf("No kernel supported rumbler wheel detected via /dev/input/event\n");
+            supported = false;
+        }
+        else {
+            printf("Rumble device configured; loaded %i effects.\n", effectsLoaded);
+            supported = true;
+        }
+
+        return supported;
+    }
+
+    int set(int command, int force) {
+
+        // PLAY EFFECT
+        // force [0,5] (0 strongest 5 soft)
+        // command unused, it's for real motor hardware
+        memset(&play, 0, sizeof(play));
+        play.type = EV_FF;
+        play.code = effects[force - 1].id;
+        play.value = 1;
+        if (write(fd, (const void*)&play, sizeof(play)) == -1) {
+            perror("Play effect");
+            return false;
+        }
+        return true;
+    }
+
+    void close() {
+        // Just that  
+        close(fd);
+    }
+
+    bool is_supported() { return supported; } // supported or not
 };
 
+#else
 //-----------------------------------------------------------------------------
 // DirectX 8 Code Below
 //-----------------------------------------------------------------------------
-#else
+
 
 // DirectX 8 Needed (Windows XP and up)
 #define DIRECTINPUT_VERSION 0x0800

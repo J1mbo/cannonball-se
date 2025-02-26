@@ -79,7 +79,7 @@ void OHud::clear_timetrial_text()
 void OHud::draw_fps_counter(int16_t fps)
 {
     std::string str = "FPS " + Utils::to_string(fps);
-    blit_text_new(30, 0, str.c_str());
+    blit_text_new(30, 4, str.c_str());
 }
 
 

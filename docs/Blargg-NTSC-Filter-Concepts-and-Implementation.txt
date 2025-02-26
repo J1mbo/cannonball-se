@@ -1,0 +1,133 @@
+-----------------------------------------------------------------------
+https://ubm-twvideo01.s3.amazonaws.com/o1/vault/GD_Mag_Archives/GDM_March_2013.pdf
+-----------------------------------------------------------------------
+
+Motivation:
+
+Some users dial down the CRT shader’s barrel distortion, overscan, and other variables to simulate a mythical “perfect” CRT, but others seek even more artifacts. Shay “Blargg” Green created a set of filters that simulates the look of RF, composite, S-video, and RGB video signals. “Part of my nostalgia for playing games was the unique look of each console’s composite video, and I was always curious about why,” said Green. “NewRisingSun fi gured out the math and algorithm to simulate composite video and shared it, which motivated me to make it practical in emulators. I had NewRisingSun’s algorithm in hand, the skills to do massive optimizations to it, and the vision of a clean real-time NTSC filtering library.” As a result, nostalgia purists can 
+enjoy emulated games with authentic-looking dot crawl and similar artifacts. Future historians, too, could get a better idea of what old games looked like without needing vintage hardware.
+
+
+-----------------------------------------------------------------------
+https://board.zsnes.com/phpBB3/viewtopic.php?t=6433&start=50
+-----------------------------------------------------------------------
+
+
+Post by blargg » Thu Mar 02, 2006 6:23 pm
+
+When the background scrolls at certain speeds, flicker and/or color anomalies appear, or become more apparent.
+This is exactly what happens on NTSC. If you've ever played the NES on an NTSC television, it's much more apparent there. I'll try to explain. Each pixel of some color can appear three different ways, depending on two factors: its horizontal position on screen, and the current colorburst phase for the line. The result is the following combination of different appearances based on location:
+
+1 0 2 1 0 2 1 0 2 1 0 2 ...
+2 1 0 2 1 0 2 1 0 2 1 0 ...
+0 2 1 0 2 1 0 2 1 0 2 1 ...
+The colorburst phase toggles each frame, so you might get the above pattern on even frames, and the following pattern on odd frames:
+
+2 1 0 2 1 0 2 1 0 2 1 0 ...
+0 2 1 0 2 1 0 2 1 0 2 1 ...
+1 0 2 1 0 2 1 0 2 1 0 2 ...
+
+When a bunch of pixels of the same color are together, the phases average out and you see a solid color without any irregularities. A single pixel of a color on black will show the differences much better. Below are some example pixels on the left and what the appear as on the right on even and odd frames (through my NTSC filter). They are expanded 300% to make them more visible.
+
+If the screen isn't scrolling, you can see that each pixel will flicker between two of the three possible appearances (i.e. 0 and 1, 1 and 2, or 2 and 0). If the screen is scrolling at one pixel per frame, pixels will take on phases 2, 2, 1, 1, 0, 0, 2, 2, 1, 1, 0, 0, etc. This will be clearly visible as a shimmer. Some games scroll a fractional number of pixels per frame, which results in a more complex pattern. For example, 1.5 pixels per frame works out to actual movements in the 1, 2, 1, 2, 1, 2 pattern (averaging 1.5 pixels), and pixels at this scroll rate could appear in an alternating pattern or stay the same phase all the time; if they stay the same phase, you'll see the color artifacts much more clearly, as when you stop the emulator.
+
+This also helps explain why it's important for the monitor's refresh and emulator's frame rate to be the same. Once a GUI is added to adjust the NTSC filter paramters, you'll be able to turn on field merging, which is like mixing the two phase arrangement diagrams above together, eliminating most of this flickering (but also eliminating the shimmer effect when you scroll, making it less-authentic). The result is that pixels appear every frame as a mix of the two possible phases for that position:
+
+1+2 0+1 2+0 1+2 0+1 2+0 1+2 0+1 2+0 ...
+2+0 1+2 0+1 2+0 1+2 0+1 2+0 1+2 0+1  ...
+0+1 2+0 1+2 0+1 2+0 1+2 0+1 2+0 1+2  ...
+
+
+Post by blargg » Thu Mar 02, 2006 10:39 pm
+
+> Ok, this might not be accurate, due to something that you probably don't realise (not many people seem to.) Most consoles (NES and SNES included) never output odd and even frames (unless, of course, they have a setting for interlaced mode). Every single frame output is in fact an even frame. This is why you get the 'scanlines' effect. [...] So you probably don't want to be toggling the colorburst phase each frame.
+
+The effect you get with the NES and SNES is more subtle, something different than you describe. I should have used a different term than field, since it's not related to NTSC fields. Like you say, these consoles always output an even field, resulting in the TV giving you a nice 60 frames per second progressive display, albeit at half the vertical resolution as an interlaced NTSC signal would give you, and with black space between scanlines.
+
+A proper NTSC signal's colorburst changes phase by 180 degrees each scanline, resulting in only two possible colorburst phases and every other scanline having the same phase. The same scanline in different fields should also have the phase reversed, so that the phases visually cancel in both the time and spatial domain. This allows a TV without a comb filter to look decent. In simplified terms, it's like a checkerboard that's constantly inverting every field, resulting in a gray appearance. Modern LCDs even do something similar, but for an entirely different purpose (the liquid crystal elements require an alternating current; DC destroys them).
+
+Anyway, the NES and SNES colorburst only shifts by 120 degrees each scanline, so it takes three phase shifts before it returns to the original phase (120 * 3 = 360). This results in three different colorburst phases. Between frames, the colorburst at first scanline (normally) shifts by 120 degrees on even frames, and -120 degrees on odd frames (the PPU waits an extra pixel clock every other frame). This results in a static image displayed (title screen, etc.) actually outputting two distinct alternating composite video frames. It is these that I confusingly referred to as even and odd fields.
+
+
+
+-----------------------------------------------------------------------
+Source: https://board.zsnes.com/phpBB3/viewtopic.php?t=6433&start=75
+-----------------------------------------------------------------------
+
+Post by blargg » Fri Mar 03, 2006 7:03 pm
+
+Until I write a complete description, I'll only summarize. NTSC represents luma (brightness basically) by the amplitude of the video signal. It represents chroma (color) by adding a ~3.58 MHz waveform to the luma signal, whose phase is the hue and amplitude is the saturation. In the TV the signal is filtered back into the luma (lower frequency) and chroma (the region around 3.58 MHz). SNES pixels are generated at a rate of ~5.37 MHz, or ~186 nanoseconds (ns) per pixel. If you have a single pixel of some color with black around it, there's not enough time to establish a complete cycle of the color waveform (~279 ns per cycle), so the TV decoder sees something at a different phase and amplitude than the SNES intends. ASCII art, engage!
+Code: Select all
+
+  ,-~-,
+ /     \
+/       \       /
+         \     /
+          '-_-'
+|----------------| 279 ns
+
+One color cycle
+
+  ,-~-,
+ /     \
+/       \ ,-------
+         \|
+          '
+|---------| 186 ns
+
+One SNES pixel possibility
+
+                  ,-.
+                 /  |
+----------,     /   '--
+          |    /
+          '-_-'
+          |---------| 186 ns
+          
+Another SNES pixel possibility
+If you put multiple SNES pixels of the same color together, you get enough of the color wave that the color is properly represented. You get artifacts even for lone gray/white pixels because they are narrow enough to contain significant harmonics in the color range.
+
+It's just not possible to represent the color of a pixel narrower than around a color cycle, nor to switch colors faster than that, due to the inherent amount of information that can be encoded.
+
+
+Post by blargg » Sat Mar 04, 2006 12:14 am
+
+I wrote a bit about how the filter works:
+
+A SNES pixel's effect is spread out on the TV screen, due to the way NTSC encoding and decoding work. At some point I realized that the NTSC operation was linear, which meant that the result of running two adjacent pixels A and B through the NTSC filter is the same as running A and black through the decoder, black and B through separately, then summing the two outputs. This opened the door to precalculating each possible pixel appearance in isolation and then combining them when running the filter.
+
+For each possible SNES color, a single pixel of it on a black background is generated at each combination of the three column alignments and three scanline burst phases, totaling 9 possible appearances (see earlier post about the burst phases):
+
+  012 012 012
+0 X-- -X- --X
+1 --- --- ---
+2 --- --- ---
+
+0 --- --- ---
+1 X-- -X- --X
+2 --- --- ---
+
+0 --- --- ---
+1 --- --- ---
+2 X-- -X- --X
+
+A SNES pixel affects many output pixels to the left and right, due to filtering in the TV, so for each of the above combinations, the 14 non-zero output pixels are captured into a kernel. An imporant subtlety is that the output pixels are signed RGB values, since a SNES pixel can both increase and decrease the RGB values of nearby output pixels. So the kernel contains the signed red, green, and blue components for each of the 14 output pixels, centered around the original SNES pixel.
+
+There are 32768 SNES colors available. Each kernel uses 56 bytes (14 pixels * 4 bytes per pixel), so if a set of 9 kernels were made for every color, almost 16 megabytes of memory would be needed for the table, and almost 300000 kernels would need to be calculated during initialization. This would take quite a while, since NTSC signal processing is somewhat complex. I found that I could reduce both the red and blue channels from 32 possible intensities to 16 without affecting the image noticeably. This reduced the number of colors to 8192, one fourth of the original.
+
+Finally, when running the filter on a full SNES image, the appropriate kernels for each SNES pixel are summed together. Below, SNES pixels are numbered from 0 upwards, where 0 is the first pixel on the line.
+
+|----- 0 -----|----- 6 -----|---- 12 -----|------------ ...
+  |----- 1 -----|----- 7 -----|---- 13 -----|---------- ...
+    |----- 2 -----|----- 8 -----|---- 14 -----|-------- ...
+       |----- 3 -----|----- 9 -----|---- 15 -----|----- ...
+         |----- 4 -----|---- 10 -----|---- 16 -----|--- ...
++          |----- 5 -----|---- 11 -----|---- 17 -----|- ...
+-----------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ... output pixels
+             *
+As you can see, any given output pixel depends on the nearby 6 SNES pixels. For example, the starred output pixel is the sum of k0 [13], k1 [11], k2 [9], k3 [6], k4 [4], and k5 [2], where k0-k5 are the kernels for pixels 0-5, and k [0] is the first pixel of a given kernel.
+
+One additional step needs to be performed. The final RGB values can be less than zero or greater than the maximum, so they need to be clamped, otherwise they will wrap around and look bad. Clamping turns negative values into zero and excess values into the maximum. After clamping, the RGB components converted to the packed format used by the graphics card.
+
+It's quite an intensive calculation, even with the table optimization. I put a lot of work into encoding the RGB values into the kernels so that they could be efficiently summed and clamped with a minimum of calculation. Even kernel initialization needed significant optimization to prevent it from taking several seconds. This has come a long way from the original NES NTSC code and algorithm given to me by NewRisingSun, which ran at around 2 frames per second on my machine. The optimized table implementation now runs 75 times faster at 150 frames per second.

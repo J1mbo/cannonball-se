@@ -9,6 +9,10 @@
     See license.txt for more details.
 ***************************************************************************/
 
+// Aligned Memory Allocation
+#include <boost/align/aligned_alloc.hpp>
+#include <boost/align/aligned_delete.hpp>
+#include <cstring>        // For std::memset
 #include <iostream>
 
 #include "video.hpp"
@@ -16,13 +20,13 @@
 #include "frontend/config.hpp"
 #include "engine/oroad.hpp"
 
-#ifdef WITH_OPENGL
-#include "sdl2/rendergl.hpp"
-#elif WITH_OPENGLES
-#include "sdl2/rendergles.hpp"
-#else
+//#ifdef WITH_OPENGL
+//#include "sdl2/rendergl.hpp"
+//#elif WITH_OPENGLES
+//#include "sdl2/rendergles.hpp"
+//#else
 #include "sdl2/rendersurface.hpp"
-#endif
+//#endif
 
 Video video;
 
@@ -34,6 +38,7 @@ Video::Video(void)
     tile_layer   = new hwtiles();
 
     set_shadow_intensity(shadow::ORIGINAL);
+
     enabled      = false;
 }
 
@@ -42,19 +47,30 @@ Video::~Video(void)
     video.disable(); // JJP
     delete sprite_layer;
     delete tile_layer;
-    // JJP - if (pixels) delete[] pixels;
-    renderer->disable();
+    // JJP - moved to disable - if (pixels) delete[] pixels;
+    //renderer->disable();
     delete renderer;
 }
 
 int Video::init(Roms* roms, video_settings_t* settings)
 {
     if (!set_video_mode(settings))
-        return 0;
+        return false;
 
     // Internal pixel array. The size of this is always constant
-    // JJP - if (pixels) delete[] pixels;
-    pixels = new uint16_t[config.s16_width * config.s16_height];
+    // JJP - moved to disable - if (pixels) delete[] pixels;
+
+    //pixels = new(std::align_val_t(64)) uint16_t[config.s16_width * config.s16_height];
+    constexpr std::size_t alignment = 64;
+    std::size_t size = config.s16_width * config.s16_height * sizeof(uint16_t);
+    // Initialise two buffers. This is used to allow the renderer to read from one buffer while the main thread writes to the other.
+    pixel_buffers[0] = (uint16_t*)boost::alignment::aligned_alloc(alignment, size);
+    pixel_buffers[1] = (uint16_t*)boost::alignment::aligned_alloc(alignment, size);
+    current_pixel_buffer = 0;
+    pixels = pixel_buffers[current_pixel_buffer];
+    // Initialize both buffers to all zeros using std::memset
+    std::memset(pixel_buffers[0], 0, size);
+    std::memset(pixel_buffers[1], 0, size);
 
     // Convert S16 tiles to a more useable format
     tile_layer->init(roms->tiles.rom, config.video.hires != 0);
@@ -84,13 +100,26 @@ int Video::init(Roms* roms, video_settings_t* settings)
     }
 
     enabled = true;
-    return 1;
+    return true;
+}
+
+void Video::swap_buffers()
+{
+    current_pixel_buffer ^= 1;
+    pixels = pixel_buffers[current_pixel_buffer];
+    renderer->swap_buffers();
 }
 
 void Video::disable()
 {
     renderer->disable();
-    if (pixels) delete[] pixels; // JJP
+    if (pixels)
+    {
+        //delete[] pixels;
+        boost::alignment::aligned_free(pixel_buffers[0]);
+        boost::alignment::aligned_free(pixel_buffers[1]);
+        pixels = nullptr;
+    }
     enabled = false;
 }
 
@@ -127,10 +156,10 @@ int Video::set_video_mode(video_settings_t* settings)
         settings->scale = 1;
 
     set_shadow_intensity(settings->shadow == 0 ? shadow::ORIGINAL : shadow::MAME);
+    //renderer->init_palette(config.video.red_curve, config.video.green_curve, config.video.blue_curve);
+    renderer->init_palette(100, 100, 100);
 
-    renderer->init(config.s16_width, config.s16_height, settings->scale, settings->mode, settings->scanlines);
-
-    return 1;
+    return renderer->init(config.s16_width, config.s16_height, settings->scale, settings->mode, settings->scanlines);
 }
 
 // --------------------------------------------------------------------------------------------
@@ -164,7 +193,8 @@ void Video::prepare_frame()
     if (!enabled)
     {
         // Fill with black pixels
-        for (int i = 0; i < config.s16_width * config.s16_height; i++)
+        int i = config.s16_width * config.s16_height; // JJP optimisation
+        while (i--)
             pixels[i] = 0;
     }
     else
@@ -185,8 +215,13 @@ void Video::prepare_frame()
 
 void Video::render_frame()
 {
-    renderer->draw_frame(pixels);
-    renderer->finalize_frame();
+    // draw the frame from the pixel buffer not in use for writing
+    renderer->draw_frame(pixel_buffers[current_pixel_buffer ^ 1]);
+}
+
+void Video::present_frame()
+{
+	renderer->finalize_frame();
 }
 
 bool Video::supports_window()
@@ -327,7 +362,7 @@ void Video::write_pal8(uint32_t* palAddr, const uint8_t data)
 
 void Video::write_pal16(uint32_t* palAddr, const uint16_t data)
 {    
-    uint32_t adr = *palAddr & 0x1fff;
+    uint32_t adr = *palAddr & (0x1fff - 1); // 0x1fff - 1 = 8190;
     palette[adr]   = (data >> 8) & 0xFF;
     palette[adr+1] = data & 0xFF;
     refresh_palette(adr);
@@ -336,7 +371,7 @@ void Video::write_pal16(uint32_t* palAddr, const uint16_t data)
 
 void Video::write_pal32(uint32_t* palAddr, const uint32_t data)
 {    
-    uint32_t adr = *palAddr & 0x1fff;
+    uint32_t adr = *palAddr & (0x1fff - 3); // 0x1fff - 3 = 8188;
 
     palette[adr]   = (data >> 24) & 0xFF;
     palette[adr+1] = (data >> 16) & 0xFF;
@@ -351,7 +386,7 @@ void Video::write_pal32(uint32_t* palAddr, const uint32_t data)
 
 void Video::write_pal32(uint32_t adr, const uint32_t data)
 {    
-    adr &= 0x1fff;
+    adr &= (0x1fff - 3); // 0x1fff - 3 = 8188;
 
     palette[adr]   = (data >> 24) & 0xFF;
     palette[adr+1] = (data >> 16) & 0xFF;
@@ -368,20 +403,20 @@ uint8_t Video::read_pal8(uint32_t palAddr)
 
 uint16_t Video::read_pal16(uint32_t palAddr)
 {
-    uint32_t adr = palAddr & 0x1fff;
+    uint32_t adr = palAddr & (0x1fff - 1); // 0x1fff - 1 = 8190;;
     return (palette[adr] << 8) | palette[adr+1];
 }
 
 uint16_t Video::read_pal16(uint32_t* palAddr)
 {
-    uint32_t adr = *palAddr & 0x1fff;
+    uint32_t adr = *palAddr & (0x1fff - 1); // 0x1fff - 1 = 8190;;
     *palAddr += 2;
     return (palette[adr] << 8)| palette[adr+1];
 }
 
 uint32_t Video::read_pal32(uint32_t* palAddr)
 {
-    uint32_t adr = *palAddr & 0x1fff;
+    uint32_t adr = *palAddr & (0x1fff - 3); // 0x1fff - 3 = 8188;
     *palAddr += 4;
     return (palette[adr] << 24) | (palette[adr+1] << 16) | (palette[adr+2] << 8) | palette[adr+3];
 }

@@ -29,6 +29,16 @@ struct data_settings_t
     std::string file_ttrial_jap;
     std::string file_cont;              // Continous Mode Hi-Scores
     std::string file_cont_jap;
+    std::string file_stats;             // Machine stats (currently number of games played and minutes run time)
+};
+
+struct stats_t
+{
+    // arcade machine stats
+    // these do what mechanical counters would have done on real arcade hardware
+    // saved every minute
+    int playcount;	  // Games played
+    int runtime;          // Total run time in minutes
 };
 
 struct music_t
@@ -81,13 +91,6 @@ struct video_settings_t
     const static int BLARGG_COMPOSITE = 1;
     const static int BLARGG_SVIDEO = 2;
     const static int BLARGG_RGB = 3;
-    const static int BLARGG_MONO = 4;
-
-   // JJP CRT filter settings
-    int mask;              // CRT mask option
-    int mask_strength;     // Blend strength of selected effect
-    int vignette;          // Progressively dims screen away from centre
-    int overdrive;         // Overall gain applied to the whole image
 
     // JJP - Blargg filtering settings
     int blargg;            // Blargg mode - per above constants
@@ -96,16 +99,21 @@ struct video_settings_t
     int brightness;
     int sharpness;
     int gamma;
+    int hue;
     int resolution;
-    // No UI for the following
-    int flicker;           // Slightly dims alternate frames
-    int bleed_limit;       // colour value over which adjacent colours will be impacted
-    int red_curve;         // Curves are exponential adjustments
-    int green_curve;       //   these enable representation of the non-linear response of CRT phosphor
-    int blue_curve;        //   Output value = 255 x ((game generated value/255)^colour_curve)
-    int red_gain;          // Gain values are simple multipliers
-    int green_gain;        //   Output value = curve adjusted input value x colour_gain
-    int blue_gain;         //   (clipped at 255)
+    
+    // JJP - CRT Shader settings
+    int alloff;
+    int shadow_mask;
+    int mask_intensity;
+    int crt_shape; // actually implemented as an SDL2 texture overlay
+    int vignette;
+    int noise;
+    int warpX;
+    int warpY;
+    int desaturate;
+    int desaturate_edges;
+    int brightboost;
 };
 
 struct sound_settings_t
@@ -119,6 +127,7 @@ struct sound_settings_t
     std::vector <music_t> music;
     // JJP - BPM for synth playback
     int playback_speed;
+    int playback_device; // omit from config file or set to -1 to use system default
 };
 
 struct controls_settings_t
@@ -182,6 +191,7 @@ class Config
 {
 public:
     data_settings_t        data;
+    stats_t                stats;
     menu_settings_t        menu;
     video_settings_t       video;
     sound_settings_t       sound;
@@ -189,10 +199,10 @@ public:
     engine_settings_t      engine;
     ttrial_settings_t      ttrial;
     smartypi_settings_t    smartypi;
-	
-	const static int CABINET_MOVING  = 0;
-	const static int CABINET_UPRIGHT = 1;
-	const static int CABINET_MINI    = 2;
+
+    const static int CABINET_MOVING  = 0;
+    const static int CABINET_UPRIGHT = 1;
+    const static int CABINET_MINI    = 2;
 
     // Internal screen width and height
     uint16_t s16_width, s16_height;
@@ -217,6 +227,8 @@ public:
     bool save();
     void load_scores(bool original_mode);
     void save_scores(bool original_mode);
+    void load_stats();
+    void save_stats();
     void load_tiletrial_scores();
     void save_tiletrial_scores();
     bool clear_scores();

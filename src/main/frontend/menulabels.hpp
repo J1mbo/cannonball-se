@@ -19,6 +19,10 @@ const static char* ENTRY_DIPS       = "DIP SWITCHES";
 const static char* ENTRY_CABTESTS   = "HARDWARE TESTS";
 const static char* ENTRY_EXSETTINGS = "EXTRA SETTINGS";
 
+// Machine stats in about menu
+const static char* ENTRY_TOTAL_PLAYS = "TOTAL PLAYS ";
+const static char* ENTRY_RUN_TIME = "TOTAL MACHINE HOURS ";
+
 // Game Modes Menu
 const static char* ENTRY_ENHANCED = "SET ENHANCED MODE";
 const static char* ENTRY_ORIGINAL = "SET ORIGINAL MODE";
@@ -53,38 +57,38 @@ const static char* ENTRY_S_BUGS = "BUG FIXES ";
 
 // Video Menu
 const static char* ENTRY_FPS = "FRAME RATE ";
+const static char* ENTRY_FPS_COUNTER = "FPS COUNTER ";
 const static char* ENTRY_FULLSCREEN = "FULL SCREEN ";
-const static char* ENTRY_SCREENMODE = "SCREEN MODE "; // JJP
+const static char* ENTRY_SCREENMODE = "SCREEN MODE ";
 const static char* ENTRY_WIDESCREEN = "WIDESCREEN ";
 const static char* ENTRY_HIRES = "HIRES ";
 const static char* ENTRY_SCALE = "WINDOW SCALE ";
-// JJP - const static char* ENTRY_SCANLINES = "SCANLINES ";
-const static char* ENTRY_CRT_OVERLAY   = "CRT OVERLAY... "; // JJP - Submenu for the CRT mask overlays
+const static char* ENTRY_CRT_SHADER1 = "CRT SHADER... "; // JJP - Submenu for the CRT mask overlays
 const static char* ENTRY_BLARGG_FILTER = "BLARGG CRT FILTER... "; // JJP - Submenu for the Blargg CRT filter settings
 
-// JJP - CRT Overlay Menu
-const static char* ENTRY_SCANLINES     = "SCANLINES ";
-const static char* ENTRY_MASK          = "MASK  ";
-const static char* ENTRY_MASKSTRENGTH  = "MASK STRENGTH ";
-const static char* ENTRY_VIGNETTE      = "VIGNETTE ";
-const static char* ENTRY_OVERDRIVE     = "OVERDRIVE ";
-const static char* ENTRY_CRT_COLOUR    = "COLOURS...";
+// JJP - CRT Shader Menu
+const static char* ENTRY_SHADOW_MASK = "SHADOW MASK ";
+const static char* ENTRY_CRT_SHAPE = "CRT SHAPE ";
+const static char* ENTRY_VIGNETTE = "VIGNETTE ";
+const static char* ENTRY_NOISE = "NOISE ";
+const static char* ENTRY_WARPX = "WARP X ";
+const static char* ENTRY_WARPY = "WARP Y ";
+const static char* ENTRY_CRT_SHADER2 = "MORE...";
 
-// JJP - CRT Colour processing menu
-const static char* ENTRY_RED_GAIN      = "RED GAIN ";
-const static char* ENTRY_GREEN_GAIN    = "GREEN GAIN ";
-const static char* ENTRY_BLUE_GAIN     = "BLUE GAIN ";
-const static char* ENTRY_RED_CURVE     = "RED CURVE ";
-const static char* ENTRY_GREEN_CURVE   = "GREEN CURVE ";
-const static char* ENTRY_BLUE_CURVE    = "BLUE CURVE ";
+// JJP - CRT Shader More...
+const static char* ENTRY_DESATURATE = "DESATURATION ";
+const static char* ENTRY_DESATURATE_EDGES = "EDGE DESATURATION ";
+const static char* ENTRY_BRIGHTNESS_BOOST = "BRIGHT. BOOST ";
 
-// JJP - Blargg filter sub-menu
-const static char* ENTRY_BLARGG        = "BLARGG FILTER ";
-const static char* ENTRY_SATURATION    = "SATURATION ";
-const static char* ENTRY_CONTRAST      = "CONTRAST ";
-const static char* ENTRY_BRIGHTNESS    = "BRIGHTNESS ";
-const static char* ENTRY_SHARPNESS     = "SHARPNESS ";
-const static char* ENTRY_RESOLUTION    = "RESOLUTION ";
+// JJP - Blargg CRR filter sub-menu
+const static char* ENTRY_BLARGG = "BLARGG NTSC FILTER ";
+const static char* ENTRY_SATURATION = "SATURATION ";
+const static char* ENTRY_CONTRAST = "CONTRAST ";
+const static char* ENTRY_BRIGHTNESS = "BRIGHTNESS ";
+const static char* ENTRY_SHARPNESS = "SHARPNESS ";
+const static char* ENTRY_RESOLUTION = "RESOLUTION ";
+const static char* ENTRY_GAMMA = "GAMMA ";
+const static char* ENTRY_HUE = "HUE ";
 
 // Sound Menu
 const static char* ENTRY_MUTE = "SOUND ";

@@ -33,7 +33,9 @@ class Video
 public:
 	hwsprites* sprite_layer;
     hwtiles* tile_layer;
-	uint16_t *pixels;
+    uint16_t* pixel_buffers[2];
+    uint16_t* pixels;
+    int current_pixel_buffer;
 
     bool enabled;
 
@@ -41,11 +43,13 @@ public:
     ~Video();
     
 	int init(Roms* roms, video_settings_t* settings);
+    void swap_buffers();
     void disable();
     int set_video_mode(video_settings_t* settings);
     void set_shadow_intensity(float);
     void prepare_frame();
     void render_frame();
+    void present_frame(); 
     bool supports_window();
     bool supports_vsync();
 
@@ -82,6 +86,7 @@ private:
     
 	uint8_t palette[S16_PALETTE_ENTRIES * 2]; // 2 Bytes Per Palette Entry
     void refresh_palette(uint32_t);
+
 };
 
 extern Video video;

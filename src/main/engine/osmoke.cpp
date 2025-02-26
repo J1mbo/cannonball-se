@@ -78,8 +78,9 @@ void OSmoke::draw_ferrari_smoke(oentry *sprite)
     if (oferrari.is_slipping && oferrari.wheel_state == OFerrari::WHEELS_ON)
     {
         tick_smoke_anim(sprite, 0, roms.rom0p->read32(outrun.adr.smoke_data + smoke_type_slip));
+        skiddingonroad = true; // JJP
         return;
-    }
+    } else skiddingonroad = false;
 
     // ------------------------------------------------------------------------
     // Wheels Offroad
@@ -115,6 +116,7 @@ void OSmoke::draw_ferrari_smoke(oentry *sprite)
     else if (oferrari.car_state == OFerrari::CAR_SMOKE)
     {
         tick_smoke_anim(sprite, 1, roms.rom0p->read32(outrun.adr.smoke_data + smoke_type_onroad));
+        skiddingonroad = true; // JJP
     }
     // Animation Sequence
     else

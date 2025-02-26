@@ -33,10 +33,18 @@
 // Fine to include on non-windows builds as dummy functions used.
 #include "directx/ffeedback.hpp"
 
-//Multi-threading to enable seperate audio and game threads, as on the S16 system board
+// Multi-threading support
+// This implementation runs three parts of frame rendering in parallel to enable 60fps operation even on
+// Raspberry Pi Zero 2W.
 #include <thread>
 #include <mutex>
-#include <time.h>
+#include <chrono>
+#include <omp.h>
+#include <condition_variable>
+#include <cstdio>
+#include <algorithm>
+#include <atomic>
+
 
 // ------------------------------------------------------------------------------------------------
 // Initialize Shared Variables
@@ -49,7 +57,6 @@ int    cannonball::frame       = 0;
 bool   cannonball::tick_frame  = true;
 int    cannonball::fps_counter = 0;
 
-std::mutex mainMutex; // used to sequence audio/game/sdl threads
 
 // ------------------------------------------------------------------------------------------------
 // Main Variables and Pointers
@@ -83,7 +90,7 @@ static void process_events(void)
             case SDL_KEYDOWN:
                 // Handle key presses.
                 if (event.key.keysym.sym == SDLK_ESCAPE)
-                    state = STATE_QUIT;
+                    cannonball::state = STATE_QUIT;
                 else
                     input.handle_key_down(&event.key.keysym);
                 break;
@@ -130,7 +137,7 @@ static void process_events(void)
 
             case SDL_QUIT:
                 // Handle quit requests (like Ctrl-c).
-                state = STATE_QUIT;
+                cannonball::state = STATE_QUIT;
                 break;
         }
     }
@@ -140,11 +147,8 @@ static void tick()
 {
     frame++;
 
-    // Non standard FPS: Determine whether to tick certain logic for the current frame.
-    if (config.fps == 60)
-        tick_frame = frame & 1;
-    else if (config.fps == 120)
-        tick_frame = (frame & 3) == 1;
+    // Determine whether to tick certain logic for the current frame.
+    tick_frame = (config.fps != 60) || (frame & 1);
 
     process_events();
 
@@ -154,7 +158,7 @@ static void tick()
         oinputs.do_gear();        // Digital Gear
     }
      
-    switch (state)
+    switch (cannonball::state)
     {
         case STATE_GAME:
         {
@@ -162,86 +166,82 @@ static void tick()
             {
                 if (input.has_pressed(Input::TIMER)) outrun.freeze_timer = !outrun.freeze_timer;
                 if (input.has_pressed(Input::PAUSE)) pause_engine = !pause_engine;
-                if (input.has_pressed(Input::MENU))  state = STATE_INIT_MENU;
+                if (input.has_pressed(Input::MENU))  cannonball::state = STATE_INIT_MENU;
             }
 
             if (!pause_engine || input.has_pressed(Input::STEP))
-            {
                 outrun.tick(tick_frame);
-                if (tick_frame) input.frame_done();
-//                osoundint.tick();
-            }
-            else
-            {                
-                if (tick_frame) input.frame_done();
-            }
+            
+            if (tick_frame) input.frame_done();
         }
         break;
 
         case STATE_INIT_GAME:
             if (config.engine.jap && !roms.load_japanese_roms())
             {
-                state = STATE_QUIT;
+                std::cerr << "Japanese ROMs not loaded." << std::endl;
+                cannonball::state = STATE_QUIT;
             }
             else
             {
                 tick_frame = true;
                 pause_engine = false;
                 outrun.init();
-                state = STATE_GAME;
+                cannonball::state = STATE_GAME;
             }
             break;
 
         case STATE_MENU:
             menu->tick();
             input.frame_done();
-            osoundint.tick();
+            //osoundint.tick();
             break;
 
         case STATE_INIT_MENU:
             oinputs.init();
             outrun.outputs->init();
             menu->init();
-            state = STATE_MENU;
+            cannonball::state = STATE_MENU;
             break;
     }
 
-    // Map OutRun outputs to CannonBall devices (SmartyPi Interface / Controller Rumble)
+    // Report output state for SmartyPi
     outrun.outputs->writeDigitalToConsole();
+
     if (tick_frame)
     {
-         input.set_rumble(outrun.outputs->is_set(OOutputs::D_MOTOR), config.controls.rumble);
+        // Controller Rumble. Only rumble in-game.
+
+        // JJP - Enhancement - high frequency rumble 'ticks' when skidding on road
+        if (outrun.SkiddingOnRoad() && outrun.game_state == GS_INGAME)
+            input.set_rumble(true, config.controls.rumble, 1);
+        else
+            input.set_rumble(outrun.outputs->is_set(OOutputs::D_MOTOR), config.controls.rumble, 0);
     }
 }
 
 static void main_sound_loop()
 {
     // This thread basically does what the Z80 on the S16 board is responsible for: the sound.
-    // osound.tick() is called 125 times per second with isolated access to the game engine
-    // via the mutex lock. audio.tick() the outputs the samples via SDL outside of the lock.
+    // osound.tick() is called 125 times per second.
+    // audio.tick() outputs the samples via SDL.
     double targetupdatetime = 0; // our start point
     double interval = 1000.0 / 125.0; // this is the fixed playback rate.
     double waittime; // time to wait in ms
     double sleeptime = 0;
-    struct timespec ts;
-    int res; int audiotick = 0;
-    long thislocktime = 0;
+    int audiotick = 0;
 
     audio.init(); // initialise the audio, but hold in paused state as nothing to play yet
-    while ((state != STATE_MENU) && (state != STATE_GAME))
+
+    while ((cannonball::state != STATE_MENU) && (cannonball::state != STATE_GAME))
         SDL_Delay(long(interval)); // await game engine initialisation
 
     // here we go!
     targetupdatetime = double(SDL_GetTicks()); // our start point
-    while (state != STATE_QUIT) {
-        // check if another thread is running and wait if it is
-        mainMutex.lock();
+
+    while (cannonball::state != STATE_QUIT) {
         targetupdatetime += interval;
-        thislocktime = SDL_GetTicks();
         osoundint.tick(); // generate the game sounds, music etc
-        mainMutex.unlock();
-        //thislocktime = SDL_GetTicks() - thislocktime;
-        //if (thislocktime > maxlocktime) maxlocktime = thislocktime;
 
         // now pass things over to SDL, on first pass this will enable the audio too
         audio.tick();
@@ -252,12 +252,11 @@ static void main_sound_loop()
             // we wait a maximum of one update interval, so in this case,
             // reset timer as likely SDL_GetTicks wrapped
             targetupdatetime = double(SDL_GetTicks());
-            std::cout << "Audio resync due to SDL timer overflow" << std::endl;
+            std::cout << "SDL timer overflow" << std::endl;
         } else if (waittime > 0) {
             SDL_Delay(Uint32(waittime));
-        } else if (waittime <= -40) {
-            // we are more than 40ms behind; perhaps the video mode was reset
-            // 40ms aligns with SDL2 SND_DELAY value also
+        } else if (waittime <= -48) {
+            // we are more than 48ms behind; perhaps the video mode was reset
             audio.resume_audio(); // clears buffers and re-establishes delay
             targetupdatetime = double(SDL_GetTicks()); // reset timer
             std::cout << "Audio resync (possible CPU saturation)" << std::endl;
@@ -266,60 +265,360 @@ static void main_sound_loop()
     audio.stop_audio(); // we're done
 }
 
+#ifdef __linux__
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <linux/watchdog.h>
+#endif
 
-static void main_loop()
+// Combined thread: updates play stats and kicks the watchdog (on linux)
+static void play_stats_and_watchdog_updater()
 {
-    // FPS Counter (If Enabled)
-    Timer fps_count;
-    int frame = 0;
-    fps_count.start();
+    // this thread saves play stats periodically to the associated config file
+    // e.g. runtime and number of plays
+    // Updates every minute in a seperate thread since SD-card access can be slow
+    // and we don't want to hold up the game engine.
+    // Also kicks system watchdog when compiled for Linux
 
-    // General Frame Timing
-    bool vsync = config.video.vsync == 1 && video.supports_vsync();
-    Timer frame_time;
-    int t;                              // Actual timing of tick in ms as measured by SDL (ms)
-    double deltatime  = 0;              // Time we want an entire frame to take (ms)
-    int deltaintegral = 0;              // Integer version of above
-
-    while (state != STATE_QUIT)
+#ifdef __linux__
+// Open the watchdog device. Note - device name is defined in globals.hpp
+    int wd_fd = open(SYSTEM_WATCHDOG, O_WRONLY);
+    if (wd_fd < 0)
     {
-        // check if another thread is running and wait if it is
-        mainMutex.lock();
-        frame_time.start();
-        // Tick Engine
-        tick();
-        mainMutex.unlock();
-
-        // Draw SDL Video
-        video.prepare_frame();
-        video.render_frame();
-
-        // Calculate Timings. Cap Frame Rate. Note this might be trumped by V-Sync
-        if (!vsync)
+        perror("Failed to open " SYSTEM_WATCHDOG);
+    }
+    else
+    {
+        // Set the watchdog timeout (in seconds)
+        int timeout = 15; // 15 seconds is the maximum supported on Raspberry Pi
+        if (ioctl(wd_fd, WDIOC_SETTIMEOUT, &timeout) < 0)
         {
-            deltatime += (frame_ms * audio.adjust_speed());
-            deltaintegral = (int)deltatime;
-            t = frame_time.get_ticks();
-            
-            if (t < deltatime)
-                SDL_Delay((Uint32)(deltatime - t));
+            perror("Could not set watchdog timeout");
+            close(wd_fd);
+            wd_fd = -1;
+        }
+        else
+        {
+            printf("Watchdog timeout set to %d seconds.\n", timeout);
+        }
+    }
+#endif
+    
+    Timer run_time;
+    run_time.start();
+    while (cannonball::state != STATE_QUIT) {
+        if ((run_time.get_ticks() >= 60000) &&
+            (cannonball::state == STATE_GAME) )
+        {
+            config.stats.runtime++;  // increment machine run-time counter by 1 (minute)
+            config.save_stats();     // save the stats to the file
+            run_time.start();        // reset the timer
+        }
+        SDL_Delay(500); // wait 0.5 seconds before next check
 
-            deltatime -= deltaintegral;
+#ifdef __linux__
+        // Kick the watchdog device if it's open.
+        if (wd_fd >= 0)
+        {
+            if (write(wd_fd, "\0", 1) < 0)
+            {
+                perror("Failed to write to " SYSTEM_WATCHDOG);
+            }
+        }
+#endif
+    }
+#ifdef __linux__
+    // Disable the watchdog on exit.
+    if (wd_fd >= 0)
+    {
+        int disable = WDIOS_DISABLECARD;
+        if (ioctl(wd_fd, WDIOC_SETOPTIONS, &disable) < 0)
+        {
+            perror("Could not disable watchdog");
+        }
+        close(wd_fd);
+        printf("Watchdog disabled and closed.\n");
+    }
+#endif
+}
+
+/*
+#pragma omp sections nowait
+{
+#pragma omp section
+    {
+        // draw the current frame n as the S16 would output.
+        // This can be relatively heavy-weight e.g. in the arches section
+        video.prepare_frame();
+    }
+#pragma omp section
+    {
+        // Convert the last frame (n-1) to RGB for presentation,
+        // this includes Blargg NTSC filter if enabled.
+        video.render_frame();
+    }
+} // no implicit barrier here
+*/
+
+
+enum class WorkerTask {
+    None,
+    PrepareFrame,
+    RenderFrame,
+    Quit
+};
+
+struct WorkerState {
+    std::mutex mtx;
+    std::condition_variable cv;
+
+    // The current task for this worker
+    WorkerTask task = WorkerTask::None;
+    // Used to track if the worker has finished its current task
+    bool taskDone = false;
+};
+
+void workerThreadFunc(WorkerState& state)
+{
+    while (true)
+    {
+        // 1. Wait for a task to be assigned
+        {   
+            std::unique_lock<std::mutex> lock(state.mtx);
+            // Wait until we have a non-None task
+            state.cv.wait(lock, [&state] {
+                return state.task != WorkerTask::None;
+                });
+
+            if (state.task == WorkerTask::Quit) {
+                return; // exit the while(true)
+            }
+        } // release lock before doing the actual work
+
+        // 2. Perform the assigned task
+        if (state.task == WorkerTask::PrepareFrame)
+        {
+            video.prepare_frame();
+        }
+        else if (state.task == WorkerTask::RenderFrame)
+        {
+            video.render_frame();
         }
 
-        if (config.video.fps_count)
+        // 3. Mark that the task is done and go back to waiting
         {
-            frame++;
-            // After one second has elapsed...
-            if (fps_count.get_ticks() >= 1000)
-            {
-                fps_counter = frame;
-                frame       = 0;
-                fps_count.start();
-            }
+            std::unique_lock<std::mutex> lock(state.mtx);
+            state.taskDone = true;
+
+            // Reset the task to None so we don't re-run it
+            state.task = WorkerTask::None;
+            state.cv.notify_one(); // signal that the task is done
         }
     }
 }
+
+
+
+static void main_loop()
+{
+    // Determine whether vsync is enabled (for future use).
+    bool vsync = false;// (config.video.vsync == 1) && video.supports_vsync();
+
+    // Get the configured FPS (should be either 30 or 60)
+    int configured_fps = config.fps;
+    double targetFPS = static_cast<double>(configured_fps);
+    // Duration per frame (in seconds)
+    auto frameDuration = std::chrono::duration<double>(1.0 / targetFPS);
+
+    // Set the next frame time to now + frameDuration.
+    auto nextFrameTime = std::chrono::high_resolution_clock::now() + frameDuration;
+
+    // For diagnostics:
+    int frameCounter = 0;
+    int renderedFrames = 0;
+    int droppedFrames = 0;
+    auto fpsTimer = std::chrono::high_resolution_clock::now();
+
+    // Performance check variables (10-second evaluation).
+    auto performanceCheckStart = std::chrono::high_resolution_clock::now();
+    int totalRenderedFramesForCheck = 0;
+    // For 30 FPS, accumulate sleep time and frame count.
+    std::chrono::duration<double> totalSleepTime(0);
+    int frameCountForSleep = 0;
+
+    // Launch worker threads.
+    WorkerState worker1, worker2;
+    std::thread t1(workerThreadFunc, std::ref(worker1));
+    std::thread t2(workerThreadFunc, std::ref(worker2));
+
+    while (cannonball::state != STATE_QUIT)
+    {
+        frameCounter++;
+        bool forceRender = ((frameCounter % 4) == 0);
+        auto now = std::chrono::high_resolution_clock::now();
+
+        // If running at 30 FPS, count this frame for sleep evaluation.
+        frameCountForSleep += (configured_fps == 30);
+
+
+        // If we're behind schedule and not forcing a render, drop this frame.
+        if (!forceRender && now > nextFrameTime)
+        {
+            auto delay = now - nextFrameTime;
+            // If we're more than one frame behind, re-sync the next frame time.
+            if (delay > frameDuration) {
+                nextFrameTime = now + frameDuration;
+            }
+            else {
+                ++droppedFrames;
+                // Update game logic to keep simulation current.
+                tick();
+                // Advance by one frame.
+                nextFrameTime += frameDuration;
+                continue; // Skip heavy work this frame.
+            }
+        }
+
+        if (!vsync) {
+            // If we're ahead of schedule (and not forcing a render), sleep until it's time.
+            if (!forceRender && now < nextFrameTime)
+            {
+                auto sleepDuration = nextFrameTime - now;
+                // Only record sleep if we're at 30 FPS.
+                totalSleepTime += sleepDuration * (configured_fps == 30);
+
+                std::this_thread::sleep_for(sleepDuration);
+                now = std::chrono::high_resolution_clock::now();
+            }
+        }
+
+        // Update game logic.
+        tick();
+
+        // ---- LAUNCH WORKER TASKS & RENDERING ----
+
+        // Signal worker1 for PrepareFrame.
+        {
+            std::unique_lock<std::mutex> lock(worker1.mtx);
+            worker1.task = WorkerTask::PrepareFrame;
+            worker1.taskDone = false;
+            worker1.cv.notify_one();
+        }
+
+        // Signal worker2 for RenderFrame.
+        {
+            std::unique_lock<std::mutex> lock(worker2.mtx);
+            worker2.task = WorkerTask::RenderFrame;
+            worker2.taskDone = false;
+            worker2.cv.notify_one();
+        }
+
+        // Run the GPU-bound work on the main thread.
+        video.present_frame();
+        renderedFrames++;
+        totalRenderedFramesForCheck++;  // For performance evaluation
+
+        // Wait for the worker threads to finish.
+        {
+            std::unique_lock<std::mutex> lock(worker1.mtx);
+            worker1.cv.wait(lock, [&worker1] { return worker1.taskDone; });
+        }
+        {
+            std::unique_lock<std::mutex> lock(worker2.mtx);
+            worker2.cv.wait(lock, [&worker2] { return worker2.taskDone; });
+        }
+
+        // Swap the buffers for the next frame.
+        video.swap_buffers();
+
+        // Update the next frame time.
+        nextFrameTime += frameDuration;
+
+        // Record FPS info on console (every 2 seconds) and FPS on-screen if enabled
+        auto elapsed = std::chrono::high_resolution_clock::now() - fpsTimer;
+        if (elapsed >= std::chrono::seconds(2))
+        {
+            int fps = renderedFrames / 2;
+            int totalFrames = renderedFrames + droppedFrames;
+            int droppedPercent = (totalFrames > 0) ? (droppedFrames * 100 / totalFrames) : 0;
+            printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
+            fflush(stdout);
+            fps_counter = fps;
+            renderedFrames = 0;
+            droppedFrames = 0;
+            fpsTimer = std::chrono::high_resolution_clock::now();
+        }
+
+        // ---- PERFORMANCE EVALUATION (every 10 seconds) ----
+        auto performanceElapsed = std::chrono::high_resolution_clock::now() - performanceCheckStart;
+        if (performanceElapsed >= std::chrono::seconds(10))
+        {
+            double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(performanceElapsed).count();
+            if (configured_fps == 60)
+            {
+                // Evaluate average FPS at 60 FPS.
+                double avgFPS = totalRenderedFramesForCheck / seconds;
+                if (avgFPS < 50.0) {
+                    printf("\nPerformance check: average FPS %.2f too low. Switching to 30 FPS.\n", avgFPS);
+                    config.video.fps = 0; // 0 = 30 fps
+                    config.set_fps(config.video.fps);
+                }
+            }
+            else if (configured_fps == 30)
+            {
+                // Evaluate average sleep fraction at 30 FPS.
+                double avgSleepFraction = 0.0;
+                if (frameCountForSleep > 0) {
+                    avgSleepFraction = totalSleepTime.count() / (frameDuration.count() * frameCountForSleep);
+                }
+                if (avgSleepFraction > 0.6) {
+                    printf("\nPerformance check: average sleep fraction %.2f%%. Switching to 60 FPS.\n", avgSleepFraction * 100.0);
+                    config.video.fps = 2; // 2 = 60 fps
+                    config.set_fps(config.video.fps);
+                }
+            }
+            // Reset performance evaluation counters.
+            performanceCheckStart = std::chrono::high_resolution_clock::now();
+            totalRenderedFramesForCheck = 0;
+            totalSleepTime = std::chrono::duration<double>(0);
+            frameCountForSleep = 0;
+        }
+
+        // Update control variables if there is an FPS change
+        if (config.fps != configured_fps)
+        {
+            configured_fps = config.fps;
+            targetFPS = static_cast<double>(configured_fps);
+            frameDuration = std::chrono::duration<double>(1.0 / targetFPS);
+            nextFrameTime = std::chrono::high_resolution_clock::now() + frameDuration;
+
+            // Determine if we can rely on vsync (for 60fps mode)
+            SDL_DisplayMode displayMode;
+            if (SDL_GetCurrentDisplayMode(0, &displayMode) == 0) {
+                // Can retrieve monitor refresh rate
+                vsync = (displayMode.refresh_rate == configured_fps) && SDL_GL_GetSwapInterval();
+                // printf("\nvsync: %i\n", vsync);
+            }
+        }
+    }
+
+    // Signal the worker threads to quit.
+    {
+        std::unique_lock<std::mutex> lock(worker1.mtx);
+        worker1.task = WorkerTask::Quit;
+        worker1.cv.notify_one();
+    }
+    {
+        std::unique_lock<std::mutex> lock(worker2.mtx);
+        worker2.task = WorkerTask::Quit;
+        worker2.cv.notify_one();
+    }
+    t1.join();
+    t2.join();
+    printf("\n");
+}
+
 
 // Very (very) simple command line parser.
 // Returns true if everything is ok to proceed with launching th engine.
@@ -363,15 +662,34 @@ int main(int argc, char* argv[])
         return 0;
     }
 
+    // Load machine stats e.g. playcount and runtime (defaults to 0 each if file not present)
+    config.load_stats();
+
     // Load gamecontrollerdb.txt mappings
     if (SDL_GameControllerAddMappingsFromFile((config.data.res_path + "gamecontrollerdb.txt").c_str()) == -1)
-        std::cout << "Unable to load controller mapping" << std::endl;
+        std::cout << "Warning: Unable to load game controller mapping file." << std::endl;
 
     // Initialize timer and video systems
+    // On Linux with RPi4 in desktop environment, x11 is default but will cap full-screen to 30fps with vsync enabled.
+    // Wayland allows 60fps full-screen.
+#ifdef __linux__ 
+    //SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland");
+  #define SDL_HINT_QTWAYLAND_WINDOW_FLAGS "StaysOnTop BypassWindowManager"
+    std::cout << "Cannonball requires wayland video driver for 60fps operation under desktop environment. Start cannonball like:" << std::endl;
+    std::cout << "$ SDL_VIDEODRIVER=""wayland"" build/cannonball" << std::endl;
+#endif
+    SDL_SetHint(SDL_HINT_APP_NAME, "Cannonball");
+    //SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "1");
     if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) == -1)
     {
         std::cerr << "SDL Initialization Failed: " << SDL_GetError() << std::endl;
         return 1;
+    }
+
+    printf("Available SDL video drivers:\n");
+    int ndri = SDL_GetNumVideoDrivers();
+    for (int i = 0; i < ndri; i++) {
+        printf("   %s\n", SDL_GetVideoDriver(i));
     }
 
     // Load patched widescreen tilemaps
@@ -383,15 +701,22 @@ int main(int argc, char* argv[])
     if (!video.init(&roms, &config.video))
         quit_func(1);
 
-    // Initialize SDL Audio
-//    audio.init();
+    cannonball::state = config.menu.enabled ? STATE_INIT_MENU : STATE_INIT_GAME;
 
-    state = config.menu.enabled ? STATE_INIT_MENU : STATE_INIT_GAME;
+    /* Initalize SDL Controls */
 
-    // Initalize SDL Controls
+    // If a controller has Rumble feature that is supported by SDL, it will be enabled here.
+    // If the controller has Rumble not supported by SDL, it can be used anyway via /dev/hidraw.
+    // In that case, Input::set_rumble() needs to be amended for the specific controller.
+    // Controller Rumble function is controlled in tick() above.
+
     input.init(config.controls.pad_id,
                config.controls.keyconfig, config.controls.padconfig, 
                config.controls.analog,    config.controls.axis, config.controls.invert, config.controls.asettings);
+
+    // Regardless to rumble, if haptic is enabled in config.xml, this is handled via ffeedback.cpp using either
+    // DirectX (Windows) or /dev/input/event on Linux. This also includes control of real cabinet hardware via
+    // SmartyPi. Therefore, haptic takes priority over simple rumble.
 
     if (config.controls.haptic) 
         config.controls.haptic = forcefeedback::init(config.controls.max_force, config.controls.min_force, config.controls.force_duration);
@@ -401,9 +726,15 @@ int main(int argc, char* argv[])
     menu->populate();
 
     // start the game threads
-    std::thread sound(main_sound_loop); // Z80 thread
-    main_loop();  // Loop until we quit the app
+	std::thread sound(main_sound_loop); // Sound thread (Z80 on S16)
+    std::thread stats(play_stats_and_watchdog_updater); // Play stats file updater thread
+    
+    // Now start the main game loop, which includes SDL video and input
+	main_loop();
+
+	// Wait for threads to finish
     sound.join();
+    stats.join();
     quit_func(0);
 
     // Never Reached

@@ -1,4 +1,5 @@
-#include <cstring> // memcpy
+//#include <cstring> // memcpy
+#include <algorithm> // Required for std::fill_n
 #include "hwvideo/hwroad.hpp"
 #include "globals.hpp"
 #include "frontend/config.hpp"
@@ -454,7 +455,11 @@ void HWRoad::render_background_hires(uint16_t* pixels)
         }
 
         // fill the scanline with color
-        if (color != -1) 
+        // JJP - this is in the hot-path, over 5% CPU spent here
+        // Optimise by replacing per-pixel processing with per-two-lines processing
+        // Assumes the memcpy outside the loop is redundant when color = -1
+        /* Original Code: */
+        /* if (color != -1)
         {
             uint16_t* pPixel = pixels + (y * config.s16_width);
             color |= color_offset3;
@@ -465,6 +470,18 @@ void HWRoad::render_background_hires(uint16_t* pixels)
 
         // Hi-Res Mode: Copy extra line of background
         memcpy(pixels + ((y+1) * config.s16_width), pixels + (y * config.s16_width), sizeof(uint16_t) * config.s16_width);
+        */
+
+        // Hi-speed version - might leave road with gaps
+        if (color != -1)
+        {
+            uint16_t* pPixel = pixels + (y * config.s16_width);
+
+            // Fill both y and y+1 scanlines with final_color
+            // Total pixels to fill: width * 2
+            std::fill_n(pPixel, (config.s16_width << 1), static_cast<uint16_t>(color | color_offset3));
+        }
+        
     }
 }
 
@@ -489,6 +506,19 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
         {
             { 0x80,0x81,0x81,0x87,0,0,0,0x00 },
             { 0x81,0x81,0x81,0x8f,0,0,0,0x80 }
+        };
+        // Define a lookup table mapping (pix0, pix1) to color indices
+        // for the hot path
+        static const ALIGN64 uint8_t priority_lookup[8][8] = {
+            // pix1: 0  1  2  3  4  5  6  7
+            {   0,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 0
+            {   1,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 1
+            {   1,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 2
+            {   1,  1,  1,  0,  0,  0,  0, 1 }, // pix0 = 3
+            {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 4
+            {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 5
+            {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 6
+            {   0,  0,  0,  0,  0,  0,  0, 0 }  // pix0 = 7
         };
 
         uint32_t data0 = roadram[0x000 + yy];
@@ -572,6 +602,7 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
         // Shift road dependent on whether we are in widescreen mode or not
         uint16_t s16_x = 0x5f8 + config.s16_x_off;
         uint16_t* const pPixel = pixels + (y * config.s16_width);
+        uint16_t* pP;
 
         // draw the road
         switch (road_control & 3)
@@ -592,20 +623,24 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
             case 1:
                 hpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
                 hpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
-                for (x = 0; x < config.s16_width; x++) 
+                pP = pPixel;
+                for (x = 0; x < config.s16_width; x+=2) 
                 {
+                    // JJP - this is the hot path - optimised via pre-computed
+                    // lookup table & unroll to avoid hpos calculation tests
                     int pix0 = (hpos0 < 0x200) ? src0[hpos0] : 3;
                     int pix1 = (hpos1 < 0x200) ? src1[hpos1] : 3;
-                    if (((priority_map[0][pix0] >> pix1) & 1) != 0)
-                        pPixel[x] = color_table[0x10 + pix1];
-                    else
-                        pPixel[x] = color_table[0x00 + pix0];
-
-                    if (x & 1)
-                    {
-                        hpos0 = (hpos0 + 1) & 0xfff;
-                        hpos1 = (hpos1 + 1) & 0xfff;
+                    
+                    if (priority_lookup[pix0][pix1]) {
+                        *(pP++) = color_table[0x10 + pix1];
+                        *(pP++) = color_table[0x10 + pix1];
                     }
+                    else {
+                        *(pP++) = color_table[0x00 + pix0];
+                        *(pP++) = color_table[0x00 + pix0];
+                    }
+                    hpos0 = (hpos0 + 1) & 0xfff;
+                    hpos1 = (hpos1 + 1) & 0xfff;
                 }
                 break;
 

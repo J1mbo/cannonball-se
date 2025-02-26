@@ -13,6 +13,17 @@
 #include <cstdlib> // abs
 #include "sdl2/input.hpp"
 
+#ifndef WIN32
+// JJP - Includes for udev, to find gamepad haptics where not supported by SDL
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <libudev.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#endif
+
 Input input;
 
 Input::Input(void)
@@ -31,6 +42,7 @@ Input::~Input(void)
 
 void Input::init(int pad_id, int* key_config, int* pad_config, int analog, int* axis, bool* invert, int* analog_settings)
 {
+//    std::cout << "Setting up key mappings." << std::endl; 
     this->pad_id      = pad_id;
     this->key_config  = key_config;
     this->pad_config  = pad_config;
@@ -49,10 +61,10 @@ void Input::open_joy()
     {
         stick = SDL_JoystickOpen(pad_id);
 
-        // If this is a recognized Game Controller, let's pull some useful default information
+        // If this is a recognized Game Controller, set up buttons and attempt to configure rumble support
         if (SDL_IsGameController(pad_id))
         {
-            std::cout << "Game controller detected." << std::endl;
+            std::cout << "Game controller detected";
             controller = SDL_GameControllerOpen(pad_id);
 
             bind_axis(SDL_CONTROLLER_AXIS_LEFTX, 0);                // Analog: Default Steering Axis
@@ -70,8 +82,96 @@ void Input::open_joy()
             bind_button(SDL_CONTROLLER_BUTTON_DPAD_DOWN, 9);
             bind_button(SDL_CONTROLLER_BUTTON_DPAD_LEFT, 10);
             bind_button(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 11);
-        }
 
+#ifdef WIN32
+            std::cout << " without SDL rumble support." << std::endl;
+#else
+            // Linux only - Check for rumble support
+            if (SDL_GameControllerHasRumble(controller)) {
+                std::cout << " with SDL rumble support." << std::endl;
+            }
+            else {
+                std::cout << " without SDL rumble support." << std::endl;
+
+                // JJP - try and find if rumble is supported via /dev/hidraw
+                // First, get the vendor ID
+                SDL_Joystick* joy = SDL_GameControllerGetJoystick(controller);
+                Uint16 vendor = 0;
+                Uint16 product = 0;
+                if (!joy) {
+                    fprintf(stderr, "SDL_GameControllerGetJoystick Error: %s\n", SDL_GetError());
+                }
+                else {
+                    // Get the vendor ID and product ID.
+                    vendor = SDL_JoystickGetVendor(joy);
+                    product = SDL_JoystickGetProduct(joy);
+                    // printf("Vendor ID: 0x%04x\n", vendor);
+                    // printf("Product ID: 0x%04x\n", product);
+                }
+
+                // Next, try and find the device via udev
+                // Create a new udev context.
+                struct udev* udev = udev_new();
+                if (!udev) {
+                    fprintf(stderr, "Cannot create udev context\n");
+                }
+                else {
+                    // Create an enumeration object and scan for hidraw devices.
+                    struct udev_enumerate* enumerate = udev_enumerate_new(udev);
+                    udev_enumerate_add_match_subsystem(enumerate, "hidraw");
+                    udev_enumerate_scan_devices(enumerate);
+
+                    // Get a list of all matching devices.
+                    struct udev_list_entry* devices = udev_enumerate_get_list_entry(enumerate);
+                    struct udev_list_entry* entry;
+
+                    // Iterate over each hidraw device.
+                    udev_list_entry_foreach(entry, devices) {
+                        // Note - exits on first succesful open
+                        const char* sysPath = udev_list_entry_get_name(entry);
+                        struct udev_device* dev = udev_device_new_from_syspath(udev, sysPath);
+
+                        // Get the device node (for example: /dev/hidraw0)
+                        const char* devNode = udev_device_get_devnode(dev);
+
+                        // Walk up the device tree to find the USB device.
+                        struct udev_device* usb_dev = udev_device_get_parent_with_subsystem_devtype(
+                            dev, "usb", "usb_device");
+
+                        if (usb_dev) {
+                            const char* vendor_str = udev_device_get_sysattr_value(usb_dev, "idVendor");
+                            const char* product_str = udev_device_get_sysattr_value(usb_dev, "idProduct");
+
+                            Uint16 vendor_udev = (Uint16)strtol(vendor_str, NULL, 16);
+                            Uint16 product_udev = (Uint16)strtol(product_str, NULL, 16);
+
+                            if (vendor_str && product_str) {
+                                //printf("Found hidraw device %s: vendor=%s, product=%s\n",
+                                //    devNode, vendor_str, product_str);
+                                // Check if these match joystick/wheel IDs.
+                                if ((vendor == vendor_udev) && (product == product_udev)) {
+                                    // Device matches; devNode (e.g. /dev/hidrawX) can be used to control rumble
+                                    hidraw_device = open(devNode, O_RDWR); // O_WRONLY);
+                                    if (hidraw_device < 0)
+                                        fprintf(stderr, "Rumbler detected but could not open device\n");
+                                    else {
+                                        printf("Successfully opened rumble device at %s\n", devNode);
+                                        rumble_supported = true;
+                                        udev_device_unref(dev);
+                                        break;
+                                    }
+                                }
+                            }
+                        } // if (usb_dev)
+                        udev_device_unref(dev);
+                    } // udev_list_entry_foreach
+                    // Clean up.
+                    udev_enumerate_unref(enumerate);
+                    udev_unref(udev);
+                } // if (!udev)/else
+            } // if (SDL_GameControllerHasRumble(controller))/else
+#endif
+        } // if (SDL_IsGameController(pad_id))
         haptic = SDL_HapticOpen(pad_id);
         if (haptic)
         {
@@ -330,7 +430,7 @@ void Input::handle_joy_down(SDL_JoyButtonEvent* evt)
     if (controller != NULL) return;
     // Latch joystick button presses for redefines
     joy_button = evt->button;
-    std::cout << "Joystick button pressed event: Button " << joy_button << std::endl;
+//    std::cout << "Joystick button pressed event: Button " << joy_button << std::endl;
     handle_joy(evt->button, true);
 }
 
@@ -383,12 +483,59 @@ void Input::handle_joy_hat(SDL_JoyHatEvent* evt)
     keys[RIGHT] = evt->value == SDL_HAT_RIGHT;
 }
 
-void Input::set_rumble(bool enable, float strength)
+void Input::set_rumble(bool enable, float strength, int mode)
 {
-    if (haptic == NULL || !rumble_supported || strength == 0) return;
+#ifndef WIN32
+    if (hidraw_device >= 0) {
+        // takes precidence over SDL native support
 
-    if (enable)
-        SDL_HapticRumblePlay(haptic, strength, 1000 / 30);
-    else
-        SDL_HapticRumbleStop(haptic);
+        // Prepare a 3-byte report:
+        //   Byte 0: Command type (0x00 = both motors, 0x01 for high-frequency only)
+        //   Byte 1: Intensity motor 1 - 0x0* (off) to 0xF* (max)
+        //   Byte 2: Intensity motor 2 - 0x0* (off) to 0xF* (max)
+        // When command = 0x00, byte 1 = low frequency motor and byte 2 is high frequency motor.
+        // When command = 0x01, byte 1 = high frequency motor and byte 2 is ignored.
+
+        uint8_t report[3] = { 0 };
+
+        if (mode == 0) {
+            // original code controlled rumble effect e.g. crash sequence
+            if (enable) {
+                report[0] = 0x01;
+                report[1] = 0xF0; // on
+                report[2] = 0x00;
+            }
+            else {
+                report[0] = 0x00;
+                report[1] = 0x00; // off
+                report[2] = 0x00;
+            }
+        }
+        else {
+            // enhancement - pulsing effect when skidding on road
+            if (enable) {
+                report[0] = 0x00;
+                report[1] = 0xA0;
+                report[2] = 0xA0;
+            }
+            else {
+                report[0] = 0x00;
+                report[1] = 0x00; // off
+                report[2] = 0x00;
+            }
+        }
+
+        // Write the report to the hidraw device. Ignore any errors; will be updated next frame anyway
+        size_t bytesWritten = write(hidraw_device, report, sizeof(report));
+    }
+    else 
+#endif
+    {
+        if (haptic == NULL || !rumble_supported || strength == 0) return;
+
+        if (enable)
+            SDL_HapticRumblePlay(haptic, strength, 1000 / 30);
+        else
+            SDL_HapticRumbleStop(haptic);
+    }
 }
