@@ -4,11 +4,11 @@
 
     Also abstracted here, so the more complex OSound class isn't exposed
     to the main code directly
-    
+
     Copyright Chris White.
     See license.txt for more details.
 
-    James Pearce (C) 2025 - thread-safe modification.
+    James Pearce (C) 2025 - Removed dependency on FPS
 ***************************************************************************/
 
 #include "engine/outrun.hpp"
@@ -32,13 +32,13 @@ OSoundInt::~OSoundInt()
 void OSoundInt::init()
 {
     if (pcm == NULL)
-        pcm = new SegaPCM(SOUND_CLOCK, &roms.pcm, pcm_ram, SegaPCM::BANK_512);       
+        pcm = new SegaPCM(SOUND_CLOCK, &roms.pcm, pcm_ram, SegaPCM::BANK_512);
 
     if (ym == NULL)
         ym = new YM2151(0.5f, SOUND_CLOCK);
 
-    pcm->init(config.sound.rate); // JJP - FPS not used
-    ym->init(config.sound.rate);  // JJP - FPS not used
+    pcm->init(config.sound.rate);
+    ym->init(config.sound.rate);
 
     reset();
 
@@ -56,15 +56,6 @@ void OSoundInt::init()
 // Source: 0x5086
 void OSoundInt::reset()
 {
-    // Lock the mutex for the duration of this function
-#ifdef DEBUG
-    printf("1\n");
-#endif
-//    std::lock_guard<std::mutex> lock(mtx);
-#ifdef DEBUG
-    printf("2\n");
-#endif
-
     sound_counter = 0;
     sound_head    = 0;
     sound_tail    = 0;
@@ -75,24 +66,8 @@ void OSoundInt::reset()
 
 void OSoundInt::tick()
 {
-/*JJP
-    // The audio code is updated 125 times per second
-    audio_ticks += (125.0 / config.fps);
-
-    // Ticks per frame will vary between 2 and 3 at 60fps. 
-    const int max_ticks = (int) audio_ticks;
-
-    for (int i = 0; i < max_ticks; i++)
-    {
-        play_queued_sound(); // Process audio commands from main program code
-        osound.tick();       // Tick Ported Z80 Audio Code
-    }
-
-    audio_ticks -= max_ticks;*/
-
-    play_queued_sound(); // JJP
-    osound.tick();       // JJP
-
+    play_queued_sound();
+    osound.tick();
 }
 
 // ----------------------------------------------------------------------------
@@ -104,15 +79,6 @@ void OSoundInt::tick()
 // Source: 0x564E
 void OSoundInt::play_queued_sound()
 {
-    // Lock the mutex for the duration of this function
-#ifdef DEBUG
-    printf("3\n");
-#endif
-//    std::lock_guard<std::mutex> lock(mtx);
-#ifdef DEBUG
-    printf("4\n");
-#endif
-
     if (!has_booted)
     {
         sound_head = 0;
@@ -120,7 +86,7 @@ void OSoundInt::play_queued_sound()
         return;
     }
 
-    // Process the lot in one go. 
+    // Process the lot in one go.
     for (int counter = 0; counter < 8; counter++)
     {
         // Process queued sound
@@ -181,15 +147,6 @@ void OSoundInt::queue_sound(uint8_t snd)
 
 void OSoundInt::add_to_queue(uint8_t snd)
 {
-    // Lock the mutex for the duration of this function
-#ifdef DEBUG
-    printf("5\n");
-#endif
-//    std::lock_guard<std::mutex> lock(mtx);
-#ifdef DEBUG
-    printf("6\n");
-#endif
-
     // Add sound to the tail end of the queue
     queue[sound_tail] = snd;
     sound_tail = (sound_tail + 1) & QUEUE_LENGTH;
@@ -198,15 +155,6 @@ void OSoundInt::add_to_queue(uint8_t snd)
 
 void OSoundInt::queue_clear()
 {
-    // Lock the mutex for the duration of this function
-#ifdef DEBUG
-    printf("7\n");
-#endif
-//    std::lock_guard<std::mutex> lock(mtx);
-#ifdef DEBUG
-    printf("8\n");
-#endif
-
     sound_tail = 0;
     sounds_queued = 0;
 }

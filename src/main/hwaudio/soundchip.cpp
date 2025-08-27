@@ -28,8 +28,6 @@ void SoundChip::init(uint8_t channels, int32_t sample_freq)
     this->sample_freq = sample_freq;
     this->channels    = channels;
 
-std::cout << "SoundChip::init sample rate " << sample_freq << std::endl; // JJP DEBUG
-
     frame_size =  sample_freq / 125;
     buffer_size = frame_size * channels;
 

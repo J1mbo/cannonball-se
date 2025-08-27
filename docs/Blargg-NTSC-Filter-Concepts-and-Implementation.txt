@@ -1,3 +1,8 @@
+The following are extracts from posts by Shay Green ('Blargg'), the original author of the NTSC filter used by CannonBall-SE. Together, the snippets help explain why CRT based images, specifically those that have been through NTSC encoding, look quite different to the same RGB data displayed on an LCD panel.
+
+Whilst the SEGA Outrun arcade machines used RGB connections, the screens image is still quite different. Blargg's filter includes an 'RGB' preset that, when combined with the other processing techniques included in CannonBall-SE, help recreate a softer, more analogue feel that many users will find visually appealing. So those wanting to soften the game image further and recreate a touch of 'shimmer', the Composite preset at 60fps does exactly that.
+
+
 -----------------------------------------------------------------------
 https://ubm-twvideo01.s3.amazonaws.com/o1/vault/GD_Mag_Archives/GDM_March_2013.pdf
 -----------------------------------------------------------------------

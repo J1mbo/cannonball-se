@@ -12,6 +12,7 @@
 #include "engine/ostats.hpp"
 #include "engine/outils.hpp"
 #include "engine/ohiscore.hpp"
+#include <iostream>
 
 OHiScore ohiscore;
 
@@ -99,7 +100,7 @@ void OHiScore::tick()
     switch (state & 3)
     {
         // Detect Score Position, Insert Score, Init Table
-        case STATE_GETPOS:   
+        case STATE_GETPOS:
             get_score_pos();
 
             // New High Score
@@ -107,7 +108,7 @@ void OHiScore::tick()
             {
                 osoundint.queue_sound(sound::PCM_WAVE);
                 osoundint.queue_sound(sound::MUSIC_LASTWAVE);
-                insert_score();               
+                insert_score();
             }
             // Not a High Score
             else
@@ -121,7 +122,7 @@ void OHiScore::tick()
             break;
 
         // Display Basic High Score Table
-        case STATE_DISPLAY: 
+        case STATE_DISPLAY:
             display_scores();
             if (best_or_state >= 2)
                 state = STATE_ENTRY; // Only allow name entry when minicars have animation finished
@@ -233,16 +234,20 @@ void OHiScore::check_name_entry()
         // Blit Alphabet. Highlight selected letter red.
         blit_alphabet();
         // Flash current initial that is being entered
-        flash_entry(score_adr);   
+        flash_entry(score_adr);
         // Draw big red countdown timer
         const uint16_t BIG_RED_FONT = 0x8080;
         ohud.draw_timer2(ostats.time_counter, 0x1101EC, BIG_RED_FONT);
         // Input from controls
         do_input(score_adr);
-        
+
         // Save new score info
-        if (state == STATE_DONE)
+        /* this is now handled in outrun.cpp
+        if ((state == STATE_DONE) || (ostats.time_counter < 0)) {
+            // JJP - always save on timeout
+            std::cout << "Saving new high score" << std::endl;
             config.save_scores(outrun.cannonball_mode == Outrun::MODE_ORIGINAL);
+        } */
     }
 }
 
@@ -453,6 +458,12 @@ void OHiScore::display_scores()
         case 2:
             return;
     }
+}
+
+
+int OHiScore::score_position()
+{
+    return score_pos;
 }
 
 // ------------------------------------------------------------------------------------------------

@@ -48,8 +48,8 @@ public:
     int set_video_mode(video_settings_t* settings);
     void set_shadow_intensity(float);
     void prepare_frame();
-    void render_frame();
-    void present_frame(); 
+    void render_frame(int fastpass);
+    void present_frame();
     bool supports_window();
     bool supports_vsync();
 

@@ -1,4 +1,3 @@
-//#include <cstring> // memcpy
 #include <algorithm> // Required for std::fill_n
 #include "hwvideo/hwroad.hpp"
 #include "globals.hpp"
@@ -9,6 +8,7 @@
     Based on MAME source code.
 
     Copyright Aaron Giles.
+    Performance optimisations Copyright (c) 2025, James Pearce
     All rights reserved.
 ***************************************************************************/
 
@@ -473,15 +473,14 @@ void HWRoad::render_background_hires(uint16_t* pixels)
         */
 
         // Hi-speed version - might leave road with gaps
-        if (color != -1)
-        {
+        if (color != -1) {
             uint16_t* pPixel = pixels + (y * config.s16_width);
-
+            uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel); // enable writing as 32-bit values
+            uint16_t c = static_cast<uint16_t>(color | color_offset3);
             // Fill both y and y+1 scanlines with final_color
-            // Total pixels to fill: width * 2
-            std::fill_n(pPixel, (config.s16_width << 1), static_cast<uint16_t>(color | color_offset3));
+            // Total pixels to fill: width * 2 pixels = 2 lines
+            std::fill_n(out32, config.s16_width, static_cast<uint32_t>(c << 16) | c);
         }
-        
     }
 }
 
@@ -607,44 +606,49 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
         // draw the road
         switch (road_control & 3)
         {
-            case 0:
+            case 0:{
+                // infrequently called in Outrun
                 if (data0 & 0x800)
                     continue;
-                hpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
-                for (x = 0; x < config.s16_width; x++) 
-                {
-                    int pix0 = (hpos0 < 0x200) ? src0[hpos0] : 3;
-                    pPixel[x] = color_table[0x00 + pix0];
-                    if (x & 1)
-                        hpos0 = (hpos0 + 1) & 0xfff;
+                auto thpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
+                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
+                int xmax = config.s16_width >> 1;
+                while (xmax) {
+                    int pix0 = (thpos0 < 0x200) ? src0[thpos0] : 3;
+                    uint16_t c = color_table[0x00 + pix0];
+                    *out32++ = (static_cast<uint32_t>(c) << 16) | c; // write two pixels
+                    thpos0 = (thpos0 + 1) & 0xfff;
+                    xmax--;
                 }
                 break;
-
-            case 1:
-                hpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
-                hpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
-                pP = pPixel;
-                for (x = 0; x < config.s16_width; x+=2) 
-                {
-                    // JJP - this is the hot path - optimised via pre-computed
-                    // lookup table & unroll to avoid hpos calculation tests
-                    int pix0 = (hpos0 < 0x200) ? src0[hpos0] : 3;
-                    int pix1 = (hpos1 < 0x200) ? src1[hpos1] : 3;
-                    
+            }
+            case 1: {
+                // JJP - Outrun hot path - optimised via pre-computed
+                // lookup table & unroll to avoid hpos calculation tests
+                auto thpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
+                auto thpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
+                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
+                int xmax = config.s16_width >> 1;
+                while (xmax) {
+                    int pix0 = (thpos0 < 0x200) ? src0[thpos0] : 3;
+                    int pix1 = (thpos1 < 0x200) ? src1[thpos1] : 3;
+                    uint16_t c;
                     if (priority_lookup[pix0][pix1]) {
-                        *(pP++) = color_table[0x10 + pix1];
-                        *(pP++) = color_table[0x10 + pix1];
+                        c = color_table[0x10 + pix1];
                     }
                     else {
-                        *(pP++) = color_table[0x00 + pix0];
-                        *(pP++) = color_table[0x00 + pix0];
+                        // this is the hot path, 85% or so, rely on branch prediction to handle it
+                        c = color_table[0x00 + pix0];
                     }
-                    hpos0 = (hpos0 + 1) & 0xfff;
-                    hpos1 = (hpos1 + 1) & 0xfff;
+                    *out32++ = (static_cast<uint32_t>(c) << 16) | c; // write two pixels
+                    thpos0 = (thpos0 + 1) & 0xfff;
+                    thpos1 = (thpos1 + 1) & 0xfff;
+                    xmax--;
                 }
                 break;
-
+            }
             case 2:
+                // seems to be never taken in Outrun
                 hpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
                 hpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
                 for (x = 0; x < config.s16_width; x++) 
@@ -655,7 +659,6 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
                         pPixel[x] = color_table[0x10 + pix1];
                     else
                         pPixel[x] = color_table[0x00 + pix0];
-                      
                     if (x & 1)
                     {
                         hpos0 = (hpos0 + 1) & 0xfff;
@@ -665,13 +668,14 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
                 break;
 
             case 3:
+                // seems to be never taken in Outrun
                 if (data1 & 0x800)
                     continue;
                 hpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
-                for (x = 0; x < config.s16_width; x++) 
+                for (x = 0; x < config.s16_width; x++)
                 {
                     int pix1 = (hpos1 < 0x200) ? src1[hpos1] : 3;
-                    pPixel[x] = color_table[0x10 + pix1];                   
+                    pPixel[x] = color_table[0x10 + pix1];
                     if (x & 1)
                         hpos1 = (hpos1 + 1) & 0xfff;
                 }

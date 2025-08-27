@@ -86,6 +86,7 @@ void OMap::tick()
                 do_route_final();
                 break;
             }
+            [[fallthrough]];
 
         // Do Route [Note map is displayed from this point on]
         case MAP_ROUTE:

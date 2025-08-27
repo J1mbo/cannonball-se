@@ -277,7 +277,7 @@ void OMusic::play_music(int index)
             break;
 
         case music_t::IS_WAV:
-            cannonball::audio.load_wav((config.data.res_path + next_track->filename).c_str());
+            cannonball::audio.load_audio((config.data.res_path + next_track->filename).c_str());
             break;
     }
 

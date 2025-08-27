@@ -1,45 +1,77 @@
-# -----------------------------------------------------------------------------
-# CannonBall CMake setup
+# ----------------------------------------------------------------------------------
+# Consolidated CannonBall-SE CMake File
 #
-# For ports, please try not to edit this file directly.
-# Everything should go into a win64.cmake equivalent.
-# -----------------------------------------------------------------------------
+# For CannonBall-SE - https://github.com/J1mbo/cannonball
+# Copyright (c) James Pearce, 2025
+#
+# CannonBall is Copyright (c) Chris White, see: https://github.com/djyt/cannonball
+#
+# Tested on Linux (Ubuntu on Intel and Raspbian).
+# ----------------------------------------------------------------------------------
 
-cmake_minimum_required (VERSION 3.3.2) # Might compile lower, but untested
-project (cannonball)
+cmake_minimum_required(VERSION 3.10)
+project(cannonball-se)
+include(GNUInstallDirs)
 
-# -----------------------------------------------------------------------------
-# Directory Setup
-# -----------------------------------------------------------------------------
+if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10)
+    message(FATAL_ERROR "C++20 support requires GCC 10+, Clang 10+, or MSVC 19.28+")
+endif()
 
-# CMake default file (override with -DTARGET=file)
-set(DCMAKE win64-opengl.cmake)
+# Standards
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Source location
+# --- Build verbosity controls --------------------------------------------------
+option(QUIET_BUILD "Reduce build output & warning noise (recommended for users)" ON)
+option(SUPER_QUIET "Silence *all* compiler warnings (-w) in Release-like configs" OFF)
+
+# Keep build logs tidy (affects Makefiles/Unix Makefiles; Ninja is already terse)
+set(CMAKE_VERBOSE_MAKEFILE OFF CACHE BOOL "Do not echo full compile/link commands")
+if(QUIET_BUILD)
+# Hide per-target boilerplate like "Building CXX object ..."
+set(CMAKE_RULE_MESSAGES OFF CACHE BOOL "Suppress CMake rule messages" FORCE)
+endif()
+
+# Default to Release if nothing is specified (single-config generators)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  message(STATUS "No build type specified; defaulting to Release")
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+               "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+
+# For multi-config generators (Visual Studio / Xcode)
+if(CMAKE_CONFIGURATION_TYPES)
+  # Generate these configs; put Release first
+  set(CMAKE_CONFIGURATION_TYPES "Release;RelWithDebInfo;MinSizeRel;Debug"
+      CACHE STRING "" FORCE)
+  # Make 'Release' the default for `cmake --install` when --config is omitted
+  set(CMAKE_INSTALL_CONFIG_NAME Release CACHE STRING "" FORCE)
+endif()
+
+# --- Optimisation level --------------------------------------------------------
+option(WITH_MARCH_NATIVE "Build with -march=native" ON)
+
+# --- Profiling toggles ---------------------------------------------------------
+option(ENABLE_PROFILING        "Turn on common profiling flags" OFF)
+option(PROFILE_WITH_PERF       "Tweak flags for Linux perf (symbols + frame pointers)" OFF)
+option(PROFILE_WITH_GPROF      "Build with -pg for gprof" OFF)
+option(PROFILE_WITH_CALLGRIND  "Reduce inlining for cleaner callgrind graphs" OFF)
+
+# --- Option for MP3 playback ---
+option(WITH_MP3 "Enable MP3 playback via mpg123" ON)
+
+# --- Option to install man page ---
+option(INSTALL_MANPAGE "Install cannonball-se man page" ON)
+
+# --- Source directory base ---
 set(main_cpp_base ../src/main)
-
-# -----------------------------------------------------------------------------
-# Platform Specific Setup
-# -----------------------------------------------------------------------------
-
-# Include relevant CMAKE file (default, mingw, pandora etc.)
-if(TARGET)
-    if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/${TARGET}")
-        message("CMake files for ${TARGET} found")
-        include(${TARGET})
-    else()
-        message("CMake files for ${TARGET} not found, using ${DCMAKE}")
-        include(${DCMAKE})
-    endif()
-else()
-    message("TARGET not passed, using ${DCMAKE}")
-    include(${DCMAKE})
-endif(TARGET)
 
 # -----------------------------------------------------------------------------
 # Project Source Files
 # -----------------------------------------------------------------------------
-    
+
 set(src_main
     "${main_cpp_base}/globals.hpp"
     "${main_cpp_base}/romloader.hpp"
@@ -81,52 +113,37 @@ set(src_hwvideo
     "${main_cpp_base}/hwvideo/hwsprites.cpp"
     "${main_cpp_base}/hwvideo/hwtiles.cpp"
     )
-    
+
 set(src_hwaudio
     "${main_cpp_base}/hwaudio/segapcm.hpp"
     "${main_cpp_base}/hwaudio/soundchip.hpp"
     "${main_cpp_base}/hwaudio/ym2151.hpp"
-    
+
     "${main_cpp_base}/hwaudio/segapcm.cpp"
     "${main_cpp_base}/hwaudio/soundchip.cpp"
     "${main_cpp_base}/hwaudio/ym2151.cpp"
     )
 
 set(src_sdl
-	"${main_cpp_base}/sdl2/audio.hpp"
-	"${main_cpp_base}/sdl2/timer.hpp"
-	"${main_cpp_base}/sdl2/input.hpp"
-	"${main_cpp_base}/sdl2/renderbase.hpp"
-	"${main_cpp_base}/sdl2/snes_ntsc.h"
+    "${main_cpp_base}/sdl2/audio.hpp"
+    "${main_cpp_base}/sdl2/wav123.hpp"
+    "${main_cpp_base}/sdl2/timer.hpp"
+    "${main_cpp_base}/sdl2/input.hpp"
+    "${main_cpp_base}/sdl2/renderbase.hpp"
+    "${main_cpp_base}/sdl2/snes_ntsc.h"
 
-	"${main_cpp_base}/sdl2/audio.cpp"
-	"${main_cpp_base}/sdl2/timer.cpp"
-	"${main_cpp_base}/sdl2/input.cpp"
-	"${main_cpp_base}/sdl2/renderbase.cpp"
-	"${main_cpp_base}/sdl2/snes_ntsc.c"
+    "${main_cpp_base}/sdl2/audio.cpp"
+    "${main_cpp_base}/sdl2/wav123.cpp"
+    "${main_cpp_base}/sdl2/timer.cpp"
+    "${main_cpp_base}/sdl2/input.cpp"
+    "${main_cpp_base}/sdl2/renderbase.cpp"
+    "${main_cpp_base}/sdl2/snes_ntsc.c"
     )
-   
-if(OPENGL)
-	set(src_render
-	    "${main_cpp_base}/sdl2/rendergl.hpp"
-	    "${main_cpp_base}/sdl2/rendergl.cpp"
-	)
-elseif(OPENGLES)
-	set(src_render
-	    "${main_cpp_base}/sdl2/rendergles.hpp"
-	    "${main_cpp_base}/sdl2/rendergles.cpp"
-	)   
-else()
-	set(src_render
-	    "${main_cpp_base}/sdl2/rendersurface.hpp"
-	    "${main_cpp_base}/sdl2/rendersurface.cpp"
-	)
-endif()
 
-set(src_directx
-    "${main_cpp_base}/directx/ffeedback.hpp"
-    "${main_cpp_base}/directx/ffeedback.cpp"
-)
+set(src_render
+    "${main_cpp_base}/sdl2/rendersurface.hpp"
+    "${main_cpp_base}/sdl2/rendersurface.cpp"
+    )
 
 set(src_engine
     "${main_cpp_base}/engine/oaddresses.hpp"
@@ -156,7 +173,6 @@ set(src_engine
     "${main_cpp_base}/engine/otraffic.hpp"
     "${main_cpp_base}/engine/outils.hpp"
     "${main_cpp_base}/engine/outrun.hpp"
-
     "${main_cpp_base}/engine/oanimseq.cpp"
     "${main_cpp_base}/engine/oattractai.cpp"
     "${main_cpp_base}/engine/obonus.cpp"
@@ -198,6 +214,17 @@ set(src_engine_audio
     "${main_cpp_base}/engine/audio/osoundint.cpp"
     )
 
+set(src_directx
+    "${main_cpp_base}/directx/ffeedback.hpp"
+    "${main_cpp_base}/directx/ffeedback.cpp"
+    )
+
+if(WIN32)
+    list(APPEND src_directx
+        "${CMAKE_SOURCE_DIR}/res/cannonball.rc"
+    )
+endif()
+
 set(SRCS
     ${src_main}
     ${src_frontend}
@@ -223,99 +250,238 @@ SOURCE_GROUP(src\\engine FILES ${src_engine})
 SOURCE_GROUP(src\\engine\\data FILES ${src_engine_data})
 SOURCE_GROUP(src\\engine\\audio FILES ${src_engine_audio})
 
-# Add Icon For Windows Builds
-if(WIN32)
-  set(SRCS ${SRCS} ../res/cannonball.rc)
-endif(WIN32)
+add_executable(cannonball-se ${SRCS})
 
-add_executable(cannonball ${SRCS})
+# --- Dependencies: Boost and SDL2 ---
+find_package(Boost REQUIRED PATHS ${SDL2_PATH})
+find_package(SDL2 REQUIRED PATHS ${BOOST_ROOT})
 
-# -----------------------------------------------------------------------------
-# Compiler Definitions
-# -----------------------------------------------------------------------------
+# ——————————————————————————————————————
+# EGL / OpenGLES2 via pkg-config (Linux, Android, etc)
+# ——————————————————————————————————————
+find_package(PkgConfig REQUIRED)
 
-if(OPENGL)
-    add_definitions(-DWITH_OPENGL)
-endif()
+# try to find EGL
+pkg_check_modules(EGL     REQUIRED IMPORTED_TARGET egl)
+# try to find GLESv2
+pkg_check_modules(GLESv2  REQUIRED IMPORTED_TARGET glesv2)
 
-if(OPENGLES)
-    add_definitions(-DWITH_OPENGLES)
-endif()
-
-# -----------------------------------------------------------------------------
-# Library Setup
-# -----------------------------------------------------------------------------
-
-set(BOOST_INCLUDEDIR ${boost_dir})
-find_package(Boost REQUIRED)
-
-set(SDL2_DIR ${sdl2_dir})
-find_package(SDL2 REQUIRED)
-message("SDL2 Include  : ${SDL2_INCLUDE_DIRS}")
-message("SDL2 Libraries: ${SDL2_LIBRARIES}")
-
-# Locate SDL_GPU include directory
-find_path(SDL_GPU_INCLUDE_DIR SDL_gpu.h
-    PATHS /usr/local/include/SDL2
-    NO_DEFAULT_PATH
-)
-
-if(NOT SDL_GPU_INCLUDE_DIR)
-    message(FATAL_ERROR "SDL_GPU include directory not found in /usr/local/include/SDL2")
-endif()
-
-# Locate SDL_GPU library
-find_library(SDL_GPU_LIBRARY SDL_gpu
-    NAMES SDL2_gpu SDL_gpu
-    PATHS /usr/local/lib
-    NO_DEFAULT_PATH
-)
-
-if(NOT SDL_GPU_LIBRARY)
-    message(FATAL_ERROR "SDL_GPU library not found in /usr/local/lib")
-endif()
-
-
-find_library(UDEV_LIBRARY udev)
-if(NOT UDEV_LIBRARY)
-    message(FATAL_ERROR "Could not find libudev")
-endif()
-message("UDEV Library  : ${UDEV_LIBRARY}")
-
-# Include SDL_GPU directories
-include_directories(${SDL_GPU_INCLUDE_DIR})
-
-# Include
-include_directories(
+# includes & links
+target_include_directories(cannonball-se PRIVATE
     ${main_cpp_base}
-    ${BOOST_INCLUDEDIR}
+    ${Boost_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
+    # bring in EGL/GLES2 headers (provided by pkg-config)
+    PkgConfig::EGL_INCLUDE_DIRS
+    PkgConfig::GLESv2_INCLUDE_DIRS
 )
 
-link_directories(
-    ${platform_link_dirs}
-)
-
-target_link_libraries(cannonball
+target_link_libraries(cannonball-se PRIVATE
     ${SDL2_LIBRARIES}
-    ${UDEV_LIBRARY}
-    ${platform_link_libs}
+    ${Boost_LIBRARIES}
+    # link EGL/GLES2
+    PkgConfig::EGL
+    PkgConfig::GLESv2
 )
 
-# -----------------------------------------------------------------------------
-# Copy useful files to build destination
-# -----------------------------------------------------------------------------
+# --- Linux: udev for joystick hotplugging ---
+if(UNIX AND NOT APPLE)
+    find_library(UDEV_LIBRARY udev)
+    if(UDEV_LIBRARY)
+        target_link_libraries(cannonball-se PRIVATE ${UDEV_LIBRARY})
+    else()
+        message(WARNING "libudev not found. Joystick hotplugging may not work.")
+    endif()
+    # --- Also add debug trace info
+    target_link_options(cannonball-se PRIVATE -rdynamic)
+endif()
 
-configure_file(../res/config.xml ./config.xml 
-    COPYONLY
-)
+# --- Optional MPG123/MP3 support ---
+if(WITH_MP3)
+    find_path(MPG123_INCLUDE_DIR mpg123.h)
+    find_library(MPG123_LIBRARY NAMES mpg123 libmpg123)
+    if(MPG123_INCLUDE_DIR AND MPG123_LIBRARY)
+        message(STATUS "mpg123 found, enabling MP3 playback.")
+        target_compile_definitions(cannonball-se PRIVATE WITH_MP3)
+        target_include_directories(cannonball-se PRIVATE ${MPG123_INCLUDE_DIR})
+        target_link_libraries(cannonball-se PRIVATE ${MPG123_LIBRARY})
+    else()
+        message(WARNING "mpg123 not found, building without MP3 playback. Set WITH_MP3=OFF to suppress this warning.")
+    endif()
+else()
+    message(STATUS "Building without MP3 playback support (WITH_MP3=OFF).")
+endif()
 
-configure_file(../res/tilemap.bin ./res/tilemap.bin
-    COPYONLY 
-)
-configure_file(../res/tilepatch.bin ./res/tilepatch.bin
-    COPYONLY 
-)
-configure_file(../res/gamecontrollerdb.txt ./res/gamecontrollerdb.txt
-    COPYONLY 
-)
+# Windows-specific: DirectX and Windows multimedia (if needed)
+if(WIN32)
+    target_link_libraries(cannonball-se PRIVATE dinput8 dxguid winmm)
+endif()
+
+# Recommended warnings for GCC/Clang
+if(MSVC)
+    target_compile_options(cannonball-se PRIVATE /W4)
+else()
+    target_compile_options(cannonball-se PRIVATE -Wall -Wextra -Wpedantic)
+
+
+# Optimize Release builds aggressively (-Ofast) on GCC/Clang
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(cannonball-se PRIVATE $<$<CONFIG:Release>:-Ofast>)
+endif()
+
+endif()
+
+# --- Quiet warnings on noisy toolchains ---------------------------------------
+# These are conservative suppressions aimed at legacy/portability code paths.
+if(QUIET_BUILD)
+    if(MSVC)
+    # Drop to /W3 and silence a few common noise warnings (narrowing, signed/unsigned, deprecations)
+        target_compile_options(cannonball-se PRIVATE /W3 /wd4244 /wd4267 /wd4018 /wd4996)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(cannonball-se PRIVATE
+            -Wno-unused-parameter
+            -Wno-unused-variable
+            -Wno-missing-field-initializers
+            -Wno-sign-compare
+            -Wno-reorder
+            -Wno-implicit-fallthrough
+            -Wno-format-security)
+        if(SUPER_QUIET)
+            # Nuke all warnings for user-friendly Release-like configs
+            target_compile_options(cannonball-se PRIVATE
+            $<$<CONFIG:Release>:-w>
+            $<$<CONFIG:RelWithDebInfo>:-w>
+            $<$<CONFIG:MinSizeRel>:-w>)
+        endif()
+    endif()
+endif()
+
+
+# Add -march=native for GCC/Clang, only in Release builds
+if(WITH_MARCH_NATIVE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
+    target_compile_options(cannonball-se PRIVATE
+      $<$<COMPILE_LANGUAGE:C>:-march=native>
+      $<$<COMPILE_LANGUAGE:CXX>:-march=native>)
+  endif()
+endif()
+
+
+# --- PROFILING FLAGS -----------------------------------------------------------
+if(ENABLE_PROFILING)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        # Symbols + frame pointers for accurate stacks in perf/flamegraphs
+        target_compile_options(cannonball-se PRIVATE -g -fno-omit-frame-pointer)
+        # Avoid LTO which can hide symbols / confuse profilers
+        set_property(TARGET cannonball-se PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+    endif()
+
+    if(PROFILE_WITH_PERF)
+        message(STATUS "Profiling: perf enabled (symbols + frame pointers)")
+        # Nothing extra required beyond -g and -fno-omit-frame-pointer
+    endif()
+
+    if(PROFILE_WITH_GPROF)
+        message(STATUS "Profiling: gprof via -pg enabled")
+        target_compile_options(cannonball-se PRIVATE -pg)
+        target_link_options(cannonball-se PRIVATE -pg)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            include(CheckPIESupported)
+            check_pie_supported(LANGUAGES C CXX)
+            if(NOT CMAKE_CXX_LINK_PIE_SUPPORTED)
+                target_link_options(cannonball-se PRIVATE -no-pie)
+            endif()
+        endif()
+    endif()
+
+    if(PROFILE_WITH_CALLGRIND)
+        message(STATUS "Profiling: callgrind-friendly inlining reduction enabled")
+        target_compile_options(cannonball-se PRIVATE -fno-inline-functions -fno-inline-small-functions)
+    endif()
+
+    if(PROFILE_WITH_GPERFTOOLS)
+        # To enable this, run:
+        # $ cmake -DENABLE_PROFILING=ON -DPROFILE_WITH_GPERFTOOLS=ON -S ../cmake/ -B build
+        # $ cmake --build build -j
+        #
+        message(STATUS "Profiling: Google perftools (CPU) enabled")
+
+        # Prefer pkg-config if available
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(LIBPROFILER QUIET libprofiler)
+        endif()
+
+        # Include dir is optional (header usually in system include path),
+        # but probe to give nicer errors if not installed.
+        find_path(GPERFTOOLS_INCLUDE_DIR
+                  NAMES gperftools/profiler.h
+                  HINTS ${LIBPROFILER_INCLUDE_DIRS})
+
+        # Find the library (shared preferred)
+        find_library(GPERFTOOLS_PROFILER_LIB
+                     NAMES profiler libprofiler
+                     HINTS ${LIBPROFILER_LIBRARY_DIRS})
+
+        if(NOT GPERFTOOLS_INCLUDE_DIR OR NOT GPERFTOOLS_PROFILER_LIB)
+            message(FATAL_ERROR "gperftools not found. Install libgoogle-perftools-dev (Ubuntu/WSL) then reconfigure.")
+        endif()
+
+        target_include_directories(cannonball-se PRIVATE ${GPERFTOOLS_INCLUDE_DIR})
+        target_link_libraries(cannonball-se PRIVATE ${GPERFTOOLS_PROFILER_LIB} pthread)
+
+        # Helpful define (optional): lets you #ifdef around ProfilerStart/Stop
+        target_compile_definitions(cannonball-se PRIVATE HAS_GPERFTOOLS=1)
+
+        # Make -DPROFILE_WITH_GPERFTOOLS available to your code
+        target_compile_definitions(cannonball-se PRIVATE PROFILE_WITH_GPERFTOOLS=1)
+        # Notes:
+        # - Do NOT combine with -pg (gprof).
+        # - You start/stop profiling in code with ProfilerStart/Stop.
+        # - At runtime you can tune sampling with CPUPROFILE_FREQUENCY, e.g.:
+        #     CPUPROFILE_FREQUENCY=1000 ./cannonball-se
+    endif()
+
+endif()
+
+# OpenMP: Try to enable, but don't require everywhere
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(cannonball-se PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+# Copy out config files
+configure_file(../res/tilemap.bin ${CMAKE_CURRENT_BINARY_DIR}/tilemap.bin COPYONLY)
+configure_file(../res/tilepatch.bin ${CMAKE_CURRENT_BINARY_DIR}/tilepatch.bin COPYONLY)
+configure_file(../res/gamecontrollerdb.txt ${CMAKE_CURRENT_BINARY_DIR}/gamecontrollerdb.txt COPYONLY)
+
+# -----------------------------
+# Install: man page & licenses
+# -----------------------------
+
+# Install the cannonball-se(6) man page if present
+set(_MAN_CANDIDATES
+  "${CMAKE_SOURCE_DIR}/docs/cannonball-se.6"
+  "${CMAKE_SOURCE_DIR}/cannonball-se.6")
+foreach(_cand IN LISTS _MAN_CANDIDATES)
+  if(EXISTS "${_cand}")
+    set(MANPAGE_SOURCE "${_cand}")
+    break()
+  endif()
+endforeach()
+if(INSTALL_MANPAGE AND UNIX AND MANPAGE_SOURCE)
+  get_filename_component(_ext "${MANPAGE_SOURCE}" EXT)
+  install(FILES "${MANPAGE_SOURCE}" DESTINATION "${CMAKE_INSTALL_MANDIR}/man6")
+endif()
+
+# Install upstream license and third-party notices
+install(FILES "${CMAKE_SOURCE_DIR}/license.txt"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}")
+if(EXISTS "${CMAKE_SOURCE_DIR}/THIRD-PARTY-NOTICES.md")
+  install(FILES "${CMAKE_SOURCE_DIR}/THIRD-PARTY-NOTICES.md"
+          DESTINATION "${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}/licenses")
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/licenses")
+  install(DIRECTORY "${CMAKE_SOURCE_DIR}/licenses/"
+          DESTINATION "${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}/licenses")
+endif()

@@ -16,7 +16,6 @@
 #include "hwaudio/segapcm.hpp"
 #include "hwaudio/ym2151.hpp"
 #include "engine/audio/commands.hpp"
-#include <mutex>
 
 
 class OSoundInt
@@ -77,9 +76,6 @@ private:
 
     // Positions in the queue
     uint8_t sound_head, sound_tail;
-
-    // Mutex to protect shared data
-    std::mutex mtx;
 
     void add_to_queue(uint8_t snd);
 };

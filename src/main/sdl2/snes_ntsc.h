@@ -1,9 +1,14 @@
 /* SNES NTSC video filter */
 
-/* snes_ntsc 0.2.2 */
+/* Based on snes_ntsc 0.2.2
 
-// Updated by James Pearce for S16 emulation at 24-bit output depth and to provide
-// SIMD optimised processing for clamp and RGB conversion.
+Updates for CannonBall-SE are Copyright (c) 2025, James Pearce:
+- to provide S16 emulation at 24-bit output depth,
+- to provide SIMD optimised processing for clamp and RGB conversion.
+
+Note: SIMD dependent functions e.g. snes_ntsc_blit_hires_fast() require buffers aligned at
+      a 64-byte boundary.
+*/
 
 #ifndef SNES_NTSC_H
 #define SNES_NTSC_H
@@ -17,13 +22,27 @@ extern "C" {
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
 #elif defined(_M_X64)
-#include <intrin.h> 
+#include <intrin.h>
 #include <tmmintrin.h> // SSE4
 #include <emmintrin.h> // SSE2
 #elif defined(__x86_64__) || defined(__i386__)
 #include <x86intrin.h>
 #else
 #error "Unsupported architecture: This implementation requires SSE4 or NEON."
+#endif
+
+
+// Portable 'restrict' for C and C++. Note - moved from snes_ntsc_impl.h so that the blitters
+// can be defined with 'restrict' parameters
+#ifndef restrict
+  #if defined(__GNUC__) || defined(__clang__)
+    #define restrict __restrict__
+  #elif defined(_MSC_VER) && _MSC_VER > 1300
+    #define restrict __restrict
+  #else
+    /* no support: leave empty */
+    #define restrict
+  #endif
 #endif
 
 
@@ -73,8 +92,8 @@ extern "C" {
 		long in_row_width, int burst_phase, int in_width, int in_height,
 		void* rgb_out, long out_pitch, long Alevel);
 
-	void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long in_row_width,
-		int burst_phase, int in_width, int in_height, void* rgb_out, long out_pitch, long Alevel);
+	void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
+		int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel);
 
 	/* Number of output pixels written by low-res blitter for given input width. Width
 	might be rounded down slightly; use SNES_NTSC_IN_WIDTH() on result to find rounded
@@ -239,7 +258,6 @@ extern "C" {
 #define SET_SIMD_REGISTER vdupq_n_u32
 #define ZERO_SIMD_REGISTER vdupq_n_u32(0)
 #define ROTATE_OUT ROTATE_OUT_NEON
-#define CRC32_ __crc32w
 #define SET_SNES_MASK_VECTORS SET_SNES_MASK_VECTORS_NEON
 #define SNES_NTSC_CLAMP SNES_NTSC_CLAMP_NEON
 #define SNES_NTSC_CLAMP_AND_CONVERT SNES_NTSC_CLAMP_AND_CONVERT_NEON
@@ -248,19 +266,18 @@ extern "C" {
 #elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
 	// x86 Architecture with SSE4.1 support
 #define SIMD_REGISTER_t __m128i
-#define SIMD_ZERO SIMD_ZERO_SSE4
-#define INSERT_SIMD_REGISTER_VALUE INSERT_SIMD_REGISTER_VALUE_SSE4
+#define SIMD_ZERO                   SIMD_ZERO_SSE4
+#define INSERT_SIMD_REGISTER_VALUE  INSERT_SIMD_REGISTER_VALUE_SSE4
 #define EXTRACT_SIMD_REGISTER_VALUE EXTRACT_SIMD_REGISTER_VALUE_SSE4
-#define LOAD_SIMD_REGISTER LOAD_SIMD_REGISTER_SSE4
-#define SET_SIMD_REGISTER _mm_set_epi32
-#define ZERO_SIMD_REGISTER _mm_setzero_si128()
-#define ROTATE_OUT ROTATE_OUT_SSE4
-#define CRC32_ _mm_crc32_u32
-#define SET_SNES_MASK_VECTORS SET_SNES_MASK_VECTORS_SSE4
-#define SNES_NTSC_CLAMP SNES_NTSC_CLAMP_SSE4
+#define LOAD_SIMD_REGISTER          LOAD_SIMD_REGISTER_SSE4
+#define SET_SIMD_REGISTER           _mm_set_epi32
+#define ZERO_SIMD_REGISTER          _mm_setzero_si128()
+#define ROTATE_OUT                  ROTATE_OUT_SSE4
+#define SET_SNES_MASK_VECTORS       SET_SNES_MASK_VECTORS_SSE4
+#define SNES_NTSC_CLAMP             SNES_NTSC_CLAMP_SSE4
 #define SNES_NTSC_CLAMP_AND_CONVERT SNES_NTSC_CLAMP_AND_CONVERT_SSE4
-#define SNES_NTSC_RGB_OUT_STORE SNES_NTSC_RGB_OUT_STORE_SSE4
-#define SNES_NTSC_RGB_STORE SNES_NTSC_RGB_STORE_SSE4
+#define SNES_NTSC_RGB_OUT_STORE     SNES_NTSC_RGB_OUT_STORE_SSE4
+#define SNES_NTSC_RGB_STORE         SNES_NTSC_RGB_STORE_SSE4
 #else
 #error "Unsupported architecture: This implementation requires SSE4 or NEON."
 #endif
@@ -269,21 +286,22 @@ extern "C" {
 
 #define SIMD_ZERO_NEON vdupq_n_u32(0)
 
+/* ARGB on little-endian platforms */
 #define SET_SNES_MASK_VECTORS_SSE4 \
-	const __m128i alevel_vec = _mm_set1_epi32(0x000000FF);\
-	const __m128i RED_MASK = _mm_set1_epi32(0xFF000000);\
-	const __m128i GREEN_MASK = _mm_set1_epi32(0x00FF0000);\
-	const __m128i BLUE_MASK = _mm_set1_epi32(0x0000FF00);\
+	const __m128i alevel_vec     = _mm_set1_epi32(0x000000FF);\
+	const __m128i RED_MASK       = _mm_set1_epi32(0xFF000000);\
+	const __m128i GREEN_MASK     = _mm_set1_epi32(0x00FF0000);\
+	const __m128i BLUE_MASK      = _mm_set1_epi32(0x0000FF00);\
 	const __m128i clamp_mask_vec = _mm_set1_epi32(snes_ntsc_clamp_mask);\
-	const __m128i clamp_add_vec = _mm_set1_epi32(snes_ntsc_clamp_add)
+	const __m128i clamp_add_vec  = _mm_set1_epi32(snes_ntsc_clamp_add)
 
 #define SET_SNES_MASK_VECTORS_NEON \
-    const uint32x4_t alevel_vec = vdupq_n_u32(0x000000FF); \
-    const uint32x4_t RED_MASK = vdupq_n_u32(0xFF000000); \
-    const uint32x4_t GREEN_MASK = vdupq_n_u32(0x00FF0000); \
-    const uint32x4_t BLUE_MASK = vdupq_n_u32(0x0000FF00);\
+    const uint32x4_t alevel_vec     = vdupq_n_u32(0x000000FF); \
+    const uint32x4_t RED_MASK       = vdupq_n_u32(0xFF000000); \
+    const uint32x4_t GREEN_MASK     = vdupq_n_u32(0x00FF0000); \
+    const uint32x4_t BLUE_MASK      = vdupq_n_u32(0x0000FF00);\
 	const uint32x4_t clamp_mask_vec = vdupq_n_u32(snes_ntsc_clamp_mask);\
-	const uint32x4_t clamp_add_vec = vdupq_n_u32(snes_ntsc_clamp_add)
+	const uint32x4_t clamp_add_vec  = vdupq_n_u32(snes_ntsc_clamp_add)
 
 #define INSERT_SIMD_REGISTER_VALUE_SSE4(reg, value, pos) \
 	_mm_insert_epi32(reg, value, pos)
@@ -324,7 +342,7 @@ extern "C" {
 
 
 // SSE4 version of Blargg's clamp which converts to RGB also
-#define SNES_NTSC_CLAMP_AND_CONVERT_SSE4(io) do { \
+#define SNES_NTSC_CLAMP_AND_CONVERT_SSE4_ABGR(io) do { \
     /* Clamping Operations */ \
     __m128i sub = _mm_and_si128(_mm_srli_epi32(io, 9), clamp_mask_vec); \
     __m128i clamp = _mm_sub_epi32(clamp_add_vec, sub); \
@@ -346,9 +364,35 @@ extern "C" {
     io = _mm_or_si128(combined, alevel_vec); \
 } while(0)
 
+// RGBA version (little-endian)
+#define SNES_NTSC_CLAMP_AND_CONVERT_SSE4(io) do { \
+    /* ---- Clamping ---- */ \
+    __m128i sub   = _mm_and_si128(_mm_srli_epi32((io), 9), clamp_mask_vec); \
+    __m128i clamp = _mm_sub_epi32(clamp_add_vec, sub); \
+    (io) = _mm_or_si128((io), clamp); \
+    clamp = _mm_sub_epi32(clamp, sub); \
+    (io) = _mm_and_si128((io), clamp); \
+    \
+    /* ---- Color conversion (internal format: 3/5/7 shifts + masks) ---- */ \
+    __m128i red_shifted   = _mm_slli_epi32((io), 3); \
+    __m128i green_shifted = _mm_slli_epi32((io), 5); /* 3 + 2 */ \
+    __m128i blue_shifted  = _mm_slli_epi32((io), 7); /* 5 + 2 */ \
+    \
+    __m128i r = _mm_and_si128(red_shifted,   RED_MASK);   /* R -> 0xFF000000 */ \
+    __m128i g = _mm_and_si128(green_shifted, GREEN_MASK); /* G -> 0x00FF0000 */ \
+    __m128i b = _mm_and_si128(blue_shifted,  BLUE_MASK);  /* B -> 0x0000FF00 */ \
+    \
+    /* ---- Repack to RGBA in little-endian format: A[31:24] B[23:16] G[15:8] R[7:0] ---- */ \
+    __m128i a_hi  = _mm_slli_epi32(alevel_vec, 24);   /* assume alpha in 0x000000AA */ \
+    __m128i r_lo  = _mm_srli_epi32(r, 24);     /* R -> 0x000000RR */ \
+    __m128i g_mid = _mm_srli_epi32(g, 8);      /* G -> 0x0000GG00 */ \
+    __m128i b_hi  = _mm_slli_epi32(b, 8);      /* B -> 0x00BB0000 */ \
+    \
+    (io) = _mm_or_si128(_mm_or_si128(a_hi, b_hi), _mm_or_si128(g_mid, r_lo)); \
+} while(0)
 
 // NEON Equivalents...
-// 
+//
 // NEON version of Blargg's clamp with preloaded vectors
 #define SNES_NTSC_CLAMP_NEON(io) do {       \
     uint32x4_t shifted = vshrq_n_u32(io, 9);                               \
@@ -360,6 +404,7 @@ extern "C" {
 } while(0)
 
 // NEON version of Blargg's clamp with RGB conversion
+// (RGBA little-endian output)
 #define SNES_NTSC_CLAMP_AND_CONVERT_NEON(io) do {                          \
     uint32x4_t sub = vandq_u32(vshrq_n_u32(io, 9), clamp_mask_vec);        \
     uint32x4_t clamp = vsubq_u32(clamp_add_vec, sub);                      \
@@ -369,12 +414,14 @@ extern "C" {
     uint32x4_t red_shifted   = vshlq_n_u32(io, 3);                         \
     uint32x4_t green_shifted = vshlq_n_u32(io, 5);                         \
     uint32x4_t blue_shifted  = vshlq_n_u32(io, 7);                         \
-    uint32x4_t red      = vandq_u32(red_shifted, RED_MASK);                \
+    uint32x4_t red      = vandq_u32(red_shifted,   RED_MASK  );            \
     uint32x4_t green    = vandq_u32(green_shifted, GREEN_MASK);            \
-    uint32x4_t blue     = vandq_u32(blue_shifted, BLUE_MASK);              \
-    uint32x4_t combined = vorrq_u32(red, green);                           \
-    combined = vorrq_u32(combined, blue);                                  \
-    io = vorrq_u32(combined, alevel_vec);                                  \
+    uint32x4_t blue     = vandq_u32(blue_shifted,  BLUE_MASK );            \
+    uint32x4_t abgr     = vorrq_u32(vorrq_u32(red, green),                 \
+                                    vorrq_u32(blue, alevel_vec));          \
+    /* ABGR -> RGBA (little-endian) by reversing bytes in each 32b lane */ \
+    (io) = vreinterpretq_u32_u8(                                           \
+              vrev32q_u8(vreinterpretq_u8_u32(abgr)));                     \
 } while(0)
 
 
@@ -414,7 +461,7 @@ extern "C" {
 }
 
 // SSE4 (Intel/AMD) - convert to RGB and store to RAM
-#define SNES_NTSC_RGB_OUT_STORE_SSE4(line_out, raw_vec, alevel_vec) do { \
+#define SNES_NTSC_RGB_OUT_STORE_SSE4_ABGR(line_out, raw_vec, alevel_vec) do { \
     /* Shift raw_ left by 3 bits and mask with 0xFF000000 */ \
     __m128i shifted3 = _mm_slli_epi32(raw_vec, 3); \
     __m128i masked3  = _mm_and_si128(shifted3, RED_MASK); \
@@ -437,17 +484,42 @@ extern "C" {
     _mm_store_si128((__m128i*)line_out, rgba_out); \
 } while(0)
 
-// NEON Equivalent...
+/* RGBA version (as little-endian) */
+#define SNES_NTSC_RGB_OUT_STORE_SSE4(line_out, raw_vec, alevel_vec) do { \
+    /* These shifts/masks match your internal format: */ \
+    __m128i shifted3 = _mm_slli_epi32((raw_vec), 3); \
+    __m128i r_masked = _mm_and_si128(shifted3, RED_MASK);     /* R in 0xFF000000 */ \
+    \
+    __m128i shifted5 = _mm_slli_epi32((raw_vec), 5); \
+    __m128i g_masked = _mm_and_si128(shifted5, GREEN_MASK);   /* G in 0x00FF0000 */ \
+    \
+    __m128i shifted7 = _mm_slli_epi32((raw_vec), 7); \
+    __m128i b_masked = _mm_and_si128(shifted7, BLUE_MASK);    /* B in 0x0000FF00 */ \
+    \
+    /* Reposition into RGBA in little-endian: A[31:24] B[23:16] G[15:8] R[7:0] */ \
+    __m128i a_hi = _mm_slli_epi32((alevel_vec), 24);          /* assume A in 0x000000FF */ \
+    __m128i r_lo = _mm_srli_epi32(r_masked, 24);              /* R -> 0x000000FF */ \
+    __m128i g_mid = _mm_srli_epi32(g_masked, 8);              /* G -> 0x0000FF00 */ \
+    __m128i b_hi = _mm_slli_epi32(b_masked, 8);               /* B -> 0x00FF0000 */ \
+    \
+    __m128i abgr_out = _mm_or_si128(_mm_or_si128(a_hi, b_hi), \
+                                    _mm_or_si128(g_mid, r_lo)); \
+    _mm_store_si128((__m128i*)(line_out), abgr_out); \
+} while (0)
+
+// NEON Equivalent... (RGBA little-endian output)
 #define SNES_NTSC_RGB_OUT_STORE_NEON(line_out, raw_vec, alevel_vec) do { \
-    uint32x4_t shifted3 = vshlq_n_u32(raw_vec, 3); \
-    uint32x4_t masked3  = vandq_u32(shifted3, RED_MASK); \
-    uint32x4_t shifted5 = vshlq_n_u32(raw_vec, 5); \
-    uint32x4_t masked5  = vandq_u32(shifted5, GREEN_MASK); \
-    uint32x4_t shifted7 = vshlq_n_u32(raw_vec, 7); \
-    uint32x4_t masked7  = vandq_u32(shifted7, BLUE_MASK); \
-    uint32x4_t combined = vorrq_u32(vorrq_u32(masked3, masked5), masked7); \
-    uint32x4_t rgba_out = vorrq_u32(combined, alevel_vec); \
-    vst1q_u32(line_out, rgba_out); \
+    uint32x4_t shifted3 = vshlq_n_u32(raw_vec, 3);                  \
+    uint32x4_t masked3  = vandq_u32(shifted3, RED_MASK);            \
+    uint32x4_t shifted5 = vshlq_n_u32(raw_vec, 5);                  \
+    uint32x4_t masked5  = vandq_u32(shifted5, GREEN_MASK);          \
+    uint32x4_t shifted7 = vshlq_n_u32(raw_vec, 7);                  \
+    uint32x4_t masked7  = vandq_u32(shifted7, BLUE_MASK);           \
+    uint32x4_t abgr = vorrq_u32(vorrq_u32(masked3, masked5),        \
+                                vorrq_u32(masked7, (alevel_vec)));  \
+    uint32x4_t rgba = vreinterpretq_u32_u8(                         \
+                          vrev32q_u8(vreinterpretq_u8_u32(abgr)));  \
+    vst1q_u32((line_out), rgba);                                    \
 } while(0)
 
 // store four pre-computed RGB values to RAM

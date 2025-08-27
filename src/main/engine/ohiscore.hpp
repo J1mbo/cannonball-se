@@ -39,6 +39,10 @@ public:
     void setup_road_best();
     void display_scores();
 
+    // JJP - returns score_pos, to enable high-score to be saved on time-out, even is player
+    // let it time-out on 'ED'
+    int score_position();
+
 private:
     const static uint16_t TILE_PROPS = 0x8030;
 

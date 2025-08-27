@@ -84,7 +84,14 @@ struct video_settings_t
     int vsync;
     int shadow;
 
-    // JJP - CRT emulation related settings follow...
+    // s16accuracy - 1 = accurate S16 glowy edges, 0 = approximation (faster)
+    // this is used in hwsprites.cpp to short-cut sprite rendering for limited systems e.g. Pi2.
+    int s16accuracy;
+
+    // JJP - User configurable X and Y position
+    // range is -100 to +100, being pixel offsets from calculated image position
+    int x_offset;
+    int y_offset;
 
     // JJP - Blargg CRT filtering constants
     const static int BLARGG_DISABLE = 0;
@@ -101,16 +108,18 @@ struct video_settings_t
     int gamma;
     int hue;
     int resolution;
-    
+
     // JJP - CRT Shader settings
-    int alloff;
-    int shadow_mask;
-    int mask_intensity;
-    int crt_shape; // actually implemented as an SDL2 texture overlay
-    int vignette;
+    int shader_mode;        // 0 = off (actually pass-through), 1 = fast, 2 = full
+    int shadow_mask;        // 0 = off, 1 = overlay based (fast), 2 = shader based (looks better)
+    int mask_size;          // 1 = normal, 2 for high DPI screens eg retina
+    int crt_shape;          // actually implemented as an SDL2 texture overlay
+    int vignette;           // implemented in overlay or shader
     int noise;
     int warpX;
     int warpY;
+    int maskDim;            // 0-95, will be used as [value]/100
+    int maskBoost;          // 100-195, will be used [value]/100
     int desaturate;
     int desaturate_edges;
     int brightboost;
@@ -125,9 +134,10 @@ struct sound_settings_t
     int fix_samples;
     int music_timer;
     std::vector <music_t> music;
-    // JJP - BPM for synth playback
-    int playback_speed;
+    int callback_rate;   // 0 = 8ms, 1 = 16ms (needed for WSL2)
     int playback_device; // omit from config file or set to -1 to use system default
+    int wave_volume;     // when using .wav files, the playback volume (1-8 where 5 = no adjustment)
+    int custom_tracks_loaded = 0; // used to mask help text at startup if tracks are loaded
 };
 
 struct controls_settings_t
@@ -222,6 +232,7 @@ public:
     Config(void);
     ~Config(void);
 
+    void get_custom_music(const std::string& respath);
     void set_config_file(const std::string& filename);
     void load();
     bool save();
@@ -235,7 +246,9 @@ public:
     void set_fps(int fps);
     void inc_time();
     void inc_traffic();
-   
+
+    // To support multi-threaded SDL module:
+    bool videoRestartRequired = false;
 private:
 };
 

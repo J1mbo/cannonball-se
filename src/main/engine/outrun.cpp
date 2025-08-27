@@ -29,6 +29,7 @@
 #include "engine/otiles.hpp"
 #include "engine/otraffic.hpp"
 #include "engine/outils.hpp"
+#include <iostream>
 
 Outrun outrun;
 
@@ -200,14 +201,13 @@ void Outrun::jump_table()
         case GS_REINIT:
         case GS_CALIBRATE_MOTOR:
             break;
- 
+
         // ----------------------------------------------------------------------------------------
         // Couse Map Specific Code
         // ----------------------------------------------------------------------------------------
         case GS_MAP:
             omap.tick();
             break;
-
 
         case GS_MUSIC:
             if (tick_frame) omusic.check_start(); // Check for start button
@@ -242,11 +242,13 @@ void Outrun::jump_table()
         case GS_LOGO:
             if (!tick_frame)
                 ologo.blit();
+            [[fallthrough]];
 
         case GS_ATTRACT:
         case GS_BEST1:
             if (tick_frame) check_freeplay_start();
-        
+            [[fallthrough]];
+
         default:
             if (tick_frame) osprites.tick();                // Address #3 Jump_SetupSprites
             olevelobjs.do_sprite_routine();                 // replaces calling each sprite individually
@@ -305,8 +307,8 @@ void Outrun::main_switch()
     {
         case GS_INIT:  
             init_attract();
-            // fall through
-            
+            [[fallthrough]];
+
         // ----------------------------------------------------------------------------------------
         // Attract Mode
         // ----------------------------------------------------------------------------------------
@@ -324,6 +326,7 @@ void Outrun::main_switch()
             osoundint.queue_sound(sound::FM_RESET);
             cannonball::audio.clear_wav();
             game_state = GS_BEST1;
+            [[fallthrough]];
 
         case GS_BEST1:
             ohud.draw_copyright_text();
@@ -346,6 +349,7 @@ void Outrun::main_switch()
             osoundint.queue_sound(0);
             ologo.enable(sound::FM_RESET);
             game_state = GS_LOGO;
+            [[fallthrough]];
 
         case GS_LOGO:
             ohud.draw_credits();
@@ -370,6 +374,7 @@ void Outrun::main_switch()
             config.stats.playcount++; // JJP - increment game counter
             omusic.enable();
             game_state = GS_MUSIC;
+            [[fallthrough]];
 
         case GS_MUSIC:
             ohud.draw_credits();
@@ -402,7 +407,7 @@ void Outrun::main_switch()
             osoundint.queue_sound(sound::VOICE_GETREADY);
             osoundint.queue_sound(sound::REVS);             // Moved from Z80 Code for extra flexibility
             omusic.play_music();
-            
+
             if (!freeze_timer)
                 ostats.time_counter = ostats.TIME[config.engine.dip_time * 40]; // Set time to begin level with
             else
@@ -416,7 +421,7 @@ void Outrun::main_switch()
             video.enabled = true;
             game_state = GS_START1;
             ohud.draw_main_hud();
-            // fall through
+            [[fallthrough]];
 
         //  Start Game - Car Driving In
         case GS_START1:
@@ -459,6 +464,7 @@ void Outrun::main_switch()
             ostats.game_completed |= BIT_0;             // Denote game completed
             obonus.bonus_timer = 3600;                  // Safety Timer Added in Rev. A Roms
             game_state = GS_BONUS;
+            [[fallthrough]];
 
         case GS_BONUS:
             if (--obonus.bonus_timer < 0)
@@ -498,6 +504,7 @@ void Outrun::main_switch()
             }
             osoundint.queue_sound(sound::NEW_COMMAND);
             game_state = GS_GAMEOVER;
+            [[fallthrough]];
 
         case GS_GAMEOVER:
             if (cannonball_mode == MODE_ORIGINAL)
@@ -529,7 +536,7 @@ void Outrun::main_switch()
             omap.init();
             ohud.blit_text2(TEXT2_COURSEMAP);
             game_state = GS_MAP;
-            // fall through
+            [[fallthrough]];
 
         case GS_MAP:
             break;
@@ -560,7 +567,7 @@ void Outrun::main_switch()
             osoundint.queue_sound(sound::FM_RESET);
             cannonball::audio.clear_wav();
             game_state = GS_BEST2;
-            // fall through
+            [[fallthrough]];
 
         case GS_BEST2:
             ohiscore.tick(); // Do High Score Logic
@@ -569,6 +576,12 @@ void Outrun::main_switch()
             // If countdown has expired
             if (decrement_timers())
             {
+                if (ohiscore.score_position()>-1) {
+                    // JJP - always save when timer reaches zero. This avoids scores being lost
+                    // if the player leaves it flashing on 'ED'
+                    std::cout << "Saving new high score" << std::endl;
+                    config.save_scores(outrun.cannonball_mode == Outrun::MODE_ORIGINAL);
+                }
                 //ROM:0000B700                 bclr    #5,(ppi1_value).l                   ; Turn screen off (not activated until PPI written to)
                 oferrari.car_ctrl_active = true; // 0 : Allow road updates
                 init_jump_table();
@@ -602,7 +615,7 @@ void Outrun::main_switch()
                 if (oinitengine.camera_x_off < 0)
                     fork_chosen = -1;
                 else
-                    fork_chosen = 1;        
+                    fork_chosen = 1;
             }
         }
         else if (fork_chosen)
@@ -611,16 +624,16 @@ void Outrun::main_switch()
         // Hack to allow user to choose road fork with left/right
         if (fork_chosen == -1)
         {
-            oroad.road_width_bak = oroad.road_width >> 16; 
-            oroad.car_x_bak = -oroad.road_width_bak; 
+            oroad.road_width_bak = oroad.road_width >> 16;
+            oroad.car_x_bak = -oroad.road_width_bak;
             oinitengine.car_x_pos = oroad.car_x_bak;
         }
         else
         {
-            oroad.road_width_bak = oroad.road_width >> 16; 
-            oroad.car_x_bak = oroad.road_width_bak; 
+            oroad.road_width_bak = oroad.road_width >> 16;
+            oroad.car_x_bak = oroad.road_width_bak;
             oinitengine.car_x_pos = oroad.car_x_bak;
-        } 
+        }
     }
 }
 
@@ -675,7 +688,7 @@ void Outrun::init_jump_table()
 
 // -------------------------------------------------------------------------------
 // Decrement Game Time
-// 
+//
 // Decrements Frame Count, and Overall Time Counter
 //
 // Returns true if timer expired.

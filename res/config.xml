@@ -1,35 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Default config file for Cannonball-SE, a CannonBall fork by James Pearce. See https://github.com/J1mbo/cannonball -->
 <!-- 
     Video Settings
 -->
 <video>
-	<!-- Set Screen Mode: 
-    
+	<!-- Set Screen Mode:
          0 is windowed, 
          1 is full-screen
          2 is full-screen stretched, no borders. (Aspect ratio will be lost. Scanlines will be disabled.)
+    Note: This build uses OpenGL-ES. Window mode may not be supported on all systems.
     -->
 	<mode>1</mode>
-	<!-- 
-        Windowed Mode Settings 
-        Scale: Scale or zoom factor for window mode. 1 is original size. 
-    -->
+	<!-- Window mode scale is the zoom factor for window mode, 1=original, 2=double etc -->
 	<window>
-		<scale>2</scale>
+		<scale>1</scale>
 	</window>
+	<!-- The following settings can be fully configured in-game -->
 	<widescreen>0</widescreen>
 	<fps_counter>0</fps_counter>
 	<vsync>1</vsync>
-	<alloff>0</alloff>
+	<x_offset>0</x_offset>
+	<y_offset>0</y_offset>
+	<s16accuracy>1</s16accuracy>
+	<shader_mode>2</shader_mode>
 	<shadow_mask>2</shadow_mask>
+	<maskDim>75</maskDim>
+	<maskBoost>125</maskBoost>
+	<scanlines>0</scanlines>
 	<crt_shape>1</crt_shape>
-	<vignette>10</vignette>
-	<noise>5</noise>
-	<warpX>2</warpX>
-	<warpY>1</warpY>
-	<desaturate>4</desaturate>
+	<vignette>30</vignette>
+	<noise>6</noise>
+	<warpX>1</warpX>
+	<warpY>3</warpY>
+	<desaturate>5</desaturate>
 	<desaturate_edges>4</desaturate_edges>
-	<brightboost>0</brightboost>
+	<brightboost>1</brightboost>
 	<blargg>1</blargg>
 	<saturation>30</saturation>
 	<contrast>0</contrast>
@@ -43,38 +48,27 @@
     Sound Settings
 -->
 <sound>
-	<!-- play music on music selection screen -->
 	<!-- Toggle Sound -->
 	<enable>1</enable>
 	<!-- Advertise Sound In Attract Mode -->
 	<advertise>1</advertise>
-	<!-- Custom Music: Play a WAV file instead of the inbuilt music -->
-	<custom_music>
-		<!-- Magical Sound Shower Replacement -->
-		<track1 enabled="0">
-			<title>MAGICAL SOUND SHOWER REMIX</title>
-			<filename>track1.wav</filename>
-		</track1>
-		<!-- Passing Breeze Replacement -->
-		<track2 enabled="0">
-			<title>PASSING BREEZE REMIX</title>
-			<filename>track2.wav</filename>
-		</track2>
-		<!-- Splash Wave Replacement -->
-		<track3 enabled="0">
-			<title>SPLASH WAVE REMIX</title>
-			<filename>track3.wav</filename>
-		</track3>
-		<track4 enabled="0">
-			<title>LAST WAVE REMIX</title>
-			<filename>track4.wav</filename>
-		</track4>
-	</custom_music>
+	<!-- play music on music selection screen -->
 	<preview>1</preview>
 	<fix_samples>1</fix_samples>
 	<playback_speed>125</playback_speed>
-	<rate>31250</rate>
+	<!-- Sample Rate:
+	    The arcade ran at 31250. This build supports that, except if musing custom music via mp3, then 44100 must be used. -->
+	<rate>44100</rate>
+	<!-- A list of SDL audio devices will be shown on screen when cannonball is started. Devices often list more than one
+         device, e.g. HDMI Audio and any USB sound device. Enter the number under playback_device corresponding to the device
+         listed by the game. -->
 	<playback_device>0</playback_device>
+	<!-- Callback Rate - either 0 (8ms) or 1 (16ms). 16ms will double the audio latency but may reduce dropouts on some systems. -->
+	<callback_rate>0</callback_rate>
+	<!-- Custom Music: Put .WAV, .MP3, or .YM files in res/ folder named as:
+         [01–99]_Track_Display_Name.[wav|mp3|ym] - e.g. 04_AHA_Take_On_Me.mp3
+         Indexes 01–03 will replace the built‑in tracks (01=Magical Sound Shower), higher indexes add tracks. -->
+	<wave_volume>4</wave_volume>
 </sound>
 <!-- 
     Controls Settings

@@ -26,10 +26,10 @@ private:
     static const uint32_t SPRITES_LENGTH = 0x100000 >> 2;
     static const uint16_t COLOR_BASE = 0x800;
 
-    uint32_t sprites[SPRITES_LENGTH]; // Converted sprites
-    
+    alignas(64) uint32_t sprites[SPRITES_LENGTH]; // Converted sprites
+
     // Two halves of RAM
-    uint16_t ram[SPRITE_RAM_SIZE];
-    uint16_t ramBuff[SPRITE_RAM_SIZE];
+    alignas(64) uint16_t ram[SPRITE_RAM_SIZE];
+    alignas(64) uint16_t ramBuff[SPRITE_RAM_SIZE];
 };
 

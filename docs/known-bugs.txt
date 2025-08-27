@@ -1,0 +1,10 @@
+As of August-2025:
+
+- 'Ghost' traffic flicks on screen when approaching checkpoints for 1 or maybe 2 frames,
+  and it is possible to crash into these if you're unlucky. Unknown currently if this is
+  an original SEGA code bug.
+
+- Audio may not play after system restart. This is caused by the SDL device ordering
+  changing on some systems at each boot. Future revision may include the option to select
+  audio device by name to resolve this.
+  

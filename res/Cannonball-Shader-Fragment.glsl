@@ -1,70 +1,49 @@
-#version 100
-
-/* ----------------------------------------------------------------------------- */
-/*                                                                               */
-/* Lightweight Pixel shader for Cannonball, by James Pearce, Copyright (c) 2025  */
-/*                                                                               */
-/* Provides processing to provide a game image that looks broadly like it's on   */
-/* on real CRT, when combined with Blargg filtering, which is done CPU side.     */
-/*                                                                               */
-/* Pi Zero 2W can run this at 60fps under Raspbian command-line installation     */
-/* based on: 1280x1024@60fps with vSync, and clocks:                             */
-/*                                                                               */
-/* arm_freq=1200                                                                 */
-/* core_freq=450                                                                 */
-/* gpu_freq=450                                                                  */
-/* sdram_freq=450                                                                */
-/*                                                                               */
-/* ----------------------------------------------------------------------------- */
-
-
-/* Version independence defines */
-#if __VERSION__ >= 130
-#define COMPAT_VARYING in
-#define COMPAT_TEXTURE texture
-#else
-#define COMPAT_VARYING varying
-#define FragColor gl_FragColor
-#define COMPAT_TEXTURE texture2D
-#endif
-
-#if __VERSION__ >= 130
-out COMPAT_PRECISION vec4 FragColor;
-#endif
-
-#ifdef GL_ES
-#ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
-#else
-precision mediump float;
-#endif
-#define COMPAT_PRECISION mediump
-#else
-#define COMPAT_PRECISION
-#endif
+
+/* ---------------------------------------------------------------------------- */
+/*                                                                              */
+/* Lightweight Pixel shader for Cannonball, by James Pearce, Copyright (c) 2025 */
+/*                                                                              */
+/* Provides processing to provide a game image that looks broadly like it's on  */
+/* on real CRT, when combined with Blargg filtering, which is done CPU side.    */
+/*                                                                              */
+/* Pi Zero 2W can run this at 60fps under Raspbian command-line installation    */
+/* based on: 1280x1024@60fps with vSync, and clocks:                            */
+/*                                                                              */
+/* arm_freq=1100                                                                */
+/* core_freq=450                                                                */
+/* gpu_freq=450                                                                 */
+/*                                                                              */
+/* Specifically, provides curvature, noise, vignette, shadow mask, and          */
+/* brightness boost. -Fast variant provides curvature and noise only.           */
+/*                                                                              */
+/* Note - requires highp for accurate shadow mask. Banding will be seen with    */
+/*        mediump on GPUs that support fp16.                                    */
+/*                                                                              */
+/* ---------------------------------------------------------------------------- */
+
 
 /* Inputs from Vertex Shader */
 uniform sampler2D Texture;
-COMPAT_VARYING vec2 v_texCoord;
-COMPAT_VARYING vec2 maskpos;
+uniform sampler2D Overlay;
+varying vec2 v_texCoord;
+varying vec2 maskpos;
 
 
 /* Inputs from Application */
 /* User configurable settings than can be adjusted in the UI */
-uniform COMPAT_PRECISION float warpX;
-uniform COMPAT_PRECISION float warpY;
-uniform COMPAT_PRECISION float expandX;
-uniform COMPAT_PRECISION float expandY;
-uniform COMPAT_PRECISION float brightboost;
-uniform COMPAT_PRECISION float noiseIntensity;
-uniform COMPAT_PRECISION float vignette;
-uniform COMPAT_PRECISION float desaturate;
-uniform COMPAT_PRECISION float desaturateEdges;
-uniform COMPAT_PRECISION float Shadowmask;
-uniform COMPAT_PRECISION vec2 u_Time; // set both elements to FrameCount / 60.0
-
-/* Constants */
-#define masksize 1.0 
+uniform float warpX;
+uniform float warpY;
+uniform vec2  invExpand;       // (1/expandX, 1/expandY)
+uniform float brightboost;
+uniform float noiseIntensity;
+uniform float vignette;
+uniform float desaturate;
+uniform float desaturateEdges;
+uniform float baseOff;         // shadow mask dim value, e.g. 0.75f
+uniform float baseOn;          // shadow mask boost value, usually 1/baseOff e.g. 1.333f
+uniform float invMaskPos;      // mask size, 1/1 = normal (1280x1024 screens), 1/2 = high DPI screens
+uniform vec2 u_Time; // set both elements to FrameCount / 60.0
 
 
 // -------------------------------------------------------------------
@@ -75,7 +54,10 @@ vec2 Warp(vec2 pos)
 {
     // Expand the input texture coordinates about the center (0.5, 0.5)
     // This remaps pos so that if expandX or expandY is not 1.0, the image is zoomed in or out.
-    pos = (pos - 0.5) / vec2(expandX, expandY) + 0.5;
+    // Since divides are expense, we pass in invExpand as (1/expandX,1/expandY) so we multiply only
+    // pos = (pos - 0.5) / vec2(expandX, expandY) + 0.5;
+    vec2 centered = pos - 0.5;
+    pos = centered * invExpand + 0.5;
 
     // Convert [0,1] texture coordinates to [-1,1]
     pos = pos * 2.0 - 1.0;    
@@ -129,15 +111,15 @@ vec3 addNoise(vec3 colour, vec2 uv, float intensity) {
 
 vec3 fastmask()
 {
-    // Remove the unused computation:
-    // vec2 dummy = floor(pos / masksize);
-    vec2 mpos = floor(maskpos);
+    vec2 mpos = floor(maskpos * invMaskPos);
+    //vec2 mpos = floor(maskpos);
     float tmpvar_1 = fract(mpos.x / 3.0);
     float tmpvar_2 = fract(mpos.x / 6.0);
     float tmpvar_3 = fract(mpos.y / 2.0);
     
     // Step 1: choose base value without an if statement.
-    float base = mix(0.7498125, 1.333, step(0.001, tmpvar_1));
+    // float base = mix(0.7498125, 1.333, step(0.001, tmpvar_1));
+    float base = mix(baseOff, baseOn, step(0.001, tmpvar_1));
     
     // Step 2: choose the multiplier conditionally.
     float condA = step(0.001, tmpvar_1);
@@ -145,7 +127,7 @@ vec3 fastmask()
     float condBranchB = step(0.5, tmpvar_2);
     float branchSelector = step(tmpvar_3, 0.001);
     float maskCondition = branchSelector * condBranchA + (1.0 - branchSelector) * condBranchB;
-    float multiplier = mix(1.0, 0.75, condA * maskCondition);
+    float multiplier = mix(1.0, baseOff, condA * maskCondition);
     
     float maskVal = base * multiplier;
     return vec3(maskVal);
@@ -184,7 +166,12 @@ vec3 DesaturateAndVignette(vec2 pos, vec3 colour)
     
     // Raise the black level but leave white unchanged - Moves black from 0 to
     // totalOffset/(1+totalOffset)
-    vec3 pCol = (colour + vec3(totalOffset)) / (1.0 + totalOffset);
+    //
+    // the following is equivalent to but potentially 1 div instead of 3:
+    // vec3 pCol = (colour + vec3(totalOffset)) / (1.0 + totalOffset);
+
+    float invDenom   = 1.0 / (1.0 + totalOffset);
+    vec3  pCol       = (colour + vec3(totalOffset)) * invDenom;    
     
     // Apply vignette using the same distance calculation
     float dimVal = normDist * vignette;
@@ -207,17 +194,8 @@ void main()
 
     // Sample texture colour and calculate luminance
     vec3 pCol = texture2D(Texture, warpedUV).rgb;
-    float lum = (pCol.r + pCol.g + pCol.b) * 0.33333 * 0.9;
 
-    // Uncomment the if statement to black-out areas beyond the texture to calibrate warp
-    // and stretch in your configuration combined with CRT shape mask.
-    // Conditional branches are very expensive on VideoCore IV GPU so this line will
-    // reduce framerate on Pi Zero 2W and Pi3.
-    // if (warpedUV.x < 0.0 || warpedUV.x > 1.0 || warpedUV.y < 0.0 || warpedUV.y > 1.0)
-    //    pCol = vec3(0.0);
-        
-    //vec3 lumWeighting = vec3(0.299,0.587,0.114);
-    //float lum=dot(pCol, lumWeighting);
+    float lum = (pCol.r + pCol.g + pCol.b) * 0.33333 * 0.9;
 
     // Add noise
     pCol = addNoise(pCol, warpedUV, noiseIntensity);
@@ -231,5 +209,8 @@ void main()
     // Apply brighening
     pCol *= brightboost;
 
-    FragColor = vec4(pCol, 1.0);
+    // Apply overlay
+    pCol *= texture2D(Overlay, v_texCoord).rgb;
+    
+    gl_FragColor = vec4(pCol, 1.0);
 }

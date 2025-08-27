@@ -1,12 +1,15 @@
-/* snes_ntsc 0.2.2. http://www.slack.net/~ant/ */
+/* Based on snes_ntsc 0.2.2. http://www.slack.net/~ant/
 
-// Updated by James Pearce:
-// - S16 emulation at 24-bit output depth
-// - threaded initialisation
-// - SIMD blitter
+Updates for CannonBall-SE are Copyright (c) 2025 James Pearce:
+- S16 emulation at 24-bit output depth
+- threaded initialisation
+- SSE/NEON SIMD blitters
+Updates Aug-25:  removed AVX dependency (now works with only SSE4.1)
+                 removed ARM AArch64 dependency (now works with ARMv7 NEON e.g. Pi2 v1.1)
+*/
 
 #include "snes_ntsc.h"
-#include <omp.h> // JJP - OpenMP support for multi-threading initialization
+#include <omp.h>    // JJP - OpenMP support for multi-threading initialization
 #include <stdint.h> // uint32_t etc
 
 
@@ -35,7 +38,7 @@ snes_ntsc_setup_t const snes_ntsc_rgb = { 0, 0, 0, 0,.2,  0,.7, -1, -1,-1,  1, 0
 #define fringing_mid    1.0f
 #define std_decoder_hue 0
 
-#define rgb_bits        7 /* half normal range to allow for doubled hires pixels */
+#define rgb_bits        7   /* half normal range to allow for doubled hires pixels */
 #define gamma_size      256 // JJP - 8-bit range of input values for S16 as adjusted for DACs
 
 #include "snes_ntsc_impl.h"
@@ -45,26 +48,6 @@ pixel_info_t const snes_ntsc_pixels[alignment_count] = {
     { PIXEL_OFFSET(-4, -9), { 1, 1, .6667f, 0 } },
     { PIXEL_OFFSET(-2, -7), {       .3333f, 1, 1, .3333f } },
     { PIXEL_OFFSET(0, -5), {                  0, .6667f, 1, 1 } },
-};
-
-const unsigned int mod7[256] = {
-    // lookup table for x%7 (x is 0-255)
-    0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1,
-    2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3,
-    4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5,
-    6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0,
-    1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2,
-    3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4,
-    5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6,
-    0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1,
-    2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3,
-    4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5,
-    6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0,
-    1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2,
-    3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4,
-    5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6,
-    0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1,
-    2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3
 };
 
 const unsigned int S16_rgbVals[96] = {
@@ -145,9 +128,9 @@ void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup)
             // 32768..65535 - shadow levels
             // 65536..98303 - hilite levels
 
-            unsigned int red_index = (entry >> 10 & 0x1F) + ((entry >> 15) * 32);
-            unsigned int green_index = (entry >> 5 & 0x1F) + ((entry >> 15) * 32);
-            unsigned int blue_index = (entry << 0 & 0x1F) + ((entry >> 15) * 32);
+            unsigned int red_index   = (entry >> 10 & 0x1F) + ((entry >> 15) * 32);
+            unsigned int green_index = (entry >> 5 & 0x1F)  + ((entry >> 15) * 32);
+            unsigned int blue_index  = (entry << 0 & 0x1F)  + ((entry >> 15) * 32);
 
             unsigned int ir = S16_rgbVals[red_index];
             unsigned int ig = S16_rgbVals[green_index];
@@ -238,7 +221,6 @@ void snes_ntsc_blit(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long i
 }
 
 
-#include <stdint.h>
 
 
 void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long in_row_width,
@@ -300,138 +282,6 @@ void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, 
 
         SNES_NTSC_COLOR_IN(5, snes_ntsc_black);
         SNES_NTSC_HIRES_OUT(5, line_out[5], SNES_NTSC_OUT_DEPTH, Alevel);
-        
-        SNES_NTSC_HIRES_OUT(6, line_out[6], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        burst_phase = (burst_phase + 1) % snes_ntsc_burst_count;
-        input += in_row_width;
-        rgb_out = (char*)rgb_out + out_pitch;
-    }
-}
-
-// Debug performance counters
-/*
-void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long in_row_width,
-    int burst_phase, int in_width, int in_height, void* rgb_out, long out_pitch, long Alevel)
-// This version utilises SIMD registers to keep track of the current and last set of six
-// pixels processed, and the associated output values, allowing for computation to be avoided if the
-// colour is the same for four or more passes. Since Outrun has large areas of sky and road, this
-// should significantly reduce processing effort.
-{
-    int chunk_count = (in_width - 2) / (snes_ntsc_in_chunk * 2);
-    for (; in_height; --in_height)
-    {
-        // setup the first block, which will affect the second block.
-        // read the first two pixels
-        SNES_NTSC_IN_T const* line_in = input;
-        SNES_NTSC_HIRES_ROW(ntsc, burst_phase,
-            snes_ntsc_black, snes_ntsc_black, snes_ntsc_black,
-            SNES_NTSC_ADJ_IN(line_in[0]),
-            SNES_NTSC_ADJ_IN(line_in[1]));
-        snes_ntsc_out_t* restrict line_out = (snes_ntsc_out_t*)rgb_out;
-        
-        // advanced pointer
-        line_in += 2;
-        
-        // set up SIMD registers and flags
-        int iterations = 0;
-        long last_input_crc = 0xFFFFFFFFu;
-
-        long v2[4], v3[4];
-
-        for (int n = chunk_count; n; --n)
-        {
-            long this_input_crc;
-            // Retrieve six inputs from memory, hopefully to SIMD registers
-            // Define 'v0' and 'v1' as XMM registers
-            SIMD_REGISTER_t xmm0; // To hold first four values
-            SIMD_REGISTER_t xmm1; // To hold the remaining two values
-            // Load the first four 32-bit integers into XMM0
-            xmm0 = _mm_loadu_si128((SIMD_REGISTER_t*) & line_in[0]);
-            // Load the remaining two 32-bit integers into XMM1 and pad with zeros
-            xmm1 = _mm_set_epi32(0, 0, line_in[5], line_in[4]);
-            
-            // compute CRC
-            if ( (this_input_crc=
-                _mm_crc32_u32(
-                    _mm_crc32_u32(
-                        _mm_crc32_u32(
-                            _mm_crc32_u32(
-                                _mm_crc32_u32(
-                                    _mm_crc32_u32(0xFFFFFFFFu, EXTRACT_SIMD_REGISTER_VALUE(xmm0, 0)),
-                                    EXTRACT_SIMD_REGISTER_VALUE(xmm0, 1)),
-                                EXTRACT_SIMD_REGISTER_VALUE(xmm0, 2)),
-                            EXTRACT_SIMD_REGISTER_VALUE(xmm0, 3)),
-                        EXTRACT_SIMD_REGISTER_VALUE(xmm1, 0)),
-                    EXTRACT_SIMD_REGISTER_VALUE(xmm1, 1))
-                ) == last_input_crc) {
-                iterations += 1;
-            }
-            else {
-                iterations = 0; // reset
-                last_input_crc = this_input_crc; // store this value for next pass
-            }
-
-            // check if we need to go through the calculation process
-            if (iterations == 3) {
-                // fourth iteration of the same colours therefore the same output
-                // values can be used. These are loaded already in v2/v3 so
-                // set the parameters to continue and drop to output
-                iterations = 2; // if the next iteration is the same colour again, it can be short-cut again
-                saved_calcs++; // debug counter
-            }
-            else {
-                done_calcs++;
-                // process six input pixels to produce seven outputs
-                SNES_NTSC_COLOR_IN(0, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 0)));
-                SNES_NTSC_HIRES_OUT(0, v2[0], SNES_NTSC_OUT_DEPTH, Alevel);
-
-                SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 1)));
-                SNES_NTSC_HIRES_OUT(1, v2[1], SNES_NTSC_OUT_DEPTH, Alevel);
-
-                SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 2)));
-                SNES_NTSC_HIRES_OUT(2, v2[2], SNES_NTSC_OUT_DEPTH, Alevel);
-
-                SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 3)));
-                SNES_NTSC_HIRES_OUT(3, v2[3], SNES_NTSC_OUT_DEPTH, Alevel);
-
-                SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 0)));
-                SNES_NTSC_HIRES_OUT(4, v3[0], SNES_NTSC_OUT_DEPTH, Alevel);
-
-                SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 1)));
-                SNES_NTSC_HIRES_OUT(5, v3[1], SNES_NTSC_OUT_DEPTH, Alevel);
-
-                SNES_NTSC_HIRES_OUT(6, v3[2], SNES_NTSC_OUT_DEPTH, Alevel);
-            }
-            // Save output to memory and advance pointer
-            line_out[0] = v2[0];
-            line_out[1] = v2[1];
-            line_out[2] = v2[2];
-            line_out[3] = v2[3];
-            line_out[4] = v3[0];
-            line_out[5] = v3[1];
-            line_out[6] = v3[2];
-            line_in += 6;
-            line_out += 7;
-        }
-
-        SNES_NTSC_COLOR_IN(0, snes_ntsc_black);
-        SNES_NTSC_HIRES_OUT(0, line_out[0], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(1, snes_ntsc_black);
-        SNES_NTSC_HIRES_OUT(1, line_out[1], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(2, snes_ntsc_black);
-        SNES_NTSC_HIRES_OUT(2, line_out[2], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(3, snes_ntsc_black);
-        SNES_NTSC_HIRES_OUT(3, line_out[3], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(4, snes_ntsc_black);
-        SNES_NTSC_HIRES_OUT(4, line_out[4], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(5, snes_ntsc_black);
-        SNES_NTSC_HIRES_OUT(5, line_out[5], SNES_NTSC_OUT_DEPTH, Alevel);
 
         SNES_NTSC_HIRES_OUT(6, line_out[6], SNES_NTSC_OUT_DEPTH, Alevel);
 
@@ -440,11 +290,11 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* in
         rgb_out = (char*)rgb_out + out_pitch;
     }
 }
-*/
-
 
 /* JJP - SIMD macro predefined mask vectors for performance */
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#if defined(__aarch64__) || defined(_M_ARM64)
+    #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_AARCH64
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
     #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_NEON
 #elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
     #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_SSE4
@@ -453,12 +303,13 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* in
 // Macro to check equality of 24 input pixels and store the result in
 // variable this_colour. The input pixels are stored in:
 // xmm0 lanes 2 and 3; xmm1 to xmm5; and xmm6 lanes 0 and 1.
+// This version is for Intel/AMD chips
 #define CHECK_ALL_EQUAL_SSE4 do { \
     /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1, as we're running 2-pixels out*/ \
     __m128i first_line = ROTATE_OUT(xmm0,xmm6,2);\
     /* Extract first value and broadcast to another register */ \
     uint32_t first_val = _mm_cvtsi128_si32(first_line); \
-    __m128i ref = _mm_broadcastd_epi32(first_line); \
+    __m128i ref = _mm_set1_epi32((int)first_val); /* AVX equivalent _mm_broadcastd_epi32(first_line);*/ \
     /* Compare each SIMD register to the reference and aggregate */ \
     __m128i cmp = _mm_cmpeq_epi32(first_line, ref); \
     cmp = _mm_and_si128(cmp, _mm_cmpeq_epi32(xmm1, ref)); \
@@ -471,7 +322,8 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* in
     this_colour = first_val & -(_mm_test_all_ones(cmp)); \
 } while (0)
 
-#define CHECK_ALL_EQUAL_NEON do { \
+// This version is for ARM 64-bit AArch64
+#define CHECK_ALL_EQUAL_AARCH64 do { \
     /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1, as we're running 2-pixels out */ \
     uint32x4_t first_line = ROTATE_OUT(xmm0, xmm6, 2); \
     /* Extract first value and broadcast to another register */          \
@@ -491,9 +343,35 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* in
     this_colour = first_val & mask; /* this_colour = first_val if all equal, else 0 */ \
 } while(0)
 
+/* --- ARMv7 NEON helpers (safe on Cortex-A7 / Pi 2) --- */
+#define CHECK_ALL_EQUAL_NEON do {                                                 \
+  /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1 */                                  \
+  uint32x4_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                              \
+  /* Use lane 0 as the reference value */                                         \
+  uint32_t first_val = vgetq_lane_u32(first_line, 0);                             \
+  uint32x4_t ref = vdupq_n_u32(first_val);                                        \
+                                                                                  \
+  /* Compare each vector to the reference (0xFFFFFFFF = equal, 0 = not equal) */  \
+  uint32x4_t cmp = vceqq_u32(first_line, ref);                                    \
+  cmp = vandq_u32(cmp, vceqq_u32(xmm1, ref));                                     \
+  cmp = vandq_u32(cmp, vceqq_u32(xmm2, ref));                                     \
+  cmp = vandq_u32(cmp, vceqq_u32(xmm3, ref));                                     \
+  cmp = vandq_u32(cmp, vceqq_u32(xmm4, ref));                                     \
+  cmp = vandq_u32(cmp, vceqq_u32(xmm5, ref));                                     \
+                                                                                  \
+  /* Pairwise-min reduction (min==AND for {0, 0xFFFFFFFF} masks) */               \
+  uint32x2_t r = vpmin_u32(vget_low_u32(cmp), vget_high_u32(cmp));                \
+  r = vpmin_u32(r, r);                                                            \
+  uint32_t lanes_min = vget_lane_u32(r, 0);                                       \
+                                                                                  \
+  /* Set this_colour = first_val iff ALL lanes matched; else 0 */                 \
+  uint32_t mask = (lanes_min == 0xFFFFFFFFu) ? 0xFFFFFFFFu : 0u;                  \
+  this_colour = first_val & mask;                                                 \
+} while (0)
 
-void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long in_row_width,
-    int burst_phase, int in_width, int in_height, void* rgb_out, long out_pitch, long Alevel)
+
+void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
+    int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel)
     // This version utilises SIMD registers streamline:
     // 1. Loading of pixels, as six 128-bit loads (providing 24 pixels in 6 registers)
     // 2. Clamp and RGB conversion, as the SIMD registers can be used to perform the calculations
@@ -524,7 +402,7 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* in
         // setup the first block, which will affect the second block.
         
         // load the first four pixels from memory
-        SNES_NTSC_IN_T const* line_in = input;
+        SNES_NTSC_IN_T const* restrict line_in = input;
         xmm0 = LOAD_SIMD_REGISTER(&line_in[0]);
         
         // and use the first two pixels for this initial block
@@ -541,7 +419,6 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* in
 
         for (int n = (chunk_count>>2); n; --n)
         {
-            long this_input_crc;
             // Load the next 5x4 = 20 pixels
             xmm1 = LOAD_SIMD_REGISTER(&line_in[4]);
             xmm2 = LOAD_SIMD_REGISTER(&line_in[8]);
@@ -553,7 +430,7 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* in
 
             // 1st six. Loop is unrolled to four iterations permitting full use
             // of 4-wide SIMD registers
-            
+
             CHECK_ALL_EQUAL; // stores result in this_colour, 0 if not equal or the colour if equal
 
             // identify if this block is a repeat. this_colour must be non-zero to identify a repeat block.
@@ -659,7 +536,8 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* in
                 SNES_NTSC_CLAMP_AND_CONVERT(xmm16);
 
             }
-            
+
+            __builtin_prefetch(line_in  + 32, 0, 0);   // prefect next input: read, streaming
             SNES_NTSC_RGB_STORE(&line_out[0], xmm10);
             SNES_NTSC_RGB_STORE(&line_out[4], xmm11);
             SNES_NTSC_RGB_STORE(&line_out[8], xmm12);

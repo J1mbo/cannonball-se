@@ -1,0 +1,16 @@
+
+In addition to the license terms described in license.txt, the following conditions apply:
+
+This release is a fork of the original GitHub project and, in addition to the original creator’s terms,
+is provided "as is", without warranty of any kind and used entirely at your own risk.
+
+All enhacements, alterations, and other original contributions contained in this fork (collectively, 
+"CannonBall SE") are Copyright © 2020–2025 James Pearce, <github.com/J1mbo/cannonball-se>
+
+The project may be used and distributed freely, but it may not be sold or otherwise monetised; all
+notices from the original project and this fork must be preserved. Any instructions, suggestions, or
+guidelines regarding overclocking or other performance-tuning techniques are provided solely for
+informational purposes; attempting them may cause system instability, data loss, or permanent hardware
+failure, and any such actions are undertaken entirely at your own risk.
+
+By downloading, building, or running this fork, you acknowledge and agree to these terms.

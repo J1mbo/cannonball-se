@@ -1,151 +1,143 @@
-# Cannonball - OutRun Engine
+# CannonBall‑SE
+
+*An easy-to-use fork of Chris White’s CannonBall OutRun engine, with enhanced graphics and cabinet‑friendly enhancements.*
+
+---
+
+## Overview
+
+CannonBall‑SE is a maintained fork of the cross‑platform OutRun engine, focused on an authentic arcade‑cab experience. Graphics seem more natural thanks to the video filter, subtle screen curvature, shadow‑mask effects, attention to accurate colour reproduction, subtle noise and desaturation, and automatic 30/60fps selection.
+
+Authentic game audio is ensured with a re-written audio module, and this also supports MP3/WAV custom music.
+
+Gameplay is refined with additional rumble and various performance and stability fixes (it also hooks a hardware watchdog where available to ensure reliable continuous operation). Play count and “machine hours” are also tracked.
+
+> **Note:** SDL\_gpu is **no longer required**.
+
+---
+
+## Supported Platforms
+
+* **Raspberry Pi (Pi 2/3/4/5/Zero-2W)** running Raspberry Pi OS.
+* **x86/x64 PCs** (Intel/AMD with SSE4) running a recent Linux distribution (e.g., Ubuntu).
+
+A desktop is not required - use the command-line version of the OS.
+
+---
+
+## ROMs (Required)
+
+CannonBall‑SE requires a copy of the original **OutRun revision B** ROM set. Copy the ROMs into the project’s `roms/` directory. You are expected to legally own the original ROMs; usage may be restricted by local law.
+
+---
+
+## Quick Start Guide
+
+Use the included script 'install.sh' to install prerequisites, build the project, and set device permissions automatically.
+
+```bash
+# 1) Fetch sources
+git clone https://github.com/J1mbo/cannonball-se.git
+cd cannonball-se
+
+# 2) Build & set up (installs deps, compiles, grants permissions)
+chmod +x install.sh
+./install.sh
+
+# 3) Add your OutRun rev B ROMs
+mkdir -p roms
+# copy your ROM set into ./roms
+
+# 4) Run
+build/cannonball-se
+# Note: If running under a desktop, Wayland will likely improve frame-rate; start as:
+# SDL_VIDEODRIVER=wayland build/cannonball-se
+```
+
+The script installs system packages, configures the linker as needed, compiles the game (optimised for the system it's building on) with CMake into `./build/`, and applies permissions so it can access `/dev/watchdog` and `/dev/hidraw` for rumble.
+
+---
+
+## Command‑line Options (summary)
+
+* `-h` — Show options and man‑page link, then quit
+* `-list-audio-devices` — List available playback devices, then quit
+* `-cfgfile <path>` — Use a specific `config.xml`
+* `-file <layout>` — Load LayOut Editor track data (custom routes)
+* `-30` or `-60` — Force 30 or 60 fps (disables auto selection)
+* `-t [1–4]` — Override hardware thread detection (1–4 threads)
+
+---
+
+## Default Controls (keyboard)
+
+* **Start (free‑play)** `S`, **Coin-In** `C`
+* **Accelerate** `A`, **Brake** `Z`, **Low/High Gear** `G` / `H`, **Steer** ← →, **Change View** `V`
+* **Menu** `M`, **Up/Down** ↑ ↓, **Select/Confirm** `S`, **Quit** `Esc`
+
+Controls (keyboard, wheels, pads) can be remapped in *Menu → Settings → Controls*.
+
+---
+
+## Wheels & Gamepads
+
+USB steering wheels, joysticks, and gamepads are supported. For wheels without SDL rumble, CannonBall‑SE can drive rumble via `/dev/hidraw` when supported by the device.
+
+---
+
+## Custom Music (WAV/MP3/YM)
+
+Place audio files in `./res/` using the scheme:
+
+```
+[01–99]_Track_Display_Name.[wav|mp3|ym]
+# e.g. 04_AHA_Take_On_Me.mp3
+```
+
+Indexes **01–03** replace the built‑in tracks (01 = *Magical Sound Shower*); **04+** add entries to the radio list. Use **44.1 kHz, 16‑bit stereo** audio files.
+
+---
+
+## Performance Notes
+
+* **Pi4** is a great sweet spot for 60 fps with the full shader at 1080p.
+* **Pi2 (v1.2)/Pi3/Zero-2W** can reach 60 fps with the “Fast” shader (and with the "Full" shader when the GPU is overclocked to 400MHz)
+* **Pi2 (v1.1)** is typically locked at 30 fps unless heavily overclocked.
+* Higher‑DPI displays need more power - Pi5 or Intel/AMD.
+
+---
+
+## Audio Troubleshooting (Pi)
+
+* **USB audio on Pi2/3/Zero-2W**: Set USB to *full‑speed* to avoid drop-outs (append `dwc_otg.speed=1` to `/boot/firmware/cmdline.txt`). Be aware this may affect some USB keyboards; BT keyboards or SSH are alternatives.
+* **Callback rate**: On slower setups using analog output (Pi2 especially), switch the music callback from **8ms** to **16ms** (*Menu → Settings → Sound/Music → Callback Rate*).
+
+---
+
+## Watchdog
+
+On hardware with a watchdog (all Raspberry Pi boards), the game integrates with it so the OS will auto‑reboot on hang (e.g., aggressive overclocks).
+
+---
+
+## License
+
+* **Upstream CannonBall license**: non‑commercial use; modified redistributions must include full source; warranty disclaimer. See `license.txt` in the repo.
+* **CannonBall‑SE additional terms**: this fork’s enhancements © 2020–2025 James Pearce; provided “as is”; not for sale/monetisation; preserve notices. See `CannonBall-SE-license.txt`.
+* **Third‑party notices**: includes Blargg’s `snes_ntsc` under **LGPL‑2.1**; if statically linking, provide relinkable objects or equivalent. See `THIRD-PARTY-NOTICES.md` and `licenses/`.
+
+*OutRun is a trademark of SEGA Corporation. This project is not affiliated with SEGA.*
+
+---
 
 ## Credits
 
-* **Chris White** - Project creator. See [Reassembler Blog](http://reassembler.blogspot.co.uk/) and [GitHub Repo](https://github.com/djyt/cannonball)
+* Original engine by **Chris White** and contributors.
+* CannonBall‑SE by **James Pearce**.
+* NTSC Filter library by **Shay Green** ('Blargg').
 
-## What Is This Version?
+---
 
-This build is tuned for use in home-made cabinets powered by Raspberry Pi Zero 2W and focuses on providing a gaming experience closer to the arcade when using an LCD screen. There are a number of enhancements over Reassembler's (incredible!) original:
+## See Also
 
-- **CRT effects**: Implemented with a combination of a SIMD-tuned version of Blargg's NTSC filter, overlay mask, and GLSL shader.
-- **Automatic 30/60 FPS selection** and automatic frame-drops to keep the game running smoothly.
-- **Audio output device specification**: The audio device can be set in `config.xml` (available devices are listed when the game is run).
-- **Audio optimized for 31,250Hz operation** to match the original S16 hardware.
-- **Enhanced rumble**: Provides some rumble effect with tyre smoke and uses `/dev/hidraw` to activate rumble if SDL doesn't support the device.
-- **Linux watchdog support**: Automatically restarts the device on hang (for example, due to too aggressive overclocking; the game has been tested with over 2 days run-time).
-
-This build will run at 60FPS on just a Pi Zero 2W at 1280x1024 (requires 450MHz GPU configuration and a cooling solution) when using a lite command-line only installation of Raspbian. It should also run at 60FPS on a Pi3 since that has the same SoC.
-
-For cooling, an aluminium case like [this one from Pimoroni](https://shop.pimoroni.com/products/aluminium-heatsink-case-for-raspberry-pi-zero) (no affiliation) works fine, with the SoC temperature settling at about 70°C.
-
-The SIMD implementation of the Blargg library also supports compiling on x86. For those interested in the operation of Blargg's NTSC filter, some notes from various sources are included in the file `docs/Blargg-NTSC-Filter-Concepts-and-Implementation.txt`. The implementation for this project is located in the `SDL2` folder.
-
-## What You Need
-
-- **Hardware**:
-  - Raspberry Pi Zero 2W or Pi 3/4/5.
-  - A screen such as a Dell 1708FP or similar. These are ideal because they have a removable VESA mount (great for arcade cases) and include a USB hub (for wheel, sound, cooling fan, etc.). They are often available very cheaply (sometimes even new).
-- Cabinet revision B ROMs, copied to the `roms` directory and renamed if necessary.
-- Ideally, a wheel. The included `config.xml` is set up for the ancient Thrustmaster Ferrari GT Experience, a rumble-capable PC/PS3 USB wheel, which is often available at low cost on auction sites.
-
-## Getting Started
-
-The following instructions assume you are starting with a minimal 64-bit command-line install (last updated for the Bookworm release). A Micro-SD card for this install can be created with the **Raspberry Pi Imager** by selecting the platform, then in "Raspberry Pi OS (other)" choosing **Raspberry Pi OS Lite (64-bit)**. You will need at least an 8GB micro-SD card. For a more durable solution, use an industrial card (for example, Sandisk SDSDQAF3-008G-I available from Mouser).
-
-It is recommended to enable SSH. This can be done in the Raspberry Pi Imager along with WiFi setup. Then, SSH into the device (the IP address will be shown at the login prompt) so you can copy and paste commands into the terminal.
-
-### Install Required Libraries, Build SDL_gpu, and Register It With the Linker
-
-```bash
-sudo apt update
-sudo apt install git cmake libboost-all-dev libsdl2-dev libglu1-mesa-dev
-git clone https://github.com/grimfang4/sdl-gpu.git
-cd sdl-gpu
-mkdir build
-cd build
-cmake ..
-make && sudo make install
-sudo sh -c 'echo "/usr/local/lib" >> /etc/ld.so.conf.d/local.conf' && sudo ldconfig
-```
-
-### Fetch Cannonball Source and Compile
-
-```bash
-cd ~
-git clone https://github.com/J1mbo/cannonball.git && cd cannonball
-mkdir -p build roms
-cd build
-cmake ../cmake -DTARGET=../cmake/linux.cmake
-make
-cd ~/cannonball
-chmod +x add-kernel-permissions.sh && sudo ./add-kernel-permissions.sh
-```
-
-The build process will take a few minutes. The `add-kernel-permissions.sh` script enables the user-mode application to use the system watchdog and control rumble via `/dev/hidraw`.
-
-Next, copy the S16 ROMs to `~/cannonball/roms/` and edit `~/cannonball/config.xml` as needed.
-
-## Extra Configuration for Pi Zero 2W or Pi 3
-
-If using a USB audio device (such as an external amplifier), add the following to **cmdline.txt** (usually `/boot/firmware/cmdline.txt`) to set USB to 1.1 mode. This prevents audio break-up and eventual stoppage:
-
-```bash
-sudo sed -i 's/$/ dwc_otg.speed=1/' /boot/firmware/cmdline.txt
-```
-
-*Note:* This appends the setting to the end of the existing line. Thanks to [RaspyFi](http://www.raspyfi.com/anatomy-of-a-pi-usb-audio-quality-and-related-issues-on-pi/) for documenting this fix.
-
-Next, set the GPU clock to 450MHz by appending the following settings to `/boot/firmware/config.txt`, then reboot:
-
-```bash
-sudo sh -c 'printf "\nover_voltage=6\ncore_freq=450\ngpu_freq=450\n" >> /boot/firmware/config.txt'
-```
-
-This adds the following to the end of the file:
-
-```text
-over_voltage=6
-core_freq=450
-gpu_freq=450
-```
-
-*Note:* CPU overclock is not required (the default 1GHz is sufficient).
-
-Finally, reboot the machine:
-
-```bash
-sudo reboot
-```
-
-## To Run The Game
-
-For the first run, connect via SSH and execute:
-
-```bash
-cd ~/cannonball
-build/cannonball
-```
-
-This will start the game on the connected monitor and output some potentially useful console information, for example:
-
-```console
-$ build/cannonball
-./play_stats.xml: cannot open file
-Cannonball requires wayland video driver for 60fps operation under desktop environment.
-Start cannonball like:
-  SDL_VIDEODRIVER=wayland build/cannonball
-Available SDL video drivers:
-   x11
-   wayland
-   KMSDRM
-   offscreen
-   dummy
-   evdev
-Window Pixel Format: SDL_PIXELFORMAT_ARGB8888 (0x16362004)
-No kernel supported rumbler wheel detected via /dev/input/event
-Watchdog timeout set to 15 seconds.
-Game controller detected without SDL rumble support.
-Successfully opened rumble device at /dev/hidraw0
-./hiscores.xml: cannot open file
-SoundChip::init sample rate 31250
-SoundChip::init sample rate 31250
-Available SDL audio devices:
-   0: vc4-hdmi, MAI PCM i2s-hifi-0
-   1: Poly BT700, USB Audio
-```
-
-Set the required sound device in `config.xml` accordingly, for example:
-
-```xml
-<playback_device>1</playback_device>
-```
-
-## Autostarting Cannonball at Power On
-
-To run the program automatically at boot, the following will enable auto-login start cannonball using `~/.bashrc`:
-
-```bash
-sudo raspi-config nonint do_boot_behaviour B2
-echo 'cd ~/cannonball && build/cannonball' >> ~/.bashrc
-```
+* Man page: `docs/cannonball-se.6` (accessible via `man -l ~/cannonball-se/docs/cannonball-se`

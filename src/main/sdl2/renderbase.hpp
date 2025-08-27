@@ -5,12 +5,6 @@
 #include "../setup.hpp"
 
 #include <SDL.h>
-// for crt shader
-#ifdef __linux__
-#include <SDL_gpu.h>
-#else
-#include <c:/Libraries/sdl-gpu/include/SDL_gpu.h> // for shader support
-#endif
 
 #include <cstdint>
 #include <cstddef> // For std::size_t
@@ -22,7 +16,7 @@ class RenderBase
 public:
     RenderBase();
 
-    virtual bool init(int src_width, int src_height, 
+    virtual bool init(int src_width, int src_height,
                       int scale,
                       int video_mode,
                       int scanlines)          = 0;
@@ -30,7 +24,7 @@ public:
     virtual void disable()                    = 0;
     virtual bool start_frame()                = 0;
     virtual bool finalize_frame()             = 0;
-    virtual void draw_frame(uint16_t* pixels) = 0;
+    virtual void draw_frame(uint16_t* pixels, int fastpass) = 0;
     void convert_palette(uint32_t adr, uint32_t r1, uint32_t g1, uint32_t b1);
     void set_shadow_intensity(float f);
     void init_palette(int red_curve, int green_curve, int blue_curve);
@@ -39,13 +33,6 @@ public:
 
 protected:
     SDL_Surface *surface;
-
-    // GPU Shader Support
-    GPU_Target* renderer;
-    SDL_Renderer* sdl_renderer;
-    GPU_Image* texture;
-    GPU_ShaderBlock block;
-    uint32_t gpushader;
 
     // Palette Lookup
     alignas(ALIGNMENT) uint32_t rgb[S16_PALETTE_ENTRIES * 3];         // x3 allows for base colours, shadow colours, and hilite colours
@@ -74,7 +61,7 @@ protected:
     // Destination window width and height
     int dst_width, dst_height;
 
-    // Screen width and height 
+    // Screen width and height
     int scn_width, scn_height;
 
     // Full-Screen, Stretch, Window

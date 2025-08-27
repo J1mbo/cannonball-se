@@ -1,9 +1,11 @@
 /***************************************************************************
     Front End Menu System.
 
-    This file is part of Cannonball. 
-    Copyright Chris White.
+    This file is part of Cannonball.
+    Copyright (c) Chris White.
     See license.txt for more details.
+
+    Modifications for CannonBall-SE Copyright (c) 2025, James Pearce
 ***************************************************************************/
 
 #pragma once
@@ -23,6 +25,7 @@ public:
     void populate();
     void init(bool init_main_menu = true);
     void tick();
+    void restart_video();
 
 private:
     CabDiag* cabdiag;
@@ -86,6 +89,8 @@ private:
     // JJP - CRT Emulation related menus
     std::vector<std::string> menu_crt_shader1;
     std::vector<std::string> menu_crt_shader2;
+    std::vector<std::string> menu_crt_shape_settings;
+    std::vector<std::string> menu_crt_mask_settings;
     std::vector<std::string> menu_blargg_filter;
     // JJP - end of insert
     std::vector<std::string> menu_sound;
@@ -118,6 +123,5 @@ private:
     void redefine_joystick();
     void display_message(std::string);
     bool check_jap_roms();
-    void restart_video();
     void start_game(int mode, int settings = 0);
 };

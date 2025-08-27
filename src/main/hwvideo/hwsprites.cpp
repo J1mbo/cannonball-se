@@ -2,14 +2,19 @@
 #include "hwvideo/hwsprites.hpp"
 #include "globals.hpp"
 #include "frontend/config.hpp"
+#include <algorithm>
+#include <iostream>
 
-/***************************************************************************
+/******************************************************************************************
     Video Emulation: OutRun Sprite Rendering Hardware.
     Based on MAME source code.
 
-    Copyright Aaron Giles.
-    All rights reserved.
-***************************************************************************/
+    Copyright (c) Aaron Giles. All rights reserved.
+    Reproduction of S16 Glowy Edges on Sprites in Shadow Copyright (c) Alex B.
+
+    Performance optimisation for CannonBall-SE, including approximation of S16 glowy edges,
+    Copyright (c) 2025, James Pearce.
+*******************************************************************************************/
 
 /*******************************************************************************************
 *  Out Run/X-Board-style sprites
@@ -48,8 +53,6 @@
 *
  *******************************************************************************************/
 
-// Enable for hardware pixel accuracy, where sprite shadowing delayed by 1 clock cycle (slower)
-#define PIXEL_ACCURACY 1 // JJP
 
 hwsprites::hwsprites()
 {
@@ -142,112 +145,173 @@ void hwsprites::swap()
     }
 }
 
-#if (PIXEL_ACCURACY==2)
-
-// Reproduces glowy edge around sprites on top of shadows as seen on Hardware.
-// Implementation based on having full S16 palette available (including highlights)
-// Code by Alex B / Chris White
-
-#define draw_pixel()                                                                               \
-{                                                                                                  \
-    if (x >= x1 && x < x2) {                                                                       \
-      if (pix != 0x0 && pix != 0xf) {                                                              \
-        inShadow = pPixel[x] & S16_PALETTE_ENTRIES; \
-        if (palette == 0x3f) {                                                                     \
-          if (inShadow) {                                                       \
-            pPixel[x] &= (S16_PALETTE_ENTRIES-1);                                                \
-            pPixel[x] |= (S16_PALETTE_ENTRIES<<1);                                               \
-          } else {                                                                                 \
-            pPixel[x] &= (S16_PALETTE_ENTRIES-1);                                                \
-            pPixel[x] |= S16_PALETTE_ENTRIES;                                                    \
-          }                                                                                        \
-        } else {                                                                                   \
-          if (shadow & pix == 0xa) { \
-            if (inShadow) {                                                       \
-              pPixel[x] &= (S16_PALETTE_ENTRIES-1);                                                \
-              pPixel[x] |= (S16_PALETTE_ENTRIES<<1);                                               \
-            } else {                                                       \
-              pPixel[x] &= (S16_PALETTE_ENTRIES-1);                                                \
-              pPixel[x] |= S16_PALETTE_ENTRIES;                                                    \
-            } \
-          } else { \
-            if (x > x1) pPixel[x-1] &= (S16_PALETTE_ENTRIES-1);                                    \
-            pPixel[x] = (pix | color);                                                             \
-          }                                                                                          \
-        }                                                                                          \
-      }                                                                                            \
-    }                                                                                              \
-}
-
-
-#elif (PIXEL_ACCURACY==1)
-
-// Reproduces glowy edge around sprites on top of shadows as seen on Hardware.
-// Believed to be caused by shadowing being out by one clock cycle / pixel.
+// S16 Pixel Accuracy
+// The glowy edge around sprites on top of shadows as seen on arcade hardware
+// (e.g. at the base of the tree on the right at the start) is believed to be
+// caused by shadowing being out by one clock cycle / pixel. Therefore:
 //
 // 1/ Sprites Drawn on top of Shadow clears the shadow flags for its opaque pixels.
 // 2/ Either the flag clear or the sprite itself is offset by one pixel horizontally.
-// 
-// Thanks to Alex B. for this implementation.
+//
+// Original reproduction in CannonBall by Alex B.
+//
+// Reproducing this is somewhat expensive for limited systems (like Pi2) because
+// of the branchy nature of the code and the conditional write to the extra pixels.
+//
+// On Pi2 v1.1, this reduces frame rates achievable by about 10%. To this end, an
+// approximation mode is provided (enabled when config.video.s16accuracy==0) that
+// provides some of the effect but take about 80% of the draws through a fast-path.
+// This work Copyright (c) 2025 James Pearce.
 
-#define draw_pixel_()                                                                                  \
-{                                                                                                     \
-    if (x >= x1 && x < x2)                                                                            \
-    {                                                                                                 \
-        if (shadow && pix == 0xa)                                                                     \
-        {                                                                                             \
-            pPixel[x] &= 0xfff;                                                                       \
-            pPixel[x] += S16_PALETTE_ENTRIES;                                                         \
-        }                                                                                             \
-        else if (pix != 0 && pix != 15)                                                               \
-        {                                                                                             \
-            if (x > x1) pPixel[x-1] &= 0xfff;                                                         \
-            pPixel[x] = (pix | color);                                                                \
-        }                                                                                             \
-    }                                                                                                 \
-}
+/*
+   JJP - tuned macro based implementation (for reference)
+   Adds a test for is_shadow or is_draw since over 50% are skipped at this test
 
-// JJP - slightly faster version, eliminates one branch at start of loop
-#define draw_pixel() do {                                                    \
-    /* Single branch for the x-range check: */                               \
-    if ((unsigned)(x - x1) < (unsigned)(x2 - x1)) {                          \
-        if (shadow && pix == 0xa) {                                          \
-            pPixel[x] &= 0xfff;                                              \
-            pPixel[x] += S16_PALETTE_ENTRIES;                                \
-        }                                                                    \
-        else if (pix != 0 && pix != 15)                                      \
-        {                                                                    \
-            if (x > x1) pPixel[x-1] &= 0xfff;                                \
-            pPixel[x] = (pix | color);                                       \
-        }                                                                    \
-    }                                                                        \
+#define draw_pixels() do {                                      \
+    int is_shadow = (shadow && pix == 0xA);                     \
+    int is_draw   = (pix != 0 && pix != 15);                    \
+    if (is_shadow || is_draw) {                                 \
+        while (xacc < 0x200) {                                  \
+            if ((unsigned)(x - x1) < (unsigned)(clipWidth)) {   \
+                if (is_shadow) {                                \
+                    *(pDst) |= S16_PALETTE_ENTRIES;             \
+                } else {                                        \
+                    if (x > x1) pDst[-1] &= 0xfff;              \
+                    *(pDst) = (pix | color);                    \
+                }                                               \
+            }                                                   \
+            x += xdelta;                                        \
+            pDst += xdelta;                                     \
+            xacc += hzoom;                                      \
+        }                                                       \
+    } else {                                                    \
+        while (xacc < 0x200) {                                  \
+            x += xdelta;                                        \
+            pDst += xdelta;                                     \
+            xacc += hzoom;                                      \
+        }                                                       \
+    }                                                           \
 } while (0)
+*/
 
-#else
 
-#define draw_pixel()                                                                                  \
-{                                                                                                     \
-    if (x >= x1 && x < x2 && pix != 0 && pix != 15)                                                   \
-    {                                                                                                 \
-        if (shadow && pix == 0xa)                                                                     \
-        {                                                                                             \
-            pPixel[x] &= 0xfff;                                                                       \
-            pPixel[x] += S16_PALETTE_ENTRIES;                                                         \
-        }                                                                                             \
-        else                                                                                          \
-        {                                                                                             \
-            pPixel[x] = (pix | color);                                                                \
-        }                                                                                             \
-    }                                                                                                 \
+// Inline based approach.
+// draw_nibble_shadow_aware() draws one 4-bit nibble and produces output
+// identical to the macro above.
+static inline __attribute__((always_inline))
+void draw_nibble_shadow_aware(
+    uint8_t pix,
+    uint8_t shadow,          // 0/1, as in your code
+    int     color,           // palette/color bits as in your code
+    int     x1,              // clip left
+    int     clipWidth,       // x2 - x1
+    int     xdelta,          // +1 or -1
+    int     hzoom,           // horizontal zoom factor
+    int&    x,               // current x (updated)
+    int&    xacc,            // accumulator (updated)
+    uint16_t* __restrict__& pDst          // dest pointer (updated)
+)
+{
+    const bool is_shadow = (shadow && pix == 0xA);
+    const bool is_draw   = (pix != 0 && pix != 15);
+
+    // Transparent nibbles are common; make the skip path likely.
+    if (__builtin_expect(!(is_shadow || is_draw), 1)) {
+        // Transparent nibble: advance and break adjacency so the next opaque run will left-clear.
+        while (xacc < 0x200) {
+            x += xdelta;  pDst += xdelta;  xacc += hzoom;
+        }
+        return;
+    }
+
+    while (xacc < 0x200) {
+        if ((unsigned)(x - x1) < (unsigned)clipWidth) {
+            if (is_shadow) {
+                // set shadow bit
+                *pDst |= S16_PALETTE_ENTRIES;
+            } else {
+                // opaque draw
+                if (x > x1) pDst[-1] &= 0xfff;
+                *(pDst) = (pix | color);
+            }
+        }
+        x += xdelta;  pDst += xdelta;  xacc += hzoom;
+    }
 }
 
-#endif
+
+// draw_nibble_no_shadows() drops the whole shadow test so we're only testing against clip-
+// width. Hence, there is no check for shadows (this is moved to the outer loop in
+// hwsprites::render(), below), and no glowy-edges produced by this path.
+//
+// We can however obtain correct shadows and an approximation of S16 glowy edges by:
+//
+// 1. Calling this only for pixel blocks where NONE of the 4-bit pixels are shadow, and
+// 2. Always calling draw_nibble_shadow_aware() for the FIRST processed nibble.
+//
+// This approach does not produce the same output, but reduces traffic through the complex
+// (shadow_aware) path by around 80%, offering Pi2 about 10% frame-rate improvement.
+//
+// The approximation happens because the FIRST processeed nibble of a block is not necessarily
+// the first *drawn* pixel, we in effect miss the over-write of the underlying pixel (to remove
+// it's shadow bit). This can be seen on the start-line, where the right hand tree looks correct
+// but the man with the red shirt near it doesn't have a glow around his shirt.
+//
+static inline __attribute__((always_inline))
+void draw_nibble_no_shadows(
+    uint8_t pix,
+    int     color,           // palette/color bits as in your code
+    int     x1,              // clip left
+    int     clipWidth,       // x2 - x1
+    int     xdelta,          // +1 or -1
+    int     hzoom,           // horizontal zoom factor
+    int&    x,               // current x (updated)
+    int&    xacc,            // accumulator (updated)
+    uint16_t* __restrict__& pDst          // dest pointer (updated)
+)
+{
+    const bool is_draw   = (pix != 0 && pix != 15);
+
+    if (__builtin_expect(!(is_draw), 1)) {
+//    if (!(is_draw)) {
+        // Transparent nibble: advance and break adjacency so the next opaque run will left-clear.
+        while (xacc < 0x200) {
+            x += xdelta;  pDst += xdelta;  xacc += hzoom;
+        }
+        return;
+    }
+
+    while (xacc < 0x200) {
+        if ((unsigned)(x - x1) < (unsigned)clipWidth) {
+            // Opaque draw
+            *pDst = uint16_t(pix | color);
+        }
+        x += xdelta;  pDst += xdelta;  xacc += hzoom;
+    }
+}
+
+
+static inline __attribute__((always_inline))
+bool any_shadow_nibble(uint32_t w) {
+    // Returns true if any nibble has the value 0xA (in which case the slower rendering path is
+    // needed to correctly apply shadows).
+    // XOR makes nibbles that equal 0xA become 0.
+    uint32_t t = w ^ 0xAAAAAAAAu;
+    // Detect any zero nibble: (t - 0x1111..) sets a borrow into the nibble's MSB
+    // only when that nibble was zero; ~t masks out non-zero nibbles; 0x8888.. selects those MSBs.
+    return ((t - 0x11111111u) & ~t & 0x88888888u) != 0;
+}
+
+
 
 void hwsprites::render(const uint8_t priority)
 {
     const uint32_t numbanks = SPRITES_LENGTH / 0x10000;
-    // jjp
-    for (uint16_t data = 0; data < SPRITE_RAM_SIZE; data += 8) 
+    const int clipWidth     = x2 - x1;
+    const int scr_width     = config.s16_width;
+    const int scr_height    = config.s16_height;
+
+    for (uint16_t data = 0; data < SPRITE_RAM_SIZE; data += 8)
     {
         // stop when we hit the end of sprite list
         if ((ramBuff[data+0] & 0x8000) != 0) break;
@@ -257,25 +321,23 @@ void hwsprites::render(const uint8_t priority)
 
         // if hidden, or top greater than/equal to bottom, or invalid bank, punt
         int16_t hide    = (ramBuff[data+0] & 0x5000);
-        int32_t height  = (ramBuff[data+5] >> 8) + 1;       
+        int32_t height  = (ramBuff[data+5] >> 8) + 1;
         if (hide != 0 || height == 0) continue;
-        
+
         int16_t bank    = (ramBuff[data+0] >> 9) & 7;
         int32_t top     = (ramBuff[data+0] & 0x1ff) - 0x100;
-        uint32_t addr    = ramBuff[data+1];
-        int32_t pitch  = ((ramBuff[data+2] >> 1) | ((ramBuff[data+4] & 0x1000) << 3)) >> 8;
+        uint32_t addr   = ramBuff[data+1];
+        int32_t pitch   = ((ramBuff[data+2] >> 1) | ((ramBuff[data+4] & 0x1000) << 3)) >> 8;
         int32_t xpos    =  ramBuff[data+6]; // moved from original structure to accomodate widescreen
         uint8_t shadow  = (ramBuff[data+3] >> 14) & 1;
-        int32_t vzoom    = ramBuff[data+3] & 0x7ff;
-        int32_t ydelta = ((ramBuff[data+4] & 0x8000) != 0) ? 1 : -1;
-        int32_t flip   = (~ramBuff[data+4] >> 14) & 1;
-        int32_t xdelta = ((ramBuff[data+4] & 0x2000) != 0) ? 1 : -1;
-        int32_t hzoom    = ramBuff[data+4] & 0x7ff;     
-        int32_t palette  = ramBuff[data+5] & 0x7f; // JJP
+        int32_t vzoom   = ramBuff[data+3] & 0x7ff;
+        int32_t ydelta  = ((ramBuff[data+4] & 0x8000) != 0) ? 1 : -1;
+        int32_t flip    = (~ramBuff[data+4] >> 14) & 1;
+        int32_t xdelta  = ((ramBuff[data+4] & 0x2000) != 0) ? 1 : -1;
+        int32_t hzoom   = ramBuff[data+4] & 0x7ff;
         int32_t color   = COLOR_BASE + ((ramBuff[data+5] & 0x7f) << 4);
-        int32_t x, y, ytarget, yacc = 0, pix;
-            
-        uint32_t inShadow; // jjp
+        int32_t x, y, ytarget;
+        int32_t yacc = 0;
         // adjust X coordinate
         // note: the threshhold below is a guess. If it is too high, rachero will draw garbage
         // If it is too low, smgp won't draw the bottom part of the road
@@ -291,6 +353,10 @@ void hwsprites::render(const uint8_t priority)
             bank %= numbanks;
 
         const uint32_t* spritedata = sprites + 0x10000 * bank;
+
+        // the sprite render can be made significantly faster by using an approximation to
+        // the S16 emulation whereby glowy edges around objects in shadows is less accurately reproduced.
+        const int consider_shadow  = (config.video.s16accuracy ? shadow : 0);
 
         // clamp to a maximum of 8x (not 100% confirmed)
         if (vzoom < 0x40) vzoom = 0x40;
@@ -315,65 +381,72 @@ void hwsprites::render(const uint8_t priority)
         for (y = top; y != ytarget; y += ydelta)
         {
             // skip drawing if not within the cliprect
-            if (y >= 0 && y < config.s16_height)
+            if (y >= 0 && y < scr_height)
             {
-                uint16_t* pPixel = &video.pixels[y * config.s16_width];
-                uint16_t dummy_pixel = 0; // JJP - optimisation of draw_pixel to allow for CMOV or equivalent
-                int32_t xacc = 0;
+                uint16_t* pDst = video.pixels + y*scr_width + xpos;
+                uint32_t curAddr = addr;
+                int xacc = 0;
 
                 // non-flipped case
-                if (flip == 0)
-                {
-                    // start at the word before because we preincrement below
-                    ramBuff[data+7] = (addr - 1);
-
-                    for (x = xpos; (xdelta > 0 && x < config.s16_width) || (xdelta < 0 && x >= 0); )
-                    {
-                        uint32_t pixels = spritedata[++ramBuff[data+7]]; // Add to base sprite data the vzoom value
-
-                        // draw four pixels
-                        pix = (pixels >> 28) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >> 24) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >> 20) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >> 16) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >> 12) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >>  8) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >>  4) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >>  0) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-
+                if (flip == 0) {
+                    for (x = xpos; (xdelta > 0 && x < scr_width) || (xdelta < 0 && x >= 0); ) {
+                        // Prefetch future sprite words so 'pixels' is warm next iterations
+                        __builtin_prefetch(spritedata + curAddr + 8,  0, 0);
+                        uint32_t pixels = spritedata[curAddr++];
+                        if (consider_shadow || any_shadow_nibble(pixels)) {
+                            draw_nibble_shadow_aware(uint8_t( pixels >> 28       ), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >> 24) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >> 20) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >> 16) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >> 12) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >>  8) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >>  4) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t( pixels        & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        } else {
+                            draw_nibble_shadow_aware(uint8_t( pixels >> 28), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >> 24) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >> 20) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >> 16) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >> 12) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >>  8) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >>  4) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t( pixels        & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        }
                         // stop if the second-to-last pixel in the group was 0xf
-                        if ((pixels & 0x000000f0) == 0x000000f0)
-                            break;
+                        if (__builtin_expect((pixels & 0x000000f0) == 0x000000f0, 0)) break;
                     }
-                }
-                // flipped case
-                else
-                {
-                    // start at the word after because we predecrement below
-                    ramBuff[data+7] = (addr + 1);
-
-                    for (x = xpos; (xdelta > 0 && x < config.s16_width) || (xdelta < 0 && x >= 0); )
-                    {
-                        uint32_t pixels = spritedata[--ramBuff[data+7]];
-
-                        // draw four pixels
-                        pix = (pixels >>  0) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >>  4) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >>  8) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >> 12) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >> 16) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >> 20) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >> 24) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-                        pix = (pixels >> 28) & 0xf; while (xacc < 0x200) { draw_pixel(); x += xdelta; xacc += hzoom; } xacc -= 0x200;
-
+                } else {
+                    // flipped case
+                    for (x = xpos; (xdelta > 0 && x < scr_width) || (xdelta < 0 && x >= 0); ) {
+                        // Prefetch future sprite words so 'pixels' is warm next iterations
+                        __builtin_prefetch(spritedata + curAddr - 8,  0, 0);
+                        uint32_t pixels = spritedata[curAddr--];
+                        if (consider_shadow || any_shadow_nibble(pixels)) {
+                            draw_nibble_shadow_aware(uint8_t( pixels        & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >>  4) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >>  8) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >> 12) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >> 16) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >> 20) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t((pixels >> 24) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_shadow_aware(uint8_t( pixels >> 28       ), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        } else {
+                            draw_nibble_shadow_aware(uint8_t( pixels & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >>  4) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >>  8) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >> 12) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >> 16) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >> 20) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t((pixels >> 24) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                            draw_nibble_no_shadows(uint8_t( pixels >> 28       ), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        }
                         // stop if the second-to-last pixel in the group was 0xf
-                        if ((pixels & 0x0f000000) == 0x0f000000)
-                            break;
+                        if (__builtin_expect((pixels & 0x0f000000) == 0x0f000000, 0)) break;
                     }
                 }
             }
             // accumulate zoom factors; if we carry into the high bit, skip an extra row
-            yacc += vzoom; 
+            yacc += vzoom;
             addr += pitch * (yacc >> 9);
             yacc &= 0x1ff;
         }

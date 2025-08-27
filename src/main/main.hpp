@@ -21,7 +21,7 @@ namespace cannonball
 
     // Engine Master State
     extern int state;
-    
+
     enum
     {
         STATE_BOOT,
@@ -31,4 +31,9 @@ namespace cannonball
         STATE_GAME,
         STATE_QUIT
     };
+
+    // JJP
+    extern int  fps_lock; // 0=no lock (auto), 30(fps), 60(fps)
+    extern long fps_eval_period;
+    extern int  game_threads;
 }

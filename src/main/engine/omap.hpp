@@ -88,7 +88,7 @@ private:
     void end_route();
     void init_map_delay();
     void map_display();
-    void move_mini_car(oentry*);  ;
+    void move_mini_car(oentry*);
 };
 
 extern OMap omap;

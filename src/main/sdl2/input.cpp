@@ -13,6 +13,16 @@
 #include <cstdlib> // abs
 #include "sdl2/input.hpp"
 
+#if defined(__has_include)
+#  if __has_include("directx/ffeedback.hpp")
+#    include "directx/ffeedback.hpp"
+#  else
+     namespace forcefeedback { bool init(int,int,int); int set(int,int); void close(); bool is_supported(); }
+#  endif
+#else
+  namespace forcefeedback { bool init(int,int,int); int set(int,int); void close(); bool is_supported(); }
+#endif
+
 #ifndef WIN32
 // JJP - Includes for udev, to find gamepad haptics where not supported by SDL
 #include <stdio.h>
@@ -172,7 +182,8 @@ void Input::open_joy()
             } // if (SDL_GameControllerHasRumble(controller))/else
 #endif
         } // if (SDL_IsGameController(pad_id))
-        haptic = SDL_HapticOpen(pad_id);
+        SDL_Joystick* __joy_for_haptic = controller ? SDL_GameControllerGetJoystick(controller) : stick;
+        haptic = __joy_for_haptic ? SDL_HapticOpenFromJoystick(__joy_for_haptic) : NULL;
         if (haptic)
         {
             rumble_supported = false;
@@ -180,6 +191,33 @@ void Input::open_joy()
             if (SDL_HapticRumbleSupported(haptic))
                 rumble_supported = SDL_HapticRumbleInit(haptic) != -1;
         }
+#ifdef _WIN32
+        // Try DirectInput backend first; if not available we already attempted SDL above.
+        if (!rumble_supported) {
+            // Pass VID:PID to DI via env var so helper can match SDL device (optional).
+            if (stick) {
+                Uint16 vid = SDL_JoystickGetVendor(stick);
+                Uint16 pid = SDL_JoystickGetProduct(stick);
+                char buf[32]; std::snprintf(buf, sizeof(buf), "0x%04x:0x%04x", (unsigned)vid, (unsigned)pid);
+                #ifdef _MSC_VER
+                _putenv_s("FF_TARGET_VIDPID", buf);
+                #else
+                setenv("FF_TARGET_VIDPID", buf, 1);
+                #endif
+            }
+            if (forcefeedback::init(0x7fff, 0x2fff, 50)) {
+                std::cout << "DirectInput force feedback enabled" << std::endl;
+            }
+        }
+#else
+        // Linux: if SDL rumble is not available, try evdev kernel FF
+        if (!rumble_supported) {
+            if (forcefeedback::init(0x7fff, 0x2fff, 50)) {
+                std::cout << "Kernel force feedback (evdev) enabled" << std::endl;
+            }
+        }
+#endif
+
     }
 
 //    if (SDL_JoystickNumButtons(controller)) {
@@ -219,6 +257,10 @@ void Input::close_joy()
         haptic = NULL;
         rumble_supported = false;
     }
+    // Close kernel/DI force feedback backend if active
+    if (forcefeedback::is_supported())
+        forcefeedback::close();
+
 
     gamepad = false;
 }
@@ -528,9 +570,18 @@ void Input::set_rumble(bool enable, float strength, int mode)
         // Write the report to the hidraw device. Ignore any errors; will be updated next frame anyway
         size_t bytesWritten = write(hidraw_device, report, sizeof(report));
     }
-    else 
+    else
 #endif
     {
+        // If DI/evdev backend is available, prefer it
+        if (forcefeedback::is_supported())
+        {
+            int level = 1 + int((1.0f - std::max(0.0f, std::min(1.0f, strength))) * 4.0f); // 1 strong .. 5 soft
+            forcefeedback::set(mode, level);
+            return;
+        }
+
+        // SDL rumble fallback
         if (haptic == NULL || !rumble_supported || strength == 0) return;
 
         if (enable)
@@ -539,3 +590,4 @@ void Input::set_rumble(bool enable, float strength, int mode)
             SDL_HapticRumbleStop(haptic);
     }
 }
+

@@ -99,6 +99,8 @@ int Video::init(Roms* roms, video_settings_t* settings)
         roms->road.rom = NULL;
     }
 
+//    renderer->init(config.s16_width, config.s16_height, settings->scale, settings->mode, settings->scanlines);
+
     enabled = true;
     return true;
 }
@@ -160,6 +162,7 @@ int Video::set_video_mode(video_settings_t* settings)
     renderer->init_palette(100, 100, 100);
 
     return renderer->init(config.s16_width, config.s16_height, settings->scale, settings->mode, settings->scanlines);
+//    return true;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -213,10 +216,10 @@ void Video::prepare_frame()
      }
 }
 
-void Video::render_frame()
+void Video::render_frame(int fastpass)
 {
     // draw the frame from the pixel buffer not in use for writing
-    renderer->draw_frame(pixel_buffers[current_pixel_buffer ^ 1]);
+    renderer->draw_frame(pixel_buffers[current_pixel_buffer ^ 1], fastpass);
 }
 
 void Video::present_frame()

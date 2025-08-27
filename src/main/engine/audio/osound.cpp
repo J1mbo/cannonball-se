@@ -11,7 +11,6 @@ TODO:
 
 - Double check passing car tones, especially when going through checkpoint areas
 - Engine tones seem to jump channels. How do we stop this? Is it a bug in the original?
-
 */
 
 #include <cstring> // For memset on GCC

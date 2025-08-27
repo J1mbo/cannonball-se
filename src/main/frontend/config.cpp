@@ -6,6 +6,8 @@
 
     Copyright Chris White.
     See license.txt for more details.
+
+    Automatic custom music loader by James Pearce
 ***************************************************************************/
 
 // see: http://www.boost.org/doc/libs/1_52_0/doc/html/boost_propertytree/tutorial.html
@@ -32,6 +34,13 @@ typedef boost::property_tree::xml_writer_settings<std::string> xml_writer_settin
 typedef boost::property_tree::xml_writer_settings<char> xml_writer_settings;
 #endif
 
+// JJP - for automatic music file scanning from res folder:
+#include <filesystem>
+#include <regex>
+#include <map>
+#include <algorithm>
+
+
 Config config;
 
 Config::Config(void)
@@ -49,15 +58,122 @@ Config::Config(void)
     magical.cmd   = sound::MUSIC_MAGICAL;
     breeze.cmd    = sound::MUSIC_BREEZE;
     splash.cmd    = sound::MUSIC_SPLASH;
-    sound.music.push_back(magical);
-    sound.music.push_back(breeze);
-    sound.music.push_back(splash);
+    sound.music.push_back(magical); // 1st slot
+    sound.music.push_back(breeze);  // 2nd slot
+    sound.music.push_back(splash);  // 3rd slot
+    // Users can replace these with custom music via .wav, .mp3, or .ym files in the res/ folder,
+    // and/or add additional tracks.
+    sound.custom_tracks_loaded = 0;
 }
 
 
 Config::~Config(void)
 {
 }
+
+
+
+
+void Config::get_custom_music(const std::string& respath)
+{
+    // The music list will default to "MAGICAL SOUND SHOWER", "PASSING BREEZE" and "SPLASH WAVE".
+    // But, the user can over-ride or add to these by simply adding .WAV, .MP3, or YM binary format files in /res
+    // with filenames crafted as follows:
+    //
+    // [index]_Track_Name.[extension]
+    //
+    // Where:
+    //   [index] is 01 through 99
+    //   Track_Name is what will be displayed in the UI (with _ replaced by space)
+    //   [extension] is WAV, MP3, or YM
+    //
+    // Using index values 01, 02 or 03 will replace the associated built-in track (01 being Magical Sound Shower).
+    // Where more than one file is provided with the same index value, precidence is WAV>MP3>YM and any other files are
+    // ignored.
+    //
+    // e.g.:
+    //    01_Magical_Sound_Shower_Remix.wav - would *replace* the built-in magical sound shower (the first track)
+    //    04_AHA_Take_On_Me.mp3             - would *add* a fourth track shown as "AHA Take On Me"
+    //
+
+    namespace fs = std::filesystem;
+#ifdef WITH_MP3
+    static const std::map<std::string,int> ext_priority = {
+        { "WAV", 0 },
+        { "MP3", 1 },
+        { "YM",  2 }
+    };
+#else
+    static const std::map<std::string,int> ext_priority = {
+        { "WAV", 0 },
+        { "YM",  1 }
+    };
+#endif
+
+    std::map<int, std::pair<std::string,fs::path>> chosen;
+    std::regex pattern(R"((\d{2})[-_](.+))");
+
+    for (auto& entry : fs::directory_iterator(respath)) {
+        if (!entry.is_regular_file()) continue;
+
+        auto path = entry.path();
+        auto ext = path.extension().string();
+        if (ext.size()<2) continue;
+        ext = ext.substr(1);
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::toupper);
+        auto prio_it = ext_priority.find(ext);
+        if (prio_it == ext_priority.end()) continue;
+
+        auto stem = path.stem().string();
+        std::smatch m;
+        if (!std::regex_match(stem, m, pattern)) continue;
+
+        int idx = std::stoi(m[1]);      // track index 01–99
+        int prio = prio_it->second;
+        auto it = chosen.find(idx);
+        if (it==chosen.end() || prio < ext_priority.at(it->second.first)) {
+            chosen[idx] = { ext, path };
+        }
+    }
+
+    // apply replacements/additions
+    for (auto& [idx, ext_path] : chosen) {
+        auto& [ext, filepath] = ext_path;
+
+        // build display name in uppercase
+        std::string raw = filepath.stem().string().substr(3); // drop "NN_"
+        std::replace(raw.begin(), raw.end(), '_', ' ');
+        std::replace(raw.begin(), raw.end(), '-', ' ');
+        std::transform(raw.begin(), raw.end(), raw.begin(), ::toupper);
+
+        // pick type based on extension
+        int track_type = (ext == "YM")
+            ? music_t::IS_YM_EXT
+            : music_t::IS_WAV;   // WAV & MP3 both map to IS_WAV
+
+        int cmd = sound::MUSIC_CUSTOM;
+
+        std::cout << "Found music file " << raw;
+        ++sound.custom_tracks_loaded;
+        music_t entry {
+            track_type,
+            cmd,
+            raw,                  // TITLE (upper‑case)
+            filepath.filename().string()
+        };
+
+        if (idx >= 1 && idx <= 3) {
+            std::cout << " (replacing built-in track " << idx << ")" << std::endl;
+            // replace built‑in slot 0–2
+            sound.music[idx-1] = entry;
+        } else {
+            std::cout << " (added as available track)" << std::endl;
+            // append new track
+            sound.music.push_back(entry);
+        }
+    }
+}
+
 
 
 // Set Path to load and save config to
@@ -110,18 +226,24 @@ void Config::load()
     // ------------------------------------------------------------------------
     // Video Settings
     // ------------------------------------------------------------------------
-   
-    video.mode       = pt_config.get("video.mode",               2); // Video Mode: Default is Full Screen 
-    video.scale      = pt_config.get("video.window.scale",       1); // Video Scale: Default is 1x
-    video.fps        = pt_config.get("video.fps",                0); // Open game at 30fps; will auto-switch to 60fps if possible
-    video.fps_count  = pt_config.get("video.fps_counter",        0); // FPS Counter
-    video.widescreen = pt_config.get("video.widescreen",         0); // Enable Widescreen Mode
-    video.hires      = pt_config.get("video.hires",              1); // Hi-Resolution Mode
-    video.vsync      = pt_config.get("video.vsync",              1); // Use V-Sync where available (e.g. Open GL)
+
+    video.mode          = pt_config.get("video.mode",            2); // Video Mode: Default is Full Screen 
+    video.scale         = pt_config.get("video.window.scale",    1); // Video Scale: Default is 1x
+    video.fps           = pt_config.get("video.fps",             0); // Open game at 30fps; will auto-switch to 60fps if possible
+    video.fps_count     = pt_config.get("video.fps_counter",     0); // FPS Counter
+    video.widescreen    = pt_config.get("video.widescreen",      0); // Enable Widescreen Mode
+    video.hires         = pt_config.get("video.hires",           1); // Hi-Resolution Mode
+    video.s16accuracy   = pt_config.get("video.s16accuracy",     1); // Reproduce S16 arcade hardware glowy edges (1=accurate, 0=fast)
+    video.vsync         = pt_config.get("video.vsync",           1); // Use V-Sync where available (e.g. Open GL)
+    video.x_offset      = pt_config.get("video.x_offset",        0); // Offset from calculated image X position
+    video.y_offset      = pt_config.get("video.y_offset",        0); // Offset from calculated image Y position
     // JJP Additional configuration for CRT emulation
-    video.alloff        = pt_config.get("video.alloff",          0); // all crt shader based effects off or on
-    video.shadow_mask   = pt_config.get("video.shadow_mask",     0); // shadow mask type
-    //video.mask_intensity = pt_config.get("video.mask_intensity", 15); // shadow mask intensity 1=1%
+    video.shader_mode   = pt_config.get("video.shader_mode",     2); // shader type: 0 = off (actually pass-through), 1 = fast, 2 = full
+    video.shadow_mask   = pt_config.get("video.shadow_mask",     2); // shadow mask type: 0 = off, 1 = overlay based (fast), 2 = shader based (looks better)
+    video.mask_size     = pt_config.get("video.mask_size",       1); // shadow mask size (1=normal, 2 for high DPI displays)
+    video.maskDim       = pt_config.get("video.maskDim",        75); // shadow mask type dim multiplier (75=75%)
+    video.maskBoost     = pt_config.get("video.maskBoost",     135); // shadow mask type boost multiplier (135=135%)
+    video.scanlines     = pt_config.get("video.scanlines",       0); // scanlines (0=off, 3=max)
     video.crt_shape     = pt_config.get("video.crt_shape",       0); // CRT shape overlay on or off
     video.vignette      = pt_config.get("video.vignette",        0); // amount to dim edges (1=1%)
     video.noise         = pt_config.get("video.noise",           0); // amount of random noise to add (1=1%)
@@ -148,28 +270,13 @@ void Config::load()
     sound.preview     = pt_config.get("sound.preview",     1);
     sound.fix_samples = pt_config.get("sound.fix_samples", 1);
     sound.music_timer = pt_config.get("sound.music_timer", 0);
-    // JJP - Synth fix
-    sound.playback_speed = pt_config.get("sound.playback_speed",125);
+    // JJP - allow either standard 8ms audio callbacks, or a slower 16ms rate (required with WSL2)
+    sound.callback_rate   = pt_config.get("sound.callback_rate",0);
     // Index of SDL playback device to request, -1 for default
     sound.playback_device = pt_config.get("sound.playback_device", -1);
 
     // Custom Music. Search for enabled custom tracks
-    for (int i = 0;; i++)
-    {
-        std::string xmltag = "sound.custom_music.track" + Utils::to_string(i + 1);
-        boost::optional<int> tag = pt_config.get_optional<int>(xmltag  + ".<xmlattr>.enabled");
-        if (!tag.is_initialized()) break;
-        if (tag.value() == 1)
-        {
-            music_t music;
-            music.filename = pt_config.get(xmltag + ".filename", "track"+Utils::to_string(i+1)+".wav");
-            music.title    = pt_config.get(xmltag + ".title", "TRACK " +Utils::to_string(i+1));
-            std::transform(music.title.begin(), music.title.end(), music.title.begin(), ::toupper); // Convert title to uppercase
-            music.type     = boost::ends_with(music.filename, ".wav") ? music_t::IS_WAV : music_t::IS_YM_EXT;
-            music.cmd      = sound::MUSIC_CUSTOM;
-            sound.music.push_back(music);
-        }
-    }
+    get_custom_music(data.res_path);
 
     if (!sound.music_timer)
         sound.music_timer = MUSIC_TIMER;
@@ -179,6 +286,9 @@ void Config::load()
             sound.music_timer = 99;
         sound.music_timer = outils::DEC_TO_HEX[sound.music_timer]; // convert to hexadecimal
     }
+
+    // JJP - Wave file playback volume, 1-8 where 4 = no adjustment
+    sound.wave_volume = pt_config.get("sound.wave_volume",4);
 
     // ------------------------------------------------------------------------
     // SMARTYPI Settings
@@ -292,40 +402,45 @@ bool Config::save()
 {
     // Save stuff
     // JJP - CRT emulation settings
-    pt_config.put("video.mode",             video.mode);       // Video Mode: Full Screen (2)
-    pt_config.put("video.window.scale",     video.scale);      // Video Scale: 1x (1)
-    //pt_config.put("video.fps",              video.fps);        // FPS: 60 fps (2)
-    pt_config.put("video.fps_counter",      video.fps_count);  // FPS Counter (0)
-    pt_config.put("video.widescreen",       video.widescreen); // Widescreen Mode (1)
-    //pt_config.put("video.hires",            video.hires);      // Hi-Resolution Mode (0)
-    pt_config.put("video.vsync",            video.vsync);      // V-Sync (1)
+    pt_config.put("video.mode",               video.mode);          // Video Mode: Full Screen (2)
+    pt_config.put("video.window.scale",       video.scale);         // Video Scale: 1x (1)
+    pt_config.put("video.fps_counter",        video.fps_count);     // FPS Counter (0)
+    pt_config.put("video.widescreen",         video.widescreen);    // Widescreen Mode (1)
+    pt_config.put("video.vsync",              video.vsync);         // V-Sync (1)
+    pt_config.put("video.s16accuracy",        video.s16accuracy);   // Reproduce S16 arcade hardware glowy edges (1=accurate, 0=fast)
+    pt_config.put("video.x_offset",           video.x_offset);      // X offset
+    pt_config.put("video.y_offset",           video.y_offset);      // Y offset
     // JJP Additional configuration for CRT emulation
-    pt_config.put("video.alloff",           video.alloff);        // All CRT shader effects off/on (1)
-    pt_config.put("video.shadow_mask",      video.shadow_mask);   // Shadow mask type (0)
-    pt_config.put("video.crt_shape",        video.crt_shape);     // CRT shape overlay (0)
-    pt_config.put("video.vignette",         video.vignette);      // Vignette amount (0)
-    pt_config.put("video.noise",            video.noise);         // Noise amount (0)
-    pt_config.put("video.warpX",            video.warpX);         // Warp on X axis (0)
-    pt_config.put("video.warpY",            video.warpY);         // Warp on Y axis (0)
-    pt_config.put("video.desaturate",       video.desaturate);    // Desaturation level (0)
-    pt_config.put("video.desaturate_edges", video.desaturate_edges); // Edge desaturation (0)
-    pt_config.put("video.brightboost",      video.brightboost);   // Bright boost element 1 (0)
-    pt_config.put("video.blargg",           video.blargg);        // Blargg filtering mode (0=off)
-    pt_config.put("video.saturation",       video.saturation);    // Filter saturation (-1 to +1)
-    pt_config.put("video.contrast",         video.contrast);      // Filter contrast (-1 to +1)
-    pt_config.put("video.brightness",       video.brightness);    // Filter brightness (-1 to +1)
-    pt_config.put("video.sharpness",        video.sharpness);     // Edge blurring
-    pt_config.put("video.resolution",       video.resolution);    // Resolution (-2 to 0)
-    pt_config.put("video.gamma",            video.gamma);         // Gamma (-3 to +3)
-    pt_config.put("video.hue",              video.hue);           // Hue (-10 to +10)
+    pt_config.put("video.shader_mode",        video.shader_mode);   // Shader type (Off/Fast/Full) (2)
+    pt_config.put("video.shadow_mask",        video.shadow_mask);   // Shadow mask type (Off/Overlay/Shader) (2)
+    pt_config.put("video.maskDim",            video.maskDim);       // Shadow mask Dim value (0)
+    pt_config.put("video.maskBoost",          video.maskBoost);     // Shadow mask Boost value (0)
+    pt_config.put("video.scanlines",          video.scanlines);     // Scanlines (0)
+    pt_config.put("video.crt_shape",          video.crt_shape);     // CRT shape overlay (0)
+    pt_config.put("video.vignette",           video.vignette);      // Vignette amount (0)
+    pt_config.put("video.noise",              video.noise);         // Noise amount (0)
+    pt_config.put("video.warpX",              video.warpX);         // Warp on X axis (0)
+    pt_config.put("video.warpY",              video.warpY);         // Warp on Y axis (0)
+    pt_config.put("video.desaturate",         video.desaturate);    // Desaturation level (0)
+    pt_config.put("video.desaturate_edges",   video.desaturate_edges); // Edge desaturation (0)
+    pt_config.put("video.brightboost",        video.brightboost);   // Bright boost element 1 (0)
+    pt_config.put("video.blargg",             video.blargg);        // Blargg filtering mode (0=off)
+    pt_config.put("video.saturation",         video.saturation);    // Filter saturation (-1 to +1)
+    pt_config.put("video.contrast",           video.contrast);      // Filter contrast (-1 to +1)
+    pt_config.put("video.brightness",         video.brightness);    // Filter brightness (-1 to +1)
+    pt_config.put("video.sharpness",          video.sharpness);     // Edge blurring
+    pt_config.put("video.resolution",         video.resolution);    // Resolution (-2 to 0)
+    pt_config.put("video.gamma",              video.gamma);         // Gamma (-3 to +3)
+    pt_config.put("video.hue",                video.hue);           // Hue (-10 to +10)
 
     pt_config.put("sound.enable",             sound.enabled);
     pt_config.put("sound.advertise",          sound.advertise);
     pt_config.put("sound.preview",            sound.preview);
     pt_config.put("sound.fix_samples",        sound.fix_samples);
-    pt_config.put("sound.rate",               sound.rate);          // audio sampling rate e.g. 44100 (Hz)
-    pt_config.put("sound.playback_speed",     sound.playback_speed);// JJP - Synth playback speed
-    pt_config.put("sound.playback_device", sound.playback_device);  // JJP - Index of SDL playback device to request, -1 for default  
+    pt_config.put("sound.rate",               sound.rate);             // audio sampling rate e.g. 44100 (Hz)
+    pt_config.put("sound.callback_rate",      sound.callback_rate);    // JJP - 0=8ms callbacks, 1=16ms
+    pt_config.put("sound.playback_device",    sound.playback_device);  // JJP - Index of SDL playback device to request, -1 for default  
+    pt_config.put("sound.wave_volume",        sound.wave_volume);      // JJP - volume adjustment to .wav files
 
     if (config.smartypi.enabled)
         pt_config.put("smartypi.cabinet",     config.smartypi.cabinet);
@@ -452,14 +567,14 @@ void Config::save_scores(bool original_mode)
 
     // Create empty property tree object
     ptree pt;
-        
+
     for (int i = 0; i < ohiscore.NO_SCORES; i++)
     {
         score_entry* e = &ohiscore.scores[i];
-    
+
         std::string xmltag = "score";
-        xmltag += Utils::to_string(i);    
-        
+        xmltag += Utils::to_string(i);
+
         pt.put(xmltag + ".score",    Utils::to_hex_string(e->score));
         pt.put(xmltag + ".initial1", e->initial1 == 0x20 ? "." : Utils::to_string((char) e->initial1)); // use . to represent space
         pt.put(xmltag + ".initial2", e->initial2 == 0x20 ? "." : Utils::to_string((char) e->initial2));

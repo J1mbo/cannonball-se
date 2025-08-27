@@ -1,37 +1,36 @@
-/***************************************************************************
-    SDL2 Hardware Surface Video Rendering
-    Copyright (c) 2012,2020 Manuel Alfayate, Chris White.
-
-    Copyright (c) 2020,2025 James Pearce:
-    - Blargg CRT filter integration enhanced for 24-bit support
-    - Screen edge mask
-    - Shader via SDL_gpu to support GLSL shader based on crt-consumer
+/**********************************************************************************
+    SDL2 Video Rendering
+    Original SDL works Copyright (c) 2012,2020 Manuel Alfayate, Chris White.
 
     See license.txt for more details.
-***************************************************************************/
+
+    This version, for CannnonBall SE, Copyright (c) 2020,2025 James Pearce.
+
+    Provides:
+    - GLES display with GLSL shaders via gl_backend.hpp
+    - true NTSC (Blargg) filter
+    - overlay based screen shape/shadown mask
+    - multi-threaded processing
+
+***********************************************************************************/
 
 // Aligned Memory Allocation
 #include <boost/align/aligned_alloc.hpp>
 #include <boost/align/aligned_delete.hpp>
 
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <mutex>
 #include "rendersurface.hpp"
 #include "frontend/config.hpp"
 #include <omp.h>
 #include <math.h>
+#include <SDL_opengles2.h>
 
-// for crt shader
-#ifdef __linux__
-#include <SDL_gpu.h>
-#else
-#include <c:/Libraries/sdl-gpu/include/SDL_gpu.h> // for shader support
-#endif
-
-//#define VERTEX_SHADER   "res/crt-consumer-vertex.glsl"
-//#define FRAGMENT_SHADER "res/crt-consumer-pixel.glsl"
-#define VERTEX_SHADER   "res/Cannonball-Shader-Vertex.glsl"
-#define FRAGMENT_SHADER "res/Cannonball-Shader-Fragment.glsl"
+#define VERTEX_SHADER        "res/Cannonball-Shader-Vertex.glsl"
+#define FRAGMENT_SHADER      "res/Cannonball-Shader-Fragment.glsl"       // light shader - curvature/noise/shadow mask/vignette
+#define FRAGMENT_SHADER_FAST "res/Cannonball-Shader-Fragment-Fast.glsl"  // extra light shader - curvature/noise only
 
 RenderSurface::RenderSurface()
 {
@@ -46,6 +45,7 @@ RenderSurface::~RenderSurface()
 bool RenderSurface::init(int source_width, int source_height,
                          int source_scale, int video_mode_requested, int scanlines_requested)
 {
+    // Can only be called from the thread with the SDL context (usuablly the main thread)
     src_width  = source_width;
     src_height = source_height;
     scale      = source_scale;
@@ -61,34 +61,46 @@ bool RenderSurface::init(int source_width, int source_height,
     setup.gamma = double(config.video.gamma) / 10;
     setup.hue = double(config.video.hue) / 100;
 
-    // stop rendering threads
-    //drawFrameMutex.lock();
-    //finalizeFrameMutex.lock();
+    // ensure we have exclusive access to the SDL context
+    std::lock_guard<std::mutex> gpulock(gpuMutex);
 
     // Initialise Blargg. Comes first as determins working image dimensions.
     init_blargg_filter(); // NTSC filter (CPU based)
-    
+
     // Initialise SDL
     if (!init_sdl(video_mode)) return false;
 
     // Get SDL Pixel Format Information
-    Rshift = GameSurface[0]->format->Rshift;
-    Gshift = GameSurface[0]->format->Gshift;
-    Bshift = GameSurface[0]->format->Bshift;
-    Ashift = GameSurface[0]->format->Ashift;
-    Rmask = GameSurface[0]->format->Rmask;
-    Gmask = GameSurface[0]->format->Gmask;
-    Bmask = GameSurface[0]->format->Bmask;
-    Amask = GameSurface[0]->format->Amask;
+    Rshift = GameSurface[0]->format->Ashift;
+    Gshift = GameSurface[0]->format->Bshift;
+    Bshift = GameSurface[0]->format->Gshift;
+    Ashift = GameSurface[0]->format->Rshift;
+    Rmask = GameSurface[0]->format->Amask;
+    Gmask = GameSurface[0]->format->Bmask;
+    Bmask = GameSurface[0]->format->Gmask;
+    Amask = GameSurface[0]->format->Rmask;
+
+/*
+    std::cout << "Ashift: " << static_cast<int>(Ashift) << "\n";
+    std::cout << "Bshift: " << static_cast<int>(Bshift) << "\n";
+    std::cout << "Gshift: " << static_cast<int>(Gshift) << "\n";
+    std::cout << "Rshift: " << static_cast<int>(Rshift) << "\n";
+
+    std::cout << std::hex << std::showbase; // showbase adds "0x" prefix
+    std::cout << "Amask: " << Amask << "\n";
+    std::cout << "Bmask: " << Bmask << "\n";
+    std::cout << "Gmask: " << Gmask << "\n";
+    std::cout << "Rmask: " << Rmask << "\n";
+    std::cout << std::dec; // back to decimal
+*/
 
     // call other initialisation routines
     init_overlay();       // CRT curved edge mask (applied as a mask by GPU rendering)
     create_buffers();     // used for working space processing image from [game output]->[blargg-filtered]->[renderer input]
     FrameCounter = 0;
 
-    // restart rendering threads
-    //drawFrameMutex.unlock();
-    //finalizeFrameMutex.unlock();
+    // signal to workers we're running (e.g. after a video restart)
+    shutting_down.store(false, std::memory_order_release);
 
     return true;
 }
@@ -96,49 +108,35 @@ bool RenderSurface::init(int source_width, int source_height,
 void RenderSurface::swap_buffers()
 {
     // swap the pixel buffers
-    drawFrameMutex.lock();
+    std::lock_guard<std::mutex> lock(drawFrameMutex);
     current_game_surface ^= 1;
-    drawFrameMutex.unlock();
     GameSurfacePixels = (uint32_t*)GameSurface[current_game_surface]->pixels;
-
 }
 
 
 void RenderSurface::disable()
 {
-    // Free GPU-managed images and shader program.
-    if (overlayImage) {
-        GPU_FreeImage(overlayImage);
-        overlayImage = nullptr;
-    }
-    if (pass1Target) {
-        GPU_FreeImage(pass1Target);
-        pass1Target = nullptr;
-    }
-    if (gpushader) {
-        GPU_FreeShaderProgram(gpushader);
-        gpushader = 0;
-    }
+    // Can only be called from the thread with the SDL context (usuablly the main thread)
+    // awaiting threads
+    shutting_down.store(true, std::memory_order_release);
+    std::lock_guard<std::mutex> guard(drawFrameMutex);
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait(lock, [&] { return activity_counter.load(std::memory_order_acquire) == 0; });
 
-    // Shutdown SDL_gpu.
-    GPU_Quit(); 
-    GPU_CloseCurrentRenderer();
-    GPU_FreeTarget(renderer);
-    SDL_DestroyWindow(window);
+    // ensure we have exclusive access to the SDL context
+    std::lock_guard<std::mutex> gpulock(gpuMutex);
+
+    glb::shutdown();
+
+    // delete the SDL‑GL context
+    if (glContext) { SDL_GL_DeleteContext(glContext); glContext = nullptr; }
+
+    // destroy window and quit SDL_gpu
+    if (window) { SDL_DestroyWindow(window); window = nullptr; }
 
     // Free the CPU surfaces.
-    if (GameSurface[0]) {
-        SDL_FreeSurface(GameSurface[0]);
-        GameSurface[0] = nullptr;
-    }
-    if (GameSurface[1]) {
-        SDL_FreeSurface(GameSurface[1]);
-        GameSurface[1] = nullptr;
-    }
-    if (overlaySurface) {
-        SDL_FreeSurface(overlaySurface);
-        overlaySurface = nullptr;
-    }
+    if (GameSurface[0]) { SDL_FreeSurface(GameSurface[0]); GameSurface[0] = nullptr; }
+    if (GameSurface[1]) { SDL_FreeSurface(GameSurface[1]); GameSurface[1] = nullptr; }
 
     // Release any additional buffers.
     destroy_buffers();
@@ -203,12 +201,83 @@ void RenderSurface::init_blargg_filter()
         setup.sharpness = double(config.video.sharpness) / 100;
         setup.gamma = double(config.video.gamma) / 10;
         setup.resolution = double(config.video.resolution) / 100;
-        
+
         snes_ntsc_init(ntsc, &setup); // configure the library
     }
     else snes_src_width = src_width; // provides constraint to buffer allocation
 }
 
+
+// ----------------------------------------------------------------------------------
+// set_scaling - determines the X and Y parameters and image position
+// ----------------------------------------------------------------------------------
+
+
+void RenderSurface::set_scaling()
+{
+    // Compute source and destination rectangles.
+    // These values are computed differently for fullscreen vs. windowed mode.
+    if (video_mode == video_settings_t::MODE_FULL ||
+        video_mode == video_settings_t::MODE_STRETCH)
+    {
+        // For fullscreen:
+        scn_width = orig_width;
+        scn_height = orig_height;
+
+        // Set src_rect dimensions (accounting for a potential Blargg mode, which expands horizontally)
+        src_rect.x = 0;
+        src_rect.y = 0;
+        src_rect.w = (blargg) ? snes_src_width : src_width;
+        src_rect.h = src_height;
+
+        // Determine destination rectangle:
+        dst_rect.x = 0;
+        dst_rect.y = 0;
+        dst_rect.h = scn_height;
+        dst_rect.w = scn_width;
+
+        if (video_mode == video_settings_t::MODE_FULL) {
+            // Maintain game aspect ratio:
+            int correct_height = int(float(src_height) * float(scn_width) / float(src_width));
+            int correct_width  = int(float(src_width) * float(scn_height) / float(src_height));
+            if (correct_height > dst_rect.h) {
+                // re-scale width, to leave black bars either side and image full height on screen)
+                std::cout << "Image centered horizontally, ";
+                dst_rect.w = int(float(src_width) * float(scn_height) / float(src_height));
+                dst_rect.x = (scn_width - dst_rect.w) >> 1;
+                anchor_x   = dst_rect.x;
+                anchor_y   = 0;
+            }
+            if (correct_width > dst_rect.w) {
+                // re-scale height, to leave black bars top and bottom and image full width)
+                std::cout << "Image centered vertically, ";
+                dst_rect.h = correct_height;
+                dst_rect.y = (scn_height - dst_rect.h) >> 1;
+                anchor_y   = dst_rect.y;
+                anchor_x   = 0;
+            }
+        }
+        std::cout << "Image anchor point: " << anchor_x << "," << anchor_y << "\n";
+        SDL_ShowCursor(SDL_DISABLE);
+    }
+    else  // Windowed mode
+    {
+        video_mode = video_settings_t::MODE_WINDOW;
+        // Start with a desired scale (e.g. 4x the native resolution)
+        scn_width = src_width * scale;
+        scn_height = src_height * scale;
+        src_rect.x = 0;
+        src_rect.y = 0;
+        src_rect.w = (blargg == 0) ? src_width : snes_src_width;
+        src_rect.h = src_height;
+
+        dst_rect.x = 0;
+        dst_rect.y = 0;
+        dst_rect.w = scn_width;
+        dst_rect.h = scn_height;
+        SDL_ShowCursor(SDL_ENABLE);
+    }
+}
 
 // ----------------------------------------------------------------------------------
 // SDL Initialisation
@@ -221,71 +290,20 @@ bool RenderSurface::init_sdl(int video_mode)
     if (!RenderBase::sdl_screen_size())
         return false;
 
-    int fullscreen = 0;
+    // Determine the image scaling parameters and image position
+    set_scaling();
 
-    // Compute source and destination rectangles.
-    // These values are computed differently for fullscreen vs. windowed mode.
-    if (video_mode == video_settings_t::MODE_FULL ||
-        video_mode == video_settings_t::MODE_STRETCH)
-    {
-        fullscreen = 1;
-        // For fullscreen:
-        scn_width = orig_width;
-        scn_height = orig_height;
-
-        // Set src_rect dimensions (accounting for a potential �blargg� mode)
-        src_rect.x = 0;
-        src_rect.y = 0;
-        src_rect.w = (blargg) ? snes_src_width : src_width;
-        src_rect.h = src_height;
-
-        // Determine destination rectangle:
-        dst_rect.x = 0;
-        dst_rect.y = 0;
-        dst_rect.w = scn_width;
-        if (video_mode == video_settings_t::MODE_FULL) {
-            // For �stretched� vertically to maintain aspect ratio:
-            dst_rect.h = int(uint32_t(src_height) * uint32_t(scn_width) / uint32_t(src_width));
-        }
-        else { // MODE_STRETCH: fill the screen vertically
-            dst_rect.h = scn_height;
-        }
-        // If the calculated height is too large, scale the other way and center horizontally:
-        if (dst_rect.h > scn_height) {
-            dst_rect.w = int(uint32_t(src_width) * uint32_t(scn_height) / uint32_t(src_height));
-            dst_rect.h = scn_height;
-            dst_rect.x = (scn_width - dst_rect.w) >> 1;
-        }
-        SDL_ShowCursor(SDL_DISABLE);
-    }
-    else  // Windowed mode
-    {
-        video_mode = video_settings_t::MODE_WINDOW;
-        // Start with a desired scale (e.g. 4� the native resolution)
-        scn_width = src_width * scale;
-        scn_height = src_height * scale;
-        // *** BUG FIX: Also scale the height (not only the width) ***
-        //while (scn_width > orig_width) {
-        //    scn_width /= 2;
-        //    scn_height /= 2;
-        //}
-        src_rect.x = 0;
-        src_rect.y = 0;
-        src_rect.w = (blargg == 0) ? src_width : snes_src_width;
-        src_rect.h = src_height;
-
-        dst_rect.x = 0;
-        dst_rect.y = 0;
-        dst_rect.w = scn_width;
-        dst_rect.h = scn_height;
-        SDL_ShowCursor(SDL_ENABLE);
-    }
-
-    //--------------------------------------------------------
-    // Use SDL_gpu to create the window and renderer
-    //--------------------------------------------------------
+    // --------------------------------------------------------
+    // Request an OpenGL ES2 context (for desktop & mobile)
+    // --------------------------------------------------------
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,   2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,   0);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER,            1);
 
     // Create a window manually so that it can be closed on video restart (e.g. Blargg on/off)
+    // Now create our window (with an OpenGL flag)
+
     window = SDL_CreateWindow("Cannonball",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         scn_width, scn_height, SDL_WINDOW_OPENGL);
@@ -295,115 +313,73 @@ bool RenderSurface::init_sdl(int video_mode)
         return false;
     }
 
-    GPU_SetInitWindow(SDL_GetWindowID(window));
-    renderer = GPU_Init((Uint16)scn_width, (Uint16)scn_height, GPU_DEFAULT_INIT_FLAGS);
-    if (!renderer) {
-        std::cerr << "GPU initialization failed: " << SDL_GetError() << std::endl;
+    // Create the ES context
+    glContext = SDL_GL_CreateContext(window);
+    if (!glContext) {
+        std::cerr << "Failed to create GLES context: " << SDL_GetError() << std::endl;
         return false;
     }
-    screen = renderer;
 
-    if (fullscreen)
-        GPU_SetFullscreen(GPU_TRUE, GPU_TRUE);
+    // go true fullscreen (desktop resolution)
+    SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    // then fix the GL viewport to the new backbuffer size
+    glb::on_drawable_resized();
+
+    // --- Tiny ES2 backend init (replaces SDL_gpu) ---
+    auto loadTextFile = [](const char* path)->std::string {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return {};
+        return std::string((std::istreambuf_iterator<char>(f)), {});
+    };
+    if (config.video.shader_mode == 0) {
+        // shader not enabled - force pass-through shader in gl_backend
+        vs.clear();
+        fs.clear();
+    } else {
+        // shader is enabled
+        vs = loadTextFile(VERTEX_SHADER);
+        fs = loadTextFile((config.video.shader_mode == 2) ? FRAGMENT_SHADER : FRAGMENT_SHADER_FAST);
+        if (vs.empty() || fs.empty()) {
+            std::cerr << "Failed to load shader sources.\n";
+            return false;
+        }
+    }
+    // Initialize GL backend
+    if (!glb::init(window,
+                   /*gameW*/    src_rect.w, /*gameH*/    src_rect.h,
+                   /*overlayW*/ dst_rect.w, /*overlayH*/ dst_rect.h,
+                   vs.empty() ? nullptr : vs.c_str(),
+                   fs.empty() ? nullptr : fs.c_str(),
+                   /*createOffscreen=*/false)) {
+        std::cerr << "gl_backend init failed.\n";
+        return false;
+    }
 
     Uint32 window_format = SDL_GetWindowPixelFormat(window);
     printf("Window Pixel Format: %s (0x%08X)\n", SDL_GetPixelFormatName(window_format), window_format);
 
     //--------------------------------------------------------
-    // Set up the GLSL shaders using SDL_gpu
-    //--------------------------------------------------------
-    uint32_t vertexShader = GPU_LoadShader(GPU_VERTEX_SHADER, VERTEX_SHADER);
-    if (!vertexShader) {
-        std::cerr << "Failed to load vertex shader: " << GPU_GetShaderMessage() << std::endl;
-        GPU_Quit();
-        return false;
-    }
-    uint32_t pixelShader = GPU_LoadShader(GPU_PIXEL_SHADER, FRAGMENT_SHADER);
-    if (!pixelShader) {
-        std::cerr << "Failed to load pixel shader: " << GPU_GetShaderMessage() << std::endl;
-        GPU_Quit();
-        return false;
-    }
-    if (gpushader)
-        GPU_FreeShaderProgram(gpushader);
-    gpushader = GPU_LinkShaders(vertexShader, pixelShader);
-    if (!gpushader) {
-        std::cerr << "Failed to link shader program: " << GPU_GetShaderMessage() << std::endl;
-        GPU_Quit();
-        return false;
-    }
-    block = GPU_LoadShaderBlock(gpushader, "VertexCoord", "TexCoord", "COLOR", "MVPMatrix");
-
-    //--------------------------------------------------------
-    // Create an off-screen render target for post-processing.
-    //--------------------------------------------------------
-    pass1Target = GPU_CreateImage((Uint16)scn_width, (Uint16)scn_height, GPU_FORMAT_RGBA);
-    if (!pass1Target) {
-        std::cerr << "Failed to create off-screen image." << std::endl;
-        GPU_Quit();
-        return false;
-    }
-    GPU_LoadTarget(pass1Target);
-    if (!pass1Target->target) {
-        std::cerr << "Failed to create off-screen target." << std::endl;
-        GPU_Quit();
-        return false;
-    }
-    pass1 = pass1Target->target;
-
-    //--------------------------------------------------------
     // Create CPU surfaces for the game image and an overlay.
     //--------------------------------------------------------
-
 
     // Double-buffered game surfaces
     GameSurface[0] = SDL_CreateRGBSurfaceWithFormat(0, src_rect.w, src_rect.h, BPP, SDL_PIXELFORMAT_RGBA8888);
     GameSurface[1] = SDL_CreateRGBSurfaceWithFormat(0, src_rect.w, src_rect.h, BPP, SDL_PIXELFORMAT_RGBA8888);
-    if (!GameSurface[0] || !GameSurface[1]) {
-        std::cerr << "GameSurface creation failed: " << SDL_GetError() << std::endl;
-        GPU_Quit();
+    if (!GameSurface[0] || !GameSurface[1]) { // || !overlaySurface) {
+        std::cerr << "SDL Surface creation failed: " << SDL_GetError() << std::endl;
         return false;
     }
     current_game_surface = 0;
     GameSurfacePixels = static_cast<uint32_t*>(GameSurface[current_game_surface]->pixels);
-    
-    Uint32 black_color = SDL_MapRGBA(GameSurface[0]->format, 0, 0, 0, 255);
+
+    glb::set_swap_interval(1);  // vsync on
+    //glb::auto_configure_pixel_formats_from_surfaces(GameSurface[0], overlaySurface);
+
+    Uint32 black_color = SDL_MapRGBA(GameSurface[0]->format, 0, 0, 0, 0);
     SDL_FillRect(GameSurface[0], NULL, black_color);
     SDL_FillRect(GameSurface[1], NULL, black_color);
 
-    loc_alloff = GPU_GetUniformLocation(gpushader, "alloff");
-    loc_warpX = GPU_GetUniformLocation(gpushader, "warpX");
-    loc_warpY = GPU_GetUniformLocation(gpushader, "warpY");
-    loc_expandX = GPU_GetUniformLocation(gpushader, "expandX");
-    loc_expandY = GPU_GetUniformLocation(gpushader, "expandY");
-    loc_brightboost = GPU_GetUniformLocation(gpushader, "brightboost");
-    loc_noiseIntensity = GPU_GetUniformLocation(gpushader, "noiseIntensity");
-    loc_vignette = GPU_GetUniformLocation(gpushader, "vignette");
-    loc_desaturate = GPU_GetUniformLocation(gpushader, "desaturate");
-    loc_desaturateEdges = GPU_GetUniformLocation(gpushader, "desaturateEdges");
-    loc_Shadowmask = GPU_GetUniformLocation(gpushader, "Shadowmask");
-    //loc_framecount = GPU_GetUniformLocation(gpushader, "FrameCount");
-    loc_u_Time = GPU_GetUniformLocation(gpushader, "u_Time");
-    loc_OutputSize = GPU_GetUniformLocation(gpushader, "OutputSize");
-
-    // Create the GPU GameImage buffer
-    GameImage = GPU_CopyImageFromSurface(GameSurface[0]);
-
-    // textures (i.e., game image)
-    GPU_SetShaderImage(GameImage, GPU_GetUniformLocation(gpushader, "Texture"), 0);
-    GPU_SetAnchor(GameImage, 0, 0);
-
     // screen_pixels = static_cast<uint32_t*>(surface->pixels);
-
-    // Overlay surface for additional effects
-    overlaySurface = SDL_CreateRGBSurfaceWithFormat(0, dst_rect.w, dst_rect.h, BPP, SDL_PIXELFORMAT_RGBA8888);
-    if (!overlaySurface) {
-        std::cerr << "Overlay Surface creation failed: " << SDL_GetError() << std::endl;
-        GPU_Quit();
-        return false;
-    }
-    overlaySurfacePixels = static_cast<uint32_t*>(overlaySurface->pixels);
-
     return true;
 }
 
@@ -455,8 +431,7 @@ int find_circle_intersection(double x1, double y1, double r1,
     if (ix1 < ix2) {
         *ix = ix1;
         *iy = iy1;
-    }
-    else {
+    } else {
         *ix = ix2;
         *iy = iy2;
     }
@@ -467,31 +442,34 @@ int find_circle_intersection(double x1, double y1, double r1,
 
 void RenderSurface::init_overlay()
 {
-    // This function builds out the mask.
+    // This function builds out the mask as an ALPHA8 blend mask (FF=transparent, 0=black).
     // This is called by init(), all also by draw_frame() if the user has changed a setting.
     // Texture dimensions must be previously defined (by init_textures)
     // This function is computationally expensive.
 
-    uint32_t* texture_pixels;
-    uint32_t* t32p;
-    int pixels;
+    // Check if overlay is disabled. This sets the overlay in the shader to a 1:1 white
+    // which reduces RAM bandwidth required e.g. for Pi2.
+    if (!config.video.crt_shape && !config.video.shadow_mask) {
+        glb::clear_overlay_texture();
+        return;
+    }
 
-    // create CRT mask texture
-	pixels = dst_rect.w * dst_rect.h;
-    t32p = texture_pixels = overlaySurfacePixels; // new uint32_t[pixels];
-    while (pixels--) *(t32p++) = 0xFFFFFFFF; // fill with white
-    //if (config.video.crt_shape) {
-    if (1) {
+    // create buffer. Fill is 0xFF (clear)
+	int pixels = dst_rect.w * dst_rect.h;
+    std::vector<uint8_t> a8(pixels, 0xFF);
+
+    if (config.video.crt_shape) {
+        // vignette and shape
         uint32_t vignette_target = int((double(config.video.vignette) * 255.0 / 100.0));
         double midx = double(dst_rect.w >> 1);
         double midy = double(dst_rect.h >> 1);
         double dia = sqrt(((midx * midx) + (midy * midy)));
         double outer = dia * 1.00;
         double inner = dia * 0.30;
-        double total_black = 0.0; double d;
+        double total_black = 0.0;
 
         // Blacked-out corners and top/bottom fade and curved edges
-        double corner_radius = 0.02 * dia;     // this is the radius of the rounded corner
+        double corner_radius = 0.02 * dia;    // this is the radius of the rounded corner
         double edge_radius = 0.01 * dia;      // this amount will be faded to black, creating a smooth edge to the curve
         double crt_curve_radius_x = dia * 12;
         double crt_curve_radius_y = dia * 12;
@@ -514,10 +492,10 @@ void RenderSurface::init_overlay()
         // calculate the mask values
 #pragma omp parallel for
         for (int y = 0; y <= (dst_rect.h >> 1); y++) {
-            uint32_t* scnlp1 = texture_pixels + (y * dst_rect.w);
-            uint32_t* scnlp2 = scnlp1 + dst_rect.w - 1;
-            uint32_t* scnlp3 = texture_pixels + ((dst_rect.h - y - 1) * dst_rect.w);
-            uint32_t* scnlp4 = scnlp3 + dst_rect.w - 1;
+            uint8_t* scnlp1 = a8.data() + (y * dst_rect.w);
+            uint8_t* scnlp2 = scnlp1 + dst_rect.w - 1;
+            uint8_t* scnlp3 = a8.data() + ((dst_rect.h - y - 1) * dst_rect.w);
+            uint8_t* scnlp4 = scnlp3 + dst_rect.w - 1;
             int y_pos = (y < midy) ? y : dst_rect.h - y;
             uint32_t shadeval, maskval;
             for (int x = 0; x <= (dst_rect.w >> 1); x++) {
@@ -583,7 +561,7 @@ void RenderSurface::init_overlay()
                     // remove horizontal 'ears' at each corner
                     if ((y_pos <= int(y_intersect + edge_radius)) &&
                         (x_pos <= int(x_intersect + edge_radius))) shadeval = int(total_black);
-  
+
                     // next apply the curved edge effect based on distance from the CRT curve (d2 and d3)
                     // first use d2 (x axis) as this will be larger
                     if (x_pos <= (x_intersect + edge_radius)) {
@@ -617,12 +595,11 @@ void RenderSurface::init_overlay()
                     }
                 }
                 // store the calculated mask value in the texture
-                maskval = (shadeval << Rshift) + (shadeval << Bshift) + (shadeval << Gshift);
                 //maskval = shadeval;
-                *(scnlp1++) = maskval; // top-left
-                *(scnlp2--) = maskval; // top-right
-                *(scnlp3++) = maskval; // bottom-left
-                *(scnlp4--) = maskval; // bottom-right
+                *(scnlp1++) = shadeval; // top-left
+                *(scnlp2--) = shadeval; // top-right
+                *(scnlp3++) = shadeval; // bottom-left
+                *(scnlp4--) = shadeval; // bottom-right
             }
         }
     }
@@ -633,11 +610,11 @@ void RenderSurface::init_overlay()
     if (config.video.shadow_mask == 1) {
         // small square mask effect but without rgb split, for standard screens like 1280x1024
         int current = 0;
-        uint32_t* scnlp = texture_pixels;
+        uint8_t* scnlp = a8.data();
         uint32_t dimval;
-        uint32_t dimval_h = (100 - config.video.mask_intensity) * 255 / 100; // percent that shows through
+        uint32_t dimval_h = (config.video.maskDim) * 255 / 100; // percent that shows through
         uint32_t dimval_v = dimval_h * dimval_h / 255; // verticals are darker
-        
+
         for (int y = 0; y < dst_rect.h; y++) {
             current = 0;
             for (int x = 0; x < dst_rect.w; x++) {
@@ -657,21 +634,25 @@ void RenderSurface::init_overlay()
                 }
                 if (++current == 6) current = 0;
 
-                uint32_t maskval = (*scnlp >> Rshift) & 0xFF; // extract one value
-                dimval = maskval * dimval / 255;
-                *(scnlp++) = (dimval << Rshift) + (dimval << Gshift) + (dimval << Bshift);
+                // fast *dimval/256:
+                uint32_t t = static_cast<uint32_t>(*scnlp) * dimval;
+                *scnlp = static_cast<uint8_t>((t + 128 + (t >> 8)) >> 8);
+                ++scnlp;
             }
         }
     }
 
-    // load the texture into the GPU for presentation each frame if configured
-    overlayImage = GPU_CopyImageFromSurface(overlaySurface);
-    GPU_SetBlendMode(overlayImage, GPU_BLEND_MULTIPLY);
-    GPU_SetAnchor(overlayImage, 0, 0);
-    GPU_SetImageVirtualResolution(overlayImage, dst_rect.w, dst_rect.h);
+    // Upload overlay pixels to GPU overlay texture
+    glb::set_overlay_pixel_format_a8();
+    glb::reallocate_overlay_storage();
+
+    glb::update_overlay_texture(
+        /*overlaySurfacePixels*/ a8.data(),
+        /*pitchBytes*/ dst_rect.w,// * 4,
+        /*w*/ dst_rect.w,
+        /*h*/ dst_rect.h
+    );
 }
-
-
 
 
 
@@ -681,129 +662,144 @@ bool RenderSurface::finalize_frame()
 	// updating the screen with the new frame. It also applies post-processing effects
 	// via GPU shader and CRT edge overlay if enabled.
 
+    // check is disable() is waiting
+    if (shutting_down.load(std::memory_order_acquire)) return true;
+    activity_counter.fetch_add(1, std::memory_order_acq_rel);
+
+    // ensure we have exclusive access to the SDL context
+    std::lock_guard<std::mutex> gpulock(gpuMutex);
+
     int game_width = src_rect.w;
     int game_height = src_rect.h;
-    
+
     // Whether to use off-screen target
-    int offscreen_rendering = 0;// (config.video.crt_shape == 1);
+    int offscreen_rendering = 0;
 
     if (FrameCounter++ == 60) FrameCounter = 0;
 
-    if (offscreen_rendering) {
-        GPU_SetActiveTarget(pass1);
-    }
-    else {
-        GPU_SetActiveTarget(screen);
-    }
-
     // *** SHADER DRAW ***
-    
-    // get game image, which has been stored directly into surface->pixels by draw_frame
-    // in one of two buffers. Use mutex in case user updates a config setting during rendering,
-    // for example turning on/off the shader which would result in buffers being re-allocated.
-    //finalizeFrameMutex.lock();
 
-    /*
-    drawFrameMutex.lock();
-    int SurfaceIndex = current_game_surface ^ 1;
-    drawFrameMutex.unlock();
-
-    GPU_Rect fullRect = { 0, 0, (float)game_width, (float)game_height };
-    GPU_UpdateImage(GameImage, &fullRect, GameSurface[SurfaceIndex], &fullRect );
-    */
-
-    int SurfaceIndex;
+    SDL_Surface* localGameSurface;
     {
         std::lock_guard<std::mutex> lock(drawFrameMutex);
-        SurfaceIndex = current_game_surface ^ 1;
+        const int idx = current_game_surface ^ 1;
+        localGameSurface = GameSurface[idx]; // Latch the SDL_Surface*
     }
 
-    // Now we assume that only this thread accesses GameSurface[SurfaceIndex]
-    const auto* const localGameSurface = GameSurface[SurfaceIndex];
+    // Upload this frame’s CPU pixels to the GPU
+    glb::update_game_texture(
+        localGameSurface->pixels,
+        localGameSurface->pitch,
+        game_width,
+        game_height
+    );
 
-    GPU_Rect fullRect = { 0, 0, static_cast<float>(game_width), static_cast<float>(game_height) };
-    GPU_UpdateImage(GameImage, &fullRect, const_cast<SDL_Surface*>(localGameSurface), &fullRect);
-
-    // enable the shader
-    if (config.video.alloff == 0)
-        GPU_ActivateShaderProgram(gpushader, &block);
-    
     /* == Configure shader options ('uniforms') == */
 
+    static long last_config = 0;
+    static int  ticks = 3;
     // check for any settings changes
-    if (config.video.alloff == 0)
+//    if (config.video.shader_mode != 0)
+    if (1)
     {
-        // Configure the various sizes
-        float values[2];
-        
-        // OutputSize
-        values[0] = (float)dst_rect.w;
-        values[1] = (float)dst_rect.h;
-        GPU_SetUniformfv(loc_OutputSize, 2, 1, values);
+        long this_config =  config.video.shader_mode    +
+                            config.video.crt_shape      +
+                            config.video.x_offset       +
+                            config.video.y_offset       +
+                            config.video.blargg         +
+                            config.video.warpX          +
+                            config.video.warpY          +
+                            config.video.brightboost    +
+                            config.video.noise          +
+                            config.video.vignette       +
+                            config.video.desaturate     +
+                            config.video.shadow_mask    +
+                            config.video.maskDim        +
+                            config.video.maskBoost      +
+                            config.video.mask_size      +
+                            dst_rect.w + dst_rect.h;
+        if ((this_config!=last_config) && ticks) {
+            // Send updated config to the shader
+            glb::set_uniform("warpX",           float(config.video.warpX) / 100.0f);
+            glb::set_uniform("warpY",           float(config.video.warpY) / 100.0f);
 
-        // other settings
-        GPU_SetUniformf(loc_warpX, float(config.video.warpX) / 100.0f);
-        GPU_SetUniformf(loc_warpY, float(config.video.warpY) / 100.0f);
-        GPU_SetUniformf(loc_expandX, 1 + (float(config.video.warpX) / 200.0f));
-        GPU_SetUniformf(loc_expandY, 1 + (float(config.video.warpY) / 300.0f));
-        GPU_SetUniformf(loc_brightboost, 1 + (float(config.video.brightboost) / 100.0f));
-        GPU_SetUniformf(loc_noiseIntensity, float(config.video.noise) / 100.0f);
-        float gpu_vignette = (config.video.shadow_mask < 2) ? 0.0f : float(config.video.vignette) / 100.0f;
-        GPU_SetUniformf(loc_vignette, gpu_vignette);
-        GPU_SetUniformf(loc_desaturate, float(config.video.desaturate) / 100.0f);
-        GPU_SetUniformf(loc_desaturateEdges, float(config.video.desaturate_edges) / 100.0f);
-        GPU_SetUniformf(loc_Shadowmask, float(config.video.shadow_mask));
+            float invExpandX = 1 / (1 + (float(config.video.warpX) / 200.0f));
+            float invExpandY = 1 / (1 + (float(config.video.warpY) / 300.0f));
+            glb::set_uniform2("invExpand",      invExpandX, invExpandY);
 
-        values[0] = float(FrameCounter) / 60.0;
-        values[1] = values[0];
-        GPU_SetUniformfv(loc_u_Time, 2, 1, values);
+            glb::set_uniform("brightboost",     1 + (float(config.video.brightboost) / 100.0f));
+            glb::set_uniform("noiseIntensity",  float(config.video.noise) / 100.0f);
+
+            float vignette = (config.video.shadow_mask < 2) ? 0.0f : float(config.video.vignette) / 100.0f;
+            glb::set_uniform("vignette",        vignette);
+
+            glb::set_uniform("desaturate",      float(config.video.desaturate) / 100.0f);
+            glb::set_uniform("desaturateEdges", float(config.video.desaturate_edges) / 100.0f);
+            glb::set_uniform("baseOff",         (config.video.shadow_mask==2 ? (config.video.maskDim/100.0f)   : 1.0f));
+            glb::set_uniform("baseOn",          (config.video.shadow_mask==2 ? (config.video.maskBoost/100.0f) : 1.0f));
+            glb::set_uniform("invMaskPos",      (config.video.mask_size==0)  ? 1.0f : 1.0f/config.video.mask_size);
+
+            glb::set_uniform2("OutputSize",     float(dst_rect.w), float(dst_rect.h));
+            glb::clear(/*rgba*/ 0.f, 0.f, 0.f, 1.f);
+            if (--ticks==0) {
+                last_config = this_config;
+                ticks = 3;
+            }
+        }
+        glb::set_uniform2("u_Time",         (float(FrameCounter) / 60.0), 0.0f );
     }
 
     /* == blit the game image. This processes it with the shader into the configured target buffer == */
 
-    float x_scale = ((float)dst_rect.w / (float)game_width);
-    float y_scale = ((float)dst_rect.h / (float)game_height);
+    // set image position and size
+    int x0 = anchor_x + config.video.x_offset;
+    int y0 = anchor_y + config.video.y_offset;
+    glb::set_present_rect_pixels_top_left(x0, y0, dst_rect.w, dst_rect.h);
+    glb::set_overlay_rect_pixels_top_left(x0, y0, dst_rect.w, dst_rect.h);
+    // Draw to the window; gl_backend handles overlay multiply as a second pass.
+    glb::draw( /*useOffscreen=*/(offscreen_rendering==1),
+               /*drawOverlay=*/((config.video.crt_shape != 0)||(config.video.shadow_mask==1)) );
 
-    if (offscreen_rendering) {
-        GPU_BlitScale(GameImage, NULL, pass1, 0, 0, x_scale, y_scale);
-        if (config.video.alloff == 0)
-            GPU_DeactivateShaderProgram();
-        GPU_Flip(pass1);
-        GPU_SetActiveTarget(screen);
-        //GPU_Clear(screen);
-        GPU_SetAnchor(pass1Target, 0, 0);
-        GPU_Blit(pass1Target, NULL, screen, 0, 0); // processed game image
-        GPU_Blit(overlayImage, NULL, screen, 0, 0); //overlay
-    }
-    else {
-        GPU_BlitScale(GameImage, NULL, screen, 0, 0, x_scale, y_scale);
-        if (config.video.alloff == 0)
-            GPU_DeactivateShaderProgram();
-        if (config.video.crt_shape)
-            GPU_Blit(overlayImage, NULL, screen, 0, 0); //overlay
-    }
+    glb::present();
 
-    // Present frame
-    GPU_Flip(screen);
+    // notify disable() that we're done
+    activity_counter.fetch_sub(1, std::memory_order_acq_rel);
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.notify_all();  // In case disable() is waiting
 
     return true;
 }
 
 
 
-void RenderSurface::draw_frame(uint16_t* pixels)
+void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, int section)
 {
-    // grabs the S16 frame buffer ('pixels') and stores it, either
-	// as straight SDL RGB or SNES RGB, then applies Blargg filter, if enabled, and colour mapping
+    // Processes either half of the image:
+    //   top half when section = 0
+    //   bottom half when section = 1
+    //   entire image when section = -1
+
+    long src_pixel_count = src_width * src_height;
+    long dst_pixel_count = snes_src_width * src_height;
+    long block_height    = src_height;
+
+    int this_section = section;
+    if (this_section >= 0) {
+        src_pixel_count = src_pixel_count >> 1;
+        dst_pixel_count = dst_pixel_count >> 1;
+        block_height = block_height >> 1;
+    } else {
+        this_section = 0;
+    }
+
+    uint16_t* spix = gamePixels + (this_section * src_pixel_count); // S16 Output
+    uint32_t* bpix = rgb_pixels + (this_section * src_pixel_count); // converted colour buffer
+
     if (blargg) {
         // convert pixel data to format used by Blarrg filtering code
-        int src_pixel_count = src_width * src_height;
-        //int dst_pixel_count = snes_src_width * height;
-        uint16_t* spix = pixels; // S16 Output
-        uint32_t* bpix = rgb_pixels;
-			
+
         // translate game image to lookup format that Blargg filter will use
-        int pixel_count = (src_pixel_count) >> 2; // unroll 4:1
+        long pixel_count = (src_pixel_count) >> 2; // unroll 4:1
 		while (pixel_count--) {
             // translate game image to lookup format that Blargg filter will use to
             // convert to RGB output levels in one step based on pre-defined S16-correct DAC output values
@@ -814,40 +810,238 @@ void RenderSurface::draw_frame(uint16_t* pixels)
             bpix += 4;
             spix += 4;
         }
-            
+
         long output_pitch = (snes_src_width << 2); // 4 bytes-per-pixel (8/8/8/8)
 
         // Set pointers
-        bpix = rgb_pixels;
-        uint32_t* tpix = GameSurfacePixels;
+        bpix = rgb_pixels + (this_section * src_pixel_count);
+        uint32_t* tpix = outputPixels + (this_section * dst_pixel_count);
 
         // Calculated alpha mask
         uint32_t Ashifted = uint32_t(Alevel) << Ashift;
-            
+
         // Now call the blargg code, to do the work of translating S16 output to RGB
         if (config.video.hires) {
             // hi-res
             snes_ntsc_blit_hires_fast(ntsc, bpix, long(src_width), phase,
-                src_width, src_height, tpix, output_pitch, Ashifted);
+                src_width, block_height, tpix, output_pitch, Ashifted);
         }
         else {
             // standard res processing
             snes_ntsc_blit(ntsc, bpix, long(src_width), phase,
-                src_width, src_height, tpix, output_pitch, Ashifted);
+                src_width, block_height, tpix, output_pitch, Ashifted);
         }
+    }
+}
 
-        if (config.fps == 60)
-            phase = (phase + 1) % 3; // cycle through 0/1/2
-        else
-            phase = (phase + 2) % 3; // cycle through 0/1/2, but at twice the rate
 
-    } else {
+
+#include <stdint.h>
+#include <stddef.h>
+/**
+ * Dim every other scanline of a packed RGB565 image by 1/2, 1/4 or 1/8.
+ *
+ * @param pixels Pointer to uint16_t RGB565 data (size = width*height).
+ * @param width  Image width in pixels.
+ * @param height Image height in pixels.
+ * @param shift  Right‐shift amount: 1 → ½, 2 → ¼, 3 → ⅛.
+ */
+static inline void apply_scanlines_(uint32_t *pixels,
+                                     size_t width,
+                                     size_t height,
+                                     uint8_t shift,
+                                     uint8_t AShift)
+{
+    // Precomputed masks to clear each channel's low 'shift' bits
+    // so we can then shift the whole word - this avoids unpacking.
+    // This is also likely to be auto-vectorised at O3.
+    //   masks[1] = 0xF7DE; // clear bits 0,5,11  → 1/2
+    //   masks[2] = 0xE79C; // clear bits 0–1,5–6,11–12 → 1/4
+    //   masks[3] = 0xC718; // clear bits 0–2,5–7,11–13 → 1/8
+    static const uint32_t masks[4] = {
+        0xFFFFFFFFu,  // no dim
+        0xFEFEFEFEu,  // >>1
+        0xFCFCFCFCu,  // >>2
+        0xF8F8F8F8u,  // >>3
+    };
+
+    uint32_t mask = masks[shift & 3];
+    uint32_t AMask = 0xFF << AShift;
+    for (size_t y = 1; y < height; y += 2) {
+        uint32_t *row = pixels + y * width;
+        for (size_t x = 0; x < width; x++) {
+            uint32_t p = *row;
+            uint32_t AVal = p & AMask;
+            *(row++) = ((p & mask) >> shift) | AMask;
+        }
+    }
+}
+
+
+// CPU-side scanlines. These are applied to (and so align with) the game image, which generally looks better
+// Processes either half of the image:
+//   top half when section = 0
+//   bottom half when section = 1
+//   entire image when section = -1
+
+// shift masks
+static const uint32_t masks[4] = { 0xFFFFFFFFu, 0xFEFEFEFEu, 0xFCFCFCFCu, 0xF8F8F8F8u };
+
+static inline void apply_scanlines(uint32_t *pixels,
+                                     size_t width, size_t height,
+                                     uint8_t shift,
+                                     uint8_t Rshift, uint8_t Gshift, uint8_t Bshift, uint8_t Ashift,
+                                     int     section)
+{
+    uint32_t mask   = masks[shift & 3];
+    uint32_t AMask  = 0xFFu << Ashift;   // preserve alpha bits
+
+    const size_t block_height = (section >= 0 ? (height >> 1) : height);
+    const size_t starty = (section == 1 ? block_height : 0);
+    const size_t endy   = starty + block_height;
+
+    for (size_t y = (starty+1); y < endy; y += 2) {
+        uint32_t *row = pixels + y * width;
+        for (size_t x = 0; x < width; x++, row++) {
+            uint32_t p = *row;
+
+            // 1) unpack each channel using its shift
+            uint8_t r = (p >> Rshift) & 0xFF;
+            uint8_t g = (p >> Gshift) & 0xFF;
+            uint8_t b = (p >> Bshift) & 0xFF;
+            uint8_t a = (p >> Ashift) & 0xFF;
+
+            // 2) compute perceptual luminance (0–255)
+            uint8_t lum = ( ( 77 * r
+                            +150 * g
+                            + 29 * b ) >> 8 );
+
+            // 3) apply the scanline “dim” to each channel
+            uint8_t rd = r >> shift;
+            uint8_t gd = g >> shift;
+            uint8_t bd = b >> shift;
+
+            // 4) blend original+dimmed by (255−lum)/255
+            uint8_t out_r = ( rd * (255 - lum) + r * lum ) >> 8;
+            uint8_t out_g = ( gd * (255 - lum) + g * lum ) >> 8;
+            uint8_t out_b = ( bd * (255 - lum) + b * lum ) >> 8;
+
+            // 5) repack into the pixel
+            *row = (out_r << Rshift)
+                 | (out_g << Gshift)
+                 | (out_b << Bshift)
+                 | (a     << Ashift);
+        }
+    }
+}
+
+
+static void apply_crt_bloom(uint32_t *pixels,
+                            size_t   width,
+                            size_t   height,
+                            uint8_t  Rshift,
+                            uint8_t  Gshift,
+                            uint8_t  Bshift,
+                            uint8_t  Ashift,
+                            int      section)
+{
+    const size_t block_height = (section >= 0 ? (height >> 1) : height);
+          size_t starty = (section == 1 ? block_height : 0);
+    const size_t endy   = starty + block_height;
+
+    // copy source so we don't pollute our reads
+    int copy_rows   = (section >= 0 ? block_height+1 : block_height);
+    int copy_start  = (section == 1 ? starty-1 : starty);
+    size_t   n      = width * height;
+    uint32_t *copy  = (uint32_t*)malloc(n * sizeof *copy);
+    if (!copy) return;
+    memcpy((copy + copy_start*width), (pixels + copy_start*width), width*copy_rows*sizeof *copy);
+
+    for (size_t y = starty; y < endy; ++y) {
+        // only do blur on the rows above/below scanlines:
+        // those are the even indices when scanlines are at odd y
+        if ((y % 2) == 0) {
+            size_t y0 = (y == 0)        ? y : y - 1;
+            size_t y1 = (y + 1 < height)? y + 1 : y;
+
+            uint32_t *dst = pixels + y*width;
+            uint32_t *row0 = copy + y0*width;
+            uint32_t *row1 = copy + y1*width;
+            uint32_t *orig = copy + y*width;
+
+            for (size_t x = 0; x < width; ++x) {
+                // unpack the three source pixels
+                uint8_t r0 = (row0[x] >> Rshift) & 0xFF;
+                uint8_t g0 = (row0[x] >> Gshift) & 0xFF;
+                uint8_t b0 = (row0[x] >> Bshift) & 0xFF;
+
+                uint8_t r1 = (row1[x] >> Rshift) & 0xFF;
+                uint8_t g1 = (row1[x] >> Gshift) & 0xFF;
+                uint8_t b1 = (row1[x] >> Bshift) & 0xFF;
+
+                uint8_t ro = (orig[x] >> Rshift) & 0xFF;
+                uint8_t go = (orig[x] >> Gshift) & 0xFF;
+                uint8_t bo = (orig[x] >> Bshift) & 0xFF;
+                uint8_t ao = (orig[x] >> Ashift) & 0xFF;
+
+                // average them (1/3 each)
+                uint8_t nr = (uint16_t(r0) + r1 + ro) / 3;
+                uint8_t ng = (uint16_t(g0) + g1 + go) / 3;
+                uint8_t nb = (uint16_t(b0) + b1 + bo) / 3;
+
+                dst[x] = (nr << Rshift)
+                       | (ng << Gshift)
+                       | (nb << Bshift)
+                       | (ao << Ashift);
+            }
+        }
+    }
+    free(copy);
+}
+
+
+
+void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
+{
+    // grabs the S16 frame buffer ('pixels') and stores it, either
+	// as straight SDL RGB or SNES RGB, then applies Blargg filter, if enabled, and colour mapping
+    // fastpass (ignored if Blargg filter is not enabled):
+    //   -1 = disabled; the whole frame is processed as well as the control values
+    //    0 = enabled;  process the top half of the image with Blargg filter (if enabled) and control values
+	//    1 = enabled;  only process the lower half of the image with Blargg filter (if enabled) then return
+
+    // check is disable() is waiting
+    if (shutting_down.load(std::memory_order_acquire)) return;
+    activity_counter.fetch_add(1, std::memory_order_acq_rel);
+
+    // Snapshot the current write pointer under the lock (race-proof target for this call)
+    uint32_t* writePixels;
+    {
+        std::lock_guard<std::mutex> lock(drawFrameMutex);
+        writePixels = GameSurfacePixels;
+    }
+
+    if (blargg) {
+        if (fastpass!=1) {
+            if (config.fps == 60) phase = (phase + 1) % 3; // cycle through 0/1/2
+            else                  phase = (phase + 2) % 3; // cycle through 0/1/2, but at twice the rate
+        }
+        blargg_filter(pixels, writePixels, fastpass);
+        // apply scanlines, if enabled.
+        if (config.video.scanlines!=0) {
+            apply_scanlines(writePixels, snes_src_width, src_height, config.video.scanlines,
+                            Rshift, Gshift, Bshift, Ashift, fastpass);
+//            apply_crt_bloom(writePixels, snes_src_width, src_height,
+//                            Rshift, Gshift, Bshift, Ashift, fastpass);
+        }
+    } else if (fastpass!=1) {
         // Standard image processing; direct RGB value lookup from rgb array for backbuffer
+        // Single-threaded only for standard path
         int pixel_count = src_width * src_height;
-        uint32_t Ashifted = uint32_t(Alevel) << Ashift; 
+        uint32_t Ashifted = uint32_t(Alevel) << Ashift;
 
         uint16_t* spix = pixels;
-        uint32_t* tpix = GameSurfacePixels;
+        uint32_t* tpix = writePixels;
 
         // translate game image to S16-correct RGB output levels
         int i = pixel_count >> 2; // unroll 4:1
@@ -861,35 +1055,61 @@ void RenderSurface::draw_frame(uint16_t* pixels)
             tpix += 4;
             spix += 4;
         }
+        // apply scanlines, if enabled (full frame single-thread)
+        if (config.video.scanlines!=0) {
+            apply_scanlines(writePixels, src_width, src_height, config.video.scanlines,
+                            Rshift, Gshift, Bshift, Ashift, -1);
+//            apply_crt_bloom(writePixels, src_width, src_height,
+//                            Rshift, Gshift, Bshift, Ashift, -1);
+        }
     }
 
-    // Check for any changes to the configured video settings (that don't require full SDL restart)
-    
-    // Blargg filter settings. Changing these requires Blargg filter re-initialisation.
-    // The filter uses doubles internally, so we need to convert the config values to doubles.
-    if ((blargg           != config.video.blargg)                   ||
-        (setup.saturation != double(config.video.saturation) / 100) ||
-        (setup.contrast   != double(config.video.contrast) / 100)   ||
-        (setup.brightness != double(config.video.brightness) / 100) ||
-        (setup.sharpness  != double(config.video.sharpness) / 100)  ||
-        (setup.resolution != double(config.video.resolution) / 100) ||
-        (setup.gamma      != double(config.video.gamma) / 10)       ||
-        (setup.hue        != double(config.video.hue) / 100)) {
-        // re-initiatise the Blargg filter library after capturing new settings
-        blargg            =  config.video.blargg;
-        setup.saturation  =  double(config.video.saturation) / 100;
-        setup.contrast    =  double(config.video.contrast) / 100;
-        setup.brightness  =  double(config.video.brightness) / 100;
-        setup.sharpness   =  double(config.video.sharpness) / 100;
-        setup.resolution  =  double(config.video.resolution) / 100;
-        setup.gamma       =  double(config.video.gamma) / 10;
-        setup.hue         =  double(config.video.hue) / 100;
-        
-        // pause video whilst this is re-calculated
-        drawFrameMutex.lock();
-        //destroy_buffers();
-        init_blargg_filter();
-        //create_buffers();
-        drawFrameMutex.unlock();
+    if (fastpass!=1) {
+        // Check for any changes to the configured video settings (that don't require full SDL restart)
+        // Blargg filter settings. Changing these requires Blargg filter re-initialisation.
+        static int last_blargg_config = 0;
+        int this_blargg_config = config.video.blargg +
+                                 config.video.saturation +
+                                 config.video.contrast +
+                                 config.video.brightness +
+                                 config.video.sharpness +
+                                 config.video.resolution +
+                                 config.video.gamma +
+                                 config.video.hue;
+
+/*        if ((blargg           != config.video.blargg)                   ||
+            (setup.saturation != double(config.video.saturation) / 100) ||
+            (setup.contrast   != double(config.video.contrast) / 100)   ||
+            (setup.brightness != double(config.video.brightness) / 100) ||
+            (setup.sharpness  != double(config.video.sharpness) / 100)  ||
+            (setup.resolution != double(config.video.resolution) / 100) ||
+            (setup.gamma      != double(config.video.gamma) / 10)       ||
+            (setup.hue        != double(config.video.hue) / 100)) {
+*/
+        if (this_blargg_config != last_blargg_config) {
+            // Settings have been changed; capture new setting & re-initiatise the Blargg filter library
+            // The filter uses doubles internally, so we need to convert the config values to doubles.
+            last_blargg_config = this_blargg_config;
+            blargg             =  config.video.blargg;
+            setup.saturation   =  double(config.video.saturation) / 100;
+            setup.contrast     =  double(config.video.contrast) / 100;
+            setup.brightness   =  double(config.video.brightness) / 100;
+            setup.sharpness    =  double(config.video.sharpness) / 100;
+            setup.resolution   =  double(config.video.resolution) / 100;
+            setup.gamma        =  double(config.video.gamma) / 10;
+            setup.hue          =  double(config.video.hue) / 100;
+
+            // pause video whilst this is re-calculated
+            drawFrameMutex.lock();
+            //destroy_buffers();
+            init_blargg_filter();
+            //create_buffers();
+            drawFrameMutex.unlock();
+        }
     }
+
+    // notify disable() that we're done
+    activity_counter.fetch_sub(1, std::memory_order_acq_rel);
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.notify_all();  // In case disable() is waiting
 }

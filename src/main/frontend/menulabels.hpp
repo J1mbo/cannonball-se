@@ -19,10 +19,6 @@ const static char* ENTRY_DIPS       = "DIP SWITCHES";
 const static char* ENTRY_CABTESTS   = "HARDWARE TESTS";
 const static char* ENTRY_EXSETTINGS = "EXTRA SETTINGS";
 
-// Machine stats in about menu
-const static char* ENTRY_TOTAL_PLAYS = "TOTAL PLAYS ";
-const static char* ENTRY_RUN_TIME = "TOTAL MACHINE HOURS ";
-
 // Game Modes Menu
 const static char* ENTRY_ENHANCED = "SET ENHANCED MODE";
 const static char* ENTRY_ORIGINAL = "SET ORIGINAL MODE";
@@ -42,8 +38,8 @@ const static char* ENTRY_SOUND = "SOUND";
 const static char* ENTRY_CONTROLS = "CONTROLS";
 const static char* ENTRY_ENGINE = "GAME ENGINE";
 const static char* ENTRY_SCORES = "CLEAR HISCORES";
-const static char* ENTRY_SAVE = "SAVE AND RETURN";
 const static char* ENTRY_ENHANCE = "ENHANCEMENTS";
+const static char* ENTRY_SAVE = "SAVE AND RETURN";
 
 // SMARTYPI Extra Settings
 const static char* ENTRY_S_CAB = "CABINET TYPE ";
@@ -56,26 +52,38 @@ const static char* ENTRY_TIMER = "TIMING FIXES ";
 const static char* ENTRY_S_BUGS = "BUG FIXES ";
 
 // Video Menu
-const static char* ENTRY_FPS = "FRAME RATE ";
-const static char* ENTRY_FPS_COUNTER = "FPS COUNTER ";
-const static char* ENTRY_FULLSCREEN = "FULL SCREEN ";
-const static char* ENTRY_SCREENMODE = "SCREEN MODE ";
-const static char* ENTRY_WIDESCREEN = "WIDESCREEN ";
-const static char* ENTRY_HIRES = "HIRES ";
-const static char* ENTRY_SCALE = "WINDOW SCALE ";
-const static char* ENTRY_CRT_SHADER1 = "CRT SHADER... "; // JJP - Submenu for the CRT mask overlays
-const static char* ENTRY_BLARGG_FILTER = "BLARGG CRT FILTER... "; // JJP - Submenu for the Blargg CRT filter settings
+const static char* ENTRY_FPS_COUNTER        = "FPS COUNTER ";
+const static char* ENTRY_FULLSCREEN         = "FULL SCREEN ";   // no longer in menu but available in config.xml
+const static char* ENTRY_SCREENMODE         = "SCREEN MODE ";   // no longer in menu but available in config.xml
+const static char* ENTRY_WIDESCREEN         = "WIDESCREEN ";
+const static char* ENTRY_SCALE              = "WINDOW SCALE ";  // no longer in menu but available in config.xml
+const static char* ENTRY_X_OFFSET           = "X POSITION ";    // JJP - allows user to shift image left or right
+const static char* ENTRY_Y_OFFSET           = "Y POSITION ";    // JJP - allows user to shift image up or down
+const static char* ENTRY_CRT_SHADER1        = "VIDEO EMULATION... "; // JJP - Submenu for the CRT mask overlays
+const static char* ENTRY_BLARGG_FILTER      = "BLARGG CRT FILTER... "; // JJP - Submenu for the Blargg CRT filter settings
 
 // JJP - CRT Shader Menu
-const static char* ENTRY_SHADOW_MASK = "SHADOW MASK ";
-const static char* ENTRY_CRT_SHAPE = "CRT SHAPE ";
-const static char* ENTRY_VIGNETTE = "VIGNETTE ";
-const static char* ENTRY_NOISE = "NOISE ";
-const static char* ENTRY_WARPX = "WARP X ";
-const static char* ENTRY_WARPY = "WARP Y ";
-const static char* ENTRY_CRT_SHADER2 = "MORE...";
+const static char* ENTRY_CRT_S16_EMU        = "S16 EMULATION ";
+const static char* ENTRY_CRT_SHADER_MODE    = "SHADER MODE ";
+const static char* ENTRY_CRT_SHAPE_SETTINGS = "CRT SHAPE... ";
+const static char* ENTRY_MASK_SETTINGS      = "MASK SETTINGS...";
+const static char* ENTRY_CRT_SHADER2        = "NOISE AND DESATURATION...";
+
+// JJP - CRT Shape Settings...
+const static char* ENTRY_CRT_SHAPE          = "CRT SHAPE ";
+const static char* ENTRY_VIGNETTE           = "VIGNETTE ";
+const static char* ENTRY_WARPX              = "WARP X ";
+const static char* ENTRY_WARPY              = "WARP Y ";
+
+// JJP - CRT Shader Mask Settings...
+const static char* ENTRY_SHADOW_MASK        = "SHADOW MASK ";
+const static char* ENTRY_MASK_DIM           = "MASK DIM LEVEL ";
+const static char* ENTRY_MASK_BOOST         = "MASK BOOST LEVEL ";
+const static char* ENTRY_MASK_SIZE          = "MASK SIZE ";
+const static char* ENTRY_SCANLINES          = "SCANLINE INTENSITY ";
 
 // JJP - CRT Shader More...
+const static char* ENTRY_NOISE = "NOISE ";
 const static char* ENTRY_DESATURATE = "DESATURATION ";
 const static char* ENTRY_DESATURATE_EDGES = "EDGE DESATURATION ";
 const static char* ENTRY_BRIGHTNESS_BOOST = "BRIGHT. BOOST ";
@@ -97,7 +105,7 @@ const static char* ENTRY_SFX = "SFX VOL ";
 const static char* ENTRY_ADVERTISE = "ATTRACT SOUND ";
 const static char* ENTRY_PREVIEWSND = "PREVIEW MUSIC ";
 const static char* ENTRY_FIXSAMPLES = "FIX SAMPLES ";
-const static char* ENTRY_MUSICTEST = "MUSIC TEST ";
+const static char* ENTRY_MUSICTEST = "MUSIC... ";
 
 // Controls Menu
 const static char* ENTRY_GEAR = "GEAR ";
@@ -136,6 +144,8 @@ const static char* COLOR_LABELS[5] = { "RED", "BLUE", "YELLOW", "GREEN", "CYAN" 
 const static char* ENTRY_MUSIC1 = "PLAY TRACK";
 const static char* ENTRY_MUSIC2 = "TRACK - ";
 const static char* ENTRY_MUSIC3 = "LAST WAVE";
+const static char* ENTRY_WAVEVOLUME = "CUSTOM MUSIC PLAYBACK LEVEL "; // JJP .WAV FILE VOLUME ADJUST
+const static char* ENTRY_CALLBACK_RATE = "CALLBACK RATE ";        // JJP - 8ms or 16ms callback rates
 
 const static char* DIP_DIFFICULTY[4] = { "EASY", "NORMAL", "HARD", "HARDEST" };
 const static char* GEAR_LABELS[4] = {"MANUAL", "MANUAL CABINET", "MANUAL 2 BUTTONS", "AUTOMATIC"};
