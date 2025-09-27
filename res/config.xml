@@ -154,7 +154,7 @@
 			<force_duration>20</force_duration>
 		</haptic>
 	</analog>
-	<rumble>1</rumble>
+	<rumble>1.25</rumble>
 </controls>
 <!-- 
     Game Engine Settings

@@ -57,9 +57,9 @@ STEP_ORDER+=("Determine build threads")
 {
   mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
   mem_mb=$((mem_kb/1024))
-  if (( mem_mb <= 512 )); then threads=1
-  elif (( mem_mb <= 1024 )); then threads=2
-  elif (( mem_mb <= 2048 )); then threads=3
+  if (( mem_mb <= 460 )); then threads=1
+  elif (( mem_mb <= 920 )); then threads=2
+  elif (( mem_mb <= 1380 )); then threads=3
   else threads=4; fi
   export NUMTHREADS=$threads
   STATUS["Determine build threads"]="Using $NUMTHREADS threads ($mem_mb MB RAM)"
@@ -88,11 +88,13 @@ EOF
 
 # 6. Install dependencies
 run_step "Install dependencies" sudo apt install -y \
-  build-essential git cmake libboost-all-dev libsdl2-dev libglu1-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev
+  build-essential git cmake libsdl2-dev libglu1-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev
 
 # 7. Prepare and build CannonBall
 run_step "Prepare build directories" mkdir -p build roms
-run_step "Build CannonBall" bash -c 'cd build && cmake ../cmake && make -j"$NUMTHREADS"'
+run_step "Configure Project with CMake" cmake -S cmake -B build
+run_step "Compile" cmake --build build --parallel $NUMTHREADS
+#cd build && cmake ../cmake && make -j"$NUMTHREADS"'
 run_step "Create default config file" bash -c 'cp res/config.xml .'
 
 # 8. List and select audio device
@@ -122,7 +124,10 @@ echo ""
 echo "           build/cannonball-se"
 echo ""
 echo "           If you have no audio, run 'alsa-mixer' and check the <Master> volume is not"
-echo "           at zero."
+echo "           at zero. Also check the SDL device order hasn't changed using:"
+echo ""
+echo "           build/cannonball-se -list-audio-devices"
+echo ""
 echo "****************************************************************************************"
 echo ""
 

@@ -8,6 +8,10 @@
 
     Copyright Chris White.
     See license.txt for more details.
+
+    In the original implementation, and possibly the original game,
+    ghost cars can appear near checkpoints. Modification in CannonBall-SE
+    to surpress these is Copyright (c) 2025, James Pearce.
 ***************************************************************************/
 
 #include "engine/obonus.hpp"
@@ -102,7 +106,7 @@ void OTraffic::init_stage1_traffic()
 void OTraffic::tick()
 {
     // Lock traffic spawning to 30fps frame rate.
-    if (outrun.tick_frame) 
+    if (outrun.tick_frame)
         spawn_traffic();
 
     for (uint8_t i = OSprites::SPRITE_TRAFF1; i <= OSprites::SPRITE_TRAFF8; i++)
@@ -209,7 +213,7 @@ void OTraffic::spawn_car(oentry* sprite)
     sprite->z = 0x10000;    // Traffic starts on horizon in the distance
     int16_t rnd = outils::random();
     spawn_location++;
-    
+
     // Spawn On Left Hand Side Of Road
     if (spawn_location & 1)
     {
@@ -252,6 +256,8 @@ void OTraffic::spawn_car(oentry* sprite)
 
     sprite->type = TYPE[spawn_index] << 3;
     sprite->function_holder = TRAFFIC_TICK;
+    // JJP ghost car fix
+    sprite->hidden = 0;
 }
 
 // Check Traffic Collision
@@ -266,9 +272,11 @@ void OTraffic::tick_spawned_sprite(oentry* sprite)
             sprite->control |= OSprites::TRAFFIC_RHS;
         else if (traffic_split)
             sprite->control ^= OSprites::TRAFFIC_RHS;
-    
+
         // Check for collision with player's car
-        check_collision(sprite);
+        // JJP - Ghost car related fix. Don't check sprites where hidden is positive.
+        if (sprite->hidden==0)
+            check_collision(sprite);
 
         // Denote collisions for new attract mode
         if (config.engine.new_attract)
@@ -316,7 +324,7 @@ void OTraffic::tick_spawned_sprite(oentry* sprite)
         else if (sprite->xw1 == -0x70)
             sprite->traffic_proximity |= BIT_1;
         // End Added block
-    
+
         if (!config.engine.new_attract)
             ai_traffic |= sprite->traffic_proximity;
     }
@@ -330,8 +338,19 @@ void OTraffic::move_spawned_sprite(oentry* sprite)
     // Road Splitting: Return if enemy on opposite side of road to split
     if (oinitengine.road_remove_split)
     {
-        if (((oinitengine.route_selected ^ sprite->control) & OSprites::TRAFFIC_RHS) == 0) 
+        if (((oinitengine.route_selected ^ sprite->control) & OSprites::TRAFFIC_RHS) == 0) {
+            // JJP Ghost car fix.
+            // Tag this as a potentially problematic sprite.
+            sprite->hidden = (config.fps == 60) ? 4 : 2;
             return;
+        }
+    } else {
+        if (sprite->hidden > 0) {
+            // JJP Ghost car fix.
+            // continue masking this sprite until hidden is 0.
+            sprite->hidden -= 1;
+            // return;
+        }
     }
 
     if (outrun.game_state != GS_INGAME && outrun.game_state != GS_BONUS && outrun.game_state != GS_ATTRACT)
@@ -466,7 +485,10 @@ void OTraffic::update_props(oentry* sprite)
     }
 
     // Calculate change in road y, so we can determine incline frame for traffic
-    int16_t y = oroad.road_y[oroad.road_p0 - (0x10 / 2)] - oroad.road_y[oroad.road_p0];
+    // JJP - potential OOB here if road_p0 is zero.
+    int16_t y = 0;
+    if (oroad.road_p0 > (0x10 / 2))
+        y = oroad.road_y[oroad.road_p0 - (0x10 / 2)] - oroad.road_y[oroad.road_p0];
 
     // 0 = No Incline, 10 = Flat Road/Incline
     int8_t incline = (y < 0x12) ? 0x10 : 0; // d1
@@ -752,11 +774,6 @@ void OTraffic::check_collision(oentry* sprite)
             // Set collision settings from property table
             collision_mask = roms.rom0p->read8(outrun.adr.traffic_props + sprite->type + 5);
             d0 = (sprite->x < 0) ? -OCrash::SKID_RESET : OCrash::SKID_RESET;
-
-            // Enhancement: Bumper enabled, reduce skid distance
-            if (config.engine.bumper)
-                d0 /= 3;
-
             d0 += ocrash.skid_counter;
 
             if (d0 <= OCrash::SKID_MAX && d0 >= -OCrash::SKID_MAX)
@@ -795,6 +812,7 @@ void OTraffic::check_collision(oentry* sprite)
 // Source: 0x7A8C
 void OTraffic::traffic_sound()
 {
+    /*
     // Clear traffic data
     osoundint.engine_data[sound::TRAFFIC1] = 0;
     osoundint.engine_data[sound::TRAFFIC2] = 0;
@@ -828,4 +846,5 @@ void OTraffic::traffic_sound()
         uint8_t vol = (t->road_priority & 0x1F0) >> 1;
         osoundint.engine_data[sound::TRAFFIC1 + i] = pan | vol;
     }
+    */
 }

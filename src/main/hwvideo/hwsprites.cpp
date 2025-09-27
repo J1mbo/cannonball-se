@@ -69,19 +69,17 @@ void hwsprites::init(const uint8_t* src_sprites)
     if (src_sprites)
     {
         // Convert S16 tiles to a more useable format
-        const uint8_t *spr = src_sprites;
-
-        for (uint32_t i = 0; i < SPRITES_LENGTH; i++)
-        {
-            uint8_t d3 = *spr++;
-            uint8_t d2 = *spr++;
-            uint8_t d1 = *spr++;
-            uint8_t d0 = *spr++;
-
-            sprites[i] = (d0 << 24) | (d1 << 16) | (d2 << 8) | d3;
+        const uint8_t* spr = src_sprites;
+        for (uint32_t i = 0; i < SPRITES_LENGTH; ++i) {
+            uint32_t tmp;
+            // Copy 4 bytes from the source into tmp, use memcpy to avoid unaligned fault
+            std::memcpy(&tmp, spr, sizeof(tmp));
+            sprites[i] = tmp;
+            spr += 4;
         }
     }
 }
+
 
 void hwsprites::reset()
 {
@@ -97,37 +95,19 @@ void hwsprites::reset()
 void hwsprites::set_x_clip(bool on)
 {
     // Clip to central 320 width window.
-    if (on)
-    {
+    if (on) {
         x1 = config.s16_x_off;
         x2 = x1 + S16_WIDTH;
 
-        if (config.video.hires)
-        {
+        if (config.video.hires) {
             x1 <<= 1;
             x2 <<= 1;
         }
-    }
-    // Allow full wide-screen.
-    else
-    {
+    } else {
+        // Allow full wide-screen.
         x1 = 0;
         x2 = config.s16_width;
     }
-}
-
-uint8_t hwsprites::read(const uint16_t adr)
-{
-    uint16_t a = adr >> 1;
-    if ((adr & 1) == 1)
-        return ram[a] & 0xff;
-    else
-        return ram[a] >> 8;
-}
-
-void hwsprites::write(const uint16_t adr, const uint16_t data)
-{
-    ram[adr >> 1] = data;
 }
 
 // Copy back buffer to main ram, ready for blit
@@ -273,7 +253,6 @@ void draw_nibble_no_shadows(
     const bool is_draw   = (pix != 0 && pix != 15);
 
     if (__builtin_expect(!(is_draw), 1)) {
-//    if (!(is_draw)) {
         // Transparent nibble: advance and break adjacency so the next opaque run will left-clear.
         while (xacc < 0x200) {
             x += xdelta;  pDst += xdelta;  xacc += hzoom;
@@ -369,8 +348,7 @@ void hwsprites::render(const uint8_t priority)
         xpos += config.s16_x_off;
 
         // Adjust for hi-res mode
-        if (config.video.hires)
-        {
+        if (config.video.hires) {
             xpos <<= 1;
             top <<= 1;
             ytarget <<= 1;
@@ -387,62 +365,43 @@ void hwsprites::render(const uint8_t priority)
                 uint32_t curAddr = addr;
                 int xacc = 0;
 
-                // non-flipped case
-                if (flip == 0) {
-                    for (x = xpos; (xdelta > 0 && x < scr_width) || (xdelta < 0 && x >= 0); ) {
-                        // Prefetch future sprite words so 'pixels' is warm next iterations
-                        __builtin_prefetch(spritedata + curAddr + 8,  0, 0);
-                        uint32_t pixels = spritedata[curAddr++];
-                        if (consider_shadow || any_shadow_nibble(pixels)) {
-                            draw_nibble_shadow_aware(uint8_t( pixels >> 28       ), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >> 24) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >> 20) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >> 16) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >> 12) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >>  8) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >>  4) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t( pixels        & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                        } else {
-                            draw_nibble_shadow_aware(uint8_t( pixels >> 28), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >> 24) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >> 20) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >> 16) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >> 12) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >>  8) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >>  4) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t( pixels        & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                        }
-                        // stop if the second-to-last pixel in the group was 0xf
-                        if (__builtin_expect((pixels & 0x000000f0) == 0x000000f0, 0)) break;
+                int prefetch_range = 8;
+                int addr_increment = 1;
+                if (flip != 0) {
+                    prefetch_range = -8;
+                    addr_increment = -1;
+                }
+
+                for (x = xpos; (xdelta > 0 && x < scr_width) || (xdelta < 0 && x >= 0); ) {
+                    // Prefetch future sprite words so 'pixels' is warm next iterations
+                    __builtin_prefetch(spritedata + curAddr + prefetch_range,  0, 0);
+                    uint32_t pixels = spritedata[curAddr];
+                    curAddr += addr_increment;
+                    if (flip != 0) {
+                        pixels = std::byteswap( (pixels & 0xF0F0F0F0) >> 4 |  // swap nibbles inside each byte
+                                                (pixels & 0x0F0F0F0F) << 4 ); //
                     }
-                } else {
-                    // flipped case
-                    for (x = xpos; (xdelta > 0 && x < scr_width) || (xdelta < 0 && x >= 0); ) {
-                        // Prefetch future sprite words so 'pixels' is warm next iterations
-                        __builtin_prefetch(spritedata + curAddr - 8,  0, 0);
-                        uint32_t pixels = spritedata[curAddr--];
-                        if (consider_shadow || any_shadow_nibble(pixels)) {
-                            draw_nibble_shadow_aware(uint8_t( pixels        & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >>  4) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >>  8) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >> 12) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >> 16) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >> 20) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t((pixels >> 24) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_shadow_aware(uint8_t( pixels >> 28       ), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                        } else {
-                            draw_nibble_shadow_aware(uint8_t( pixels & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >>  4) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >>  8) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >> 12) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >> 16) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >> 20) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t((pixels >> 24) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                            draw_nibble_no_shadows(uint8_t( pixels >> 28       ), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
-                        }
-                        // stop if the second-to-last pixel in the group was 0xf
-                        if (__builtin_expect((pixels & 0x0f000000) == 0x0f000000, 0)) break;
+                    if (consider_shadow || any_shadow_nibble(pixels)) {
+                        draw_nibble_shadow_aware(uint8_t( pixels >> 28       ), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_shadow_aware(uint8_t((pixels >> 24) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_shadow_aware(uint8_t((pixels >> 20) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_shadow_aware(uint8_t((pixels >> 16) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_shadow_aware(uint8_t((pixels >> 12) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_shadow_aware(uint8_t((pixels >>  8) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_shadow_aware(uint8_t((pixels >>  4) & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_shadow_aware(uint8_t( pixels        & 0xF), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                    } else {
+                        draw_nibble_shadow_aware(uint8_t( pixels >> 28), shadow, color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_no_shadows(uint8_t((pixels >> 24) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_no_shadows(uint8_t((pixels >> 20) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_no_shadows(uint8_t((pixels >> 16) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_no_shadows(uint8_t((pixels >> 12) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_no_shadows(uint8_t((pixels >>  8) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_no_shadows(uint8_t((pixels >>  4) & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
+                        draw_nibble_no_shadows(uint8_t( pixels        & 0xF), color, x1, clipWidth, xdelta, hzoom, x, xacc, pDst); xacc -= 0x200;
                     }
+                    // stop if the second-to-last pixel in the group was 0xf
+                    if (__builtin_expect((pixels & 0x000000f0) == 0x000000f0, 0)) break;
                 }
             }
             // accumulate zoom factors; if we carry into the high bit, skip an extra row

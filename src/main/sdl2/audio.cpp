@@ -324,6 +324,8 @@ void Audio::fill_and_mix(uint8_t *stream, int len)
     static int fadein  = 0;
     //(config.sound.callback_rate == 0 ? len : len >> 1);
 
+    if (audio_paused) return;
+
     while (cycles--) {
         // 1) drive the sound chips
         osoundint.tick();

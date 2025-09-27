@@ -152,6 +152,10 @@ public:
     // +3A [Word] Passenger Props (Passenger Sprites Only)
     int16_t pass_props;
 
+    // JJP - ghost cars fix
+    // sprites are hidden (unrendered) all the time they have a position hidden value.
+    int hidden;
+
 	// Initalize to default values
 	void init(uint8_t i)
 	{
@@ -184,5 +188,6 @@ public:
         traffic_near_speed = 0;
         yw = 0;
         pass_props = 0;
+        hidden = 0;
 	}
 };

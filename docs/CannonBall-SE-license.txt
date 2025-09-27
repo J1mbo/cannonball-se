@@ -5,7 +5,7 @@ This release is a fork of the original GitHub project and, in addition to the or
 is provided "as is", without warranty of any kind and used entirely at your own risk.
 
 All enhacements, alterations, and other original contributions contained in this fork (collectively, 
-"CannonBall SE") are Copyright © 2020–2025 James Pearce, <github.com/J1mbo/cannonball-se>
+"CannonBall-SE") are Copyright © 2020–2025 James Pearce, <github.com/J1mbo/cannonball-se>
 
 The project may be used and distributed freely, but it may not be sold or otherwise monetised; all
 notices from the original project and this fork must be preserved. Any instructions, suggestions, or

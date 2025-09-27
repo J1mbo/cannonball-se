@@ -6,10 +6,13 @@ Updates for CannonBall-SE are Copyright (c) 2025 James Pearce:
 - SSE/NEON SIMD blitters
 Updates Aug-25:  removed AVX dependency (now works with only SSE4.1)
                  removed ARM AArch64 dependency (now works with ARMv7 NEON e.g. Pi2 v1.1)
+Updates Sep-25:  added scalar fall-back for Pi1 and PiZero
 */
 
 #include "snes_ntsc.h"
+#ifdef _OPENMP
 #include <omp.h>    // JJP - OpenMP support for multi-threading initialization
+#endif
 #include <stdint.h> // uint32_t etc
 
 
@@ -111,58 +114,52 @@ void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup)
     if (setup->artifacts <= -1 && setup->fringing <= -1)
         merge_fields = 1;
 
+#ifdef _OPENMP
 #pragma omp parallel for
-    for (int n = 0; n < omp_get_num_threads(); n++) {
-        unsigned int block_size = snes_ntsc_palette_size / omp_get_num_threads(); // amount processed by each thread
-        unsigned int start = n * block_size;
-        unsigned int end = (omp_get_num_threads() - 1) ? snes_ntsc_palette_size : (n + 1) * block_size;
-        unsigned int entry;
-        for (entry = start; entry < end; entry++)
-        {
-            // JJP - the S16 values passed in will be references to S16 value
-            // the DAC output levels (scaled 0-255) are listed in the tables above
-            // Therefore, each value will be calculated at the S16 value index based on the
-            // DC output values.
-            // There are three tables, and the lookup generated is organised as
-            // 0..32767 - standard levels
-            // 32768..65535 - shadow levels
-            // 65536..98303 - hilite levels
-
-            unsigned int red_index   = (entry >> 10 & 0x1F) + ((entry >> 15) * 32);
-            unsigned int green_index = (entry >> 5 & 0x1F)  + ((entry >> 15) * 32);
-            unsigned int blue_index  = (entry << 0 & 0x1F)  + ((entry >> 15) * 32);
-
-            unsigned int ir = S16_rgbVals[red_index];
-            unsigned int ig = S16_rgbVals[green_index];
-            unsigned int ib = S16_rgbVals[blue_index];
-            // ir, ig and ib now have S16 DAC output levels corresponding to the input 'entry'
-
-            {
-                // adjust values for gamma, brightness and contrast
-                float rr = impl.to_float[ir];
-                float gg = impl.to_float[ig];
-                float bb = impl.to_float[ib];
-
-                // convert to YIQ colourspace
-                float y, i, q = RGB_TO_YIQ(rr, gg, bb, y, i);
-
-                // convert back to RGB, adjusting for hue and saturation
-                int r, g, b = YIQ_TO_RGB(y, i, q, impl.to_rgb, int, r, g);
-
-                // pack to internal format
-                snes_ntsc_rgb_t rgb = PACK_RGB(r, g, b);
-
-                // and store in entry for this colour combination
-                snes_ntsc_rgb_t* out = ntsc->table[entry];
-
-                // Generate pixel at all burst phases and column alignments
-                gen_kernel(&impl, y, i, q, out);
-                if (merge_fields)
-                    merge_kernel_fields(out);
-                correct_errors(rgb, out);
-            }
-        }
+for (int n = 0; n < omp_get_num_threads(); n++) {
+    unsigned int block_size = snes_ntsc_palette_size / omp_get_num_threads(); // amount processed by each thread
+    unsigned int start = n * block_size;
+    unsigned int end   = (n == omp_get_num_threads() - 1) ? snes_ntsc_palette_size : (n + 1) * block_size;
+    unsigned int entry;
+    for (entry = start; entry < end; entry++) {
+        unsigned int red_index   = (entry >> 10 & 0x1F) + ((entry >> 15) * 32);
+        unsigned int green_index = (entry >> 5  & 0x1F) + ((entry >> 15) * 32);
+        unsigned int blue_index  = (entry >> 0  & 0x1F) + ((entry >> 15) * 32);
+        unsigned int ir = S16_rgbVals[red_index];
+        unsigned int ig = S16_rgbVals[green_index];
+        unsigned int ib = S16_rgbVals[blue_index];
+        float rr = impl.to_float[ir];
+        float gg = impl.to_float[ig];
+        float bb = impl.to_float[ib];
+        float y, i, q = RGB_TO_YIQ(rr, gg, bb, y, i);
+        int r, g, b = YIQ_TO_RGB(y, i, q, impl.to_rgb, int, r, g);
+        snes_ntsc_rgb_t rgb = PACK_RGB(r, g, b);
+        snes_ntsc_rgb_t* out = ntsc->table[entry];
+        gen_kernel(&impl, y, i, q, out);
+        if (merge_fields) merge_kernel_fields(out);
+        correct_errors(rgb, out);
     }
+}
+#else
+for (unsigned int entry = 0; entry < snes_ntsc_palette_size; entry++) {
+    unsigned int red_index   = (entry >> 10 & 0x1F) + ((entry >> 15) * 32);
+    unsigned int green_index = (entry >> 5  & 0x1F) + ((entry >> 15) * 32);
+    unsigned int blue_index  = (entry >> 0  & 0x1F) + ((entry >> 15) * 32);
+    unsigned int ir = S16_rgbVals[red_index];
+    unsigned int ig = S16_rgbVals[green_index];
+    unsigned int ib = S16_rgbVals[blue_index];
+    float rr = impl.to_float[ir];
+    float gg = impl.to_float[ig];
+    float bb = impl.to_float[ib];
+    float y, i, q = RGB_TO_YIQ(rr, gg, bb, y, i);
+    int r, g, b = YIQ_TO_RGB(y, i, q, impl.to_rgb, int, r, g);
+    snes_ntsc_rgb_t rgb = PACK_RGB(r, g, b);
+    snes_ntsc_rgb_t* out = ntsc->table[entry];
+    gen_kernel(&impl, y, i, q, out);
+    if (merge_fields) merge_kernel_fields(out);
+    correct_errors(rgb, out);
+}
+#endif
 }
 
 #ifndef SNES_NTSC_NO_BLITTERS
@@ -292,13 +289,16 @@ void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, 
 }
 
 /* JJP - SIMD macro predefined mask vectors for performance */
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if SNES_NTSC_HAVE_SIMD
+#  if defined(__aarch64__) || defined(_M_ARM64)
     #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_AARCH64
-#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+#  elif defined(__ARM_NEON) || defined(__ARM_NEON__)
     #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_NEON
-#elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
+#  elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
     #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_SSE4
+#  endif
 #endif
+
 
 // Macro to check equality of 24 input pixels and store the result in
 // variable this_colour. The input pixels are stored in:
@@ -370,6 +370,7 @@ void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, 
 } while (0)
 
 
+#if SNES_NTSC_HAVE_SIMD
 void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
     int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel)
     // This version utilises SIMD registers streamline:
@@ -649,6 +650,8 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
     }
 }
 
+
+#endif
 
 /*
 * The following table attempts to depicts how the data is gathered and summed, showing

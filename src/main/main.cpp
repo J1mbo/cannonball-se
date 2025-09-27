@@ -65,6 +65,8 @@
 static uint32_t perf_end_frame = 0;
 #endif
 
+#include "singlecorepi.hpp" // detects if running on a single-core RaspberryPi
+
 // ------------------------------------------------------------------------------------------------
 // Watchdog close handler (prevents hardware reset on e.g. seg fault
 // In that scenario, systemd should restart cannonball. Watchdog is there to catch code or system
@@ -151,16 +153,18 @@ static uint32_t perf_end_frame = 0;
 // ------------------------------------------------------------------------------------------------
 using namespace cannonball;
 
-int     cannonball::state        = STATE_BOOT;
-double  cannonball::frame_ms     = 0;
-int     cannonball::frame        = 0;
-bool    cannonball::tick_frame   = true;
-int     cannonball::fps_counter  = 0;
-int     cannonball::fps_lock     = 0; // 0=no lock (auto), 30(fps), 60(fps)
+int     cannonball::state               = STATE_BOOT;
+double  cannonball::frame_ms            = 0;
+int     cannonball::frame               = 0;
+bool    cannonball::tick_frame          = true;
+int     cannonball::fps_counter         = 0;
+int     cannonball::fps_lock            = 0; // 0=no lock (auto), 30(fps), 60(fps)
+bool    cannonball::singlecore_detect   = true;
+bool    cannonball::singlecore_mode     = false;
 // fps_eval_period is the interval at which 30/60 fps is evaluated in auto mode. Starts at
 // 4 (seconds), and is doubled every time a switch back to 30fps happens
-long    cannonball::fps_eval_period = 4;
-int     cannonball::game_threads = omp_get_max_threads();
+long    cannonball::fps_eval_period     = 4;
+int     cannonball::game_threads        = omp_get_max_threads();
 
 // ------------------------------------------------------------------------------------------------
 // Main Variables and Pointers
@@ -192,7 +196,7 @@ static void process_events(void)
         switch(event.type) {
             case SDL_KEYDOWN:
                 // Handle key presses.
-                if (event.key.keysym.sym == SDLK_ESCAPE)
+                if (event.key.keysym.sym == config.master_break_key)
                     cannonball::state = STATE_QUIT;
                 else
                     input.handle_key_down(&event.key.keysym);
@@ -251,7 +255,9 @@ static void tick()
     frame++;
 
     // Determine whether to tick certain logic for the current frame.
-    tick_frame = (config.fps != 60) || (frame & 1);
+    tick_frame = (config.fps == 60) ?
+                 (((frame & 1) == 0) ? 1 : 0)
+                 : 1;
 
     process_events();
 
@@ -560,7 +566,14 @@ static void main_loop() {
 
         // Check to see if anything happened needing a video restart
         if (config.videoRestartRequired) {
-            menu->restart_video();
+//            menu->restart_video();
+            video.disable();
+            config.video.hires = config.video.hires_next;
+            video.init(&roms, &config.video);
+            video.sprite_layer->set_x_clip(false);
+            config.videoRestartRequired = false;
+            // reset timers as video restart can take a while
+            nextFrameTime = std::chrono::steady_clock::now();
         }
         // If we're ahead of schedule, sleep until it's time.
         if (!vsync) {
@@ -700,6 +713,14 @@ static bool parse_command_line(int argc, char* argv[]) {
                 std::cerr << "-t: specified threads must be between 1 and 4.\n";
             }
         }
+        else if (strcmp(argv[i], "-x") == 0) {
+            cannonball::singlecore_detect = false;
+            std::cout << "Single-core Pi detection disabled.\n";
+        }
+        else if (strcmp(argv[i], "-1") == 0) {
+            cannonball::singlecore_mode = true;
+            std::cout << "Using single-core mode.\n";
+        }
         else if (   (strcmp(argv[i], "-help") == 0)  ||
                     (strcmp(argv[i], "--help") == 0) ||
                     (strcmp(argv[i], "-h") == 0)     ||
@@ -712,7 +733,9 @@ static bool parse_command_line(int argc, char* argv[]) {
                          "-list-audio-devices  : Lists available playback devices then quit\n" <<
                          "-30                  : Lock to 30fps\n" <<
                          "-60                  : Lock to 60fps\n" <<
-                         "-t x                 : Number of game threads (1-4)\n\n" <<
+                         "-t x                 : Number of game threads (1-4)\n" <<
+                         "-x                   : Disable single-core RaspberryPi board detection\n" <<
+                         "-1                   : Use single-core mode\n\n" <<
                          "CannonBall-SE man page is in the res folder. Open it with 'man -l docs/cannonball-se.6'" << std::endl;
             _Exit(0);
         }
@@ -739,6 +762,23 @@ int main(int argc, char* argv[]) {
     if (ok) {
         config.load(); // Load config.XML file, also loads custom music files
         ok = roms.load_revb_roms(config.sound.fix_samples);
+
+        if (cannonball::singlecore_detect || cannonball::singlecore_mode) {
+            if (singleCorePi() || cannonball::singlecore_mode) {
+                // we're on a Raspberry Pi with a single-core CPU. Set modes accordingly.
+                // user can override these in-game through the menu system
+                if (!cannonball::singlecore_mode)
+                    std::cout << "Single-core RaspberryPi detected. Setting parameters for optimal performance\n";
+                cannonball::game_threads   =  1; // disabled multi-threading
+                config.video.hires         =  0; // run at original arcade res (half the normal CannonBall-SE res)
+                config.video.blargg        =  0; // disable Blargg NTSC filter
+                config.video.shader_mode   =  2; // full glsl shader (VideoCore IV can handle it easily at 30fps)
+                config.video.shadow_mask   =  2; // glsl shader based overlay (looks better)
+                config.video.s16accuracy   =  0; // fast mode; S16 glowing edges are approximated
+                config.sound.callback_rate =  1; // 16ms sound callbacks
+                if (cannonball::fps_lock == 0) cannonball::fps_lock = 30; // lock to 30fps unless user has overriden
+            }
+        }
     }
     if (!ok) {
         quit_func(1);

@@ -1,5 +1,5 @@
 .\" Manpage for CannonBall SE
-.TH "cannonball-se" "6" "August 2025" "CannonBall SE 1.0" "CannonBall SE Configuration Help"
+.TH "cannonball-se" "6" "September 2025" "CannonBall SE 1.1" "CannonBall SE Configuration Help"
 .SH OVERVIEW
 \fBCannonBall-SE\fP is a fork of Chris White's incredible cross-platform OutRun engine, adding enhanced image processing, MP3 playback,
 and performance optimisations.
@@ -19,6 +19,10 @@ Command line options:
 -30 or -60          : Force 30 or 60fps operation (disables auto frame rate selection)
 .IP \(bu 2
 -t [1-4], eg -t 1   : Override hardware thread detection and use specified number of threads (1-4)
+.IP \(bu 2
+-x                  : Disable single-core RaspberryPi board detection
+.IP \(bu 2
+-1                  : Use single-core mode (game will run in one thread, plus sound)
 .RE
 
 .SH GETTING STARTED
@@ -54,10 +58,10 @@ Up/down (in menu)                                - Up/Down Arrows
 .IP \(bu 2
 Select option or change value in menu            - S
 .IP \(bu 2
-Quit Game                                        - Escape
+Quit Game (Master Break Key)                     - Escape
 .RE
 .PP
-These can also be changed within the game (menu, settings, controls, redefine keys).
+These can also be changed within the game (menu, settings, controls, redefine keys) and the master break key (Escape) can be changed to F10 in Menu, Settings.
 
 .SH STEERING WHEELS
 Steering wheels, joysticks and gamepads can be setup in the game (menu, settings, controls, redefine gamepad).
@@ -103,24 +107,33 @@ Various stablity and bug fixes.
 
 .SH CHOOSING A PLATFORM
 .PP
-Cannonball-SE has been optimised to run on RaspberryPi boards with RaspberryPi OS, and also runs on any Intel/AMD PC with SSE4
-(probably all machines made since about 2010) with Ubuntu. All quad-core Pi's are supported. If you have a spare Pi, PC, or
-laptop - it can probably run CannonBall-SE.
+Cannonball-SE has been optimised to run on RaspberryPi boards with RaspberryPi OS, and also runs on any Intel/AMD PC that can
+run Ubuntu 24.04 or above. All RaspberryPi boards are supported. CPU SIMD extensions (NEON/SSE4) are used where available to
+drive higher frame rates with lower power consumption.
 .PP
-For most users, Pi4 is the sweet-spot with no overclocking needed to achive a 60fps and its 4 USB ports on-board providing
-connectivity for a steering wheel, external amplifier/DSP, case fan, and a keyboard for diagnostics when needed.
+If you have a spare Pi, PC, or laptop - it can probably run CannonBall-SE and any USB steering wheel should work - Thrustmaster
+Ferarri branded wheels are readily available on popular auction sites.
+.PP
+For most users, Pi4 is the sweet-spot with no overclocking needed to achieve 60fps at 1080p and its 4 USB ports on-board providing
+connectivity for a steering wheel, external amplifier/DSP, case fan, and a keyboard for diagnostics when needed. Higher resolution
+screens will need more power (Pi5 or Intel/AMD).
 .PP
 The game switches dynamically between 30 and 60fps depending on system capability. Most systems will run at 60fps with all effects
-enabled (the 'Full' shader) with standard dpi screens (1280x1024 to 1920x1080). For Pi2/Pi3 users (and assuming 1280x1024):
+enabled (the 'Full' shader) with standard dpi screens (upto 1920x1080). For Pi2/Pi3 users (and assuming 1280x1024):
 .RS
 .IP \(bu 2
-Pi2 (v1.1): Solid 30fps will full shader at stock clocks. To try 60fps mode, overclock the board to 1050MHz CPU, 500MHz GPU,
-500MHz SRAM and set in the game: Fast shader, Fast S16 Emulation, Overlay Mask, and 16ms sound callbacks.
+Pi2 (v1.1): Solid 30fps will full shader at stock clocks in hi-res mode. To try 60fps mode with hi-res, overclock the board to
+1050MHz CPU, 500MHz GPU, 500MHz SRAM and set in the game: Fast shader, Fast S16 Emulation, Overlay Mask, and 16ms sound callbacks.
+The board will run at 60fps at stock clocks in standard-res mode (use Fast Shader, Fast S16 Emulation, and Overlay Mask).
 .IP \(bu 2
 Pi2 (v1.2), Pi3, and Pi-Zero2W: Solid 60fps with Fast shader at stock clocks. Set GPU to 400MHz to use Full shader.
 .RE
 .PP
-Higher resolution screens will need more power. Any USB steering wheel should work - Thrustmaster Ferarri branded wheels are readily available on popular auction sites. When using any Pi board, a CPU heatsink is required (larger the better).
+When using any multi-core Pi board, a CPU heatsink is required (larger the better). For single-core Pi Boards (Pi1, Pi-Zero,
+Pi-ZeroW), a special mode is automatically selected to enable smooth gameplay at about 30fps (with a 1280x1024 screen)
+with the full shader enabled. The Blargg NTSC filter is disabled and the game runs in the arcade-original resolution under-the-hood.
+.PP
+A special mode is automatically selected to single-core boards (Pi1, Pi-Zero, Pi-ZeroW) that provides 30fps at 1280x1024. The Blargg filter is disabled and the game runs in the original arcade resolution internally.
 .PP
 .SH STUTTERING AUDIO
 .PP
@@ -136,6 +149,9 @@ generally OK). Workaround is to use a bluetooth keyboard or to SSH.
 The system may struggle to keep up with the sound callback rate. This is most noticable on the Pi2 when using 60fps mode with the
 analogue audio output. Fix is to switch the game from 8ms to 16ms callback (Menu/Settings/Sound/Music/Callback Rate).
 .RE
+.PP
+Note that USB audio reduces the frame rate (significantly) for single-core Raspberry Pi systems. Use HDMI audio or analogue (if present) for these systems.
+.PP
 .SH WATCHDOG SUPPORT
 .PP
 For systems with a hardware watchdog (including all RaspberryPi boards), CannonBall-SE hooks this so that the system will be automatically
@@ -165,7 +181,8 @@ S16 sound emulation Copyright © 1998-2008 Atari800 development team
 .IP \(bu 2
 YM2151 emulation Copyright © 1997-2002 Jarek Burczynski as distributed with MAME source code.
 .IP \(bu 2
-NTSC filter Copyright © 2006–2007 Shay Green ('Blargg')
+NTSC filter Copyright © 2006–2007 Shay Green ('Blargg').
+S16 pallete based initialisation and SIMD blitter Copyright © 2025 James Pearce
 .IP \(bu 2
 Linux Force-Feedback Support Based on work Copyright © 2020 Ismas and Johan Deneux
 .IP \(bu 2

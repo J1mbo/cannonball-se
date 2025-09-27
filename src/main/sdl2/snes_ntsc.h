@@ -15,20 +15,23 @@ Note: SIMD dependent functions e.g. snes_ntsc_blit_hires_fast() require buffers 
 
 #include "snes_ntsc_config.h"
 
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
-#elif defined(_M_X64)
-#include <intrin.h>
-#include <tmmintrin.h> // SSE4
-#include <emmintrin.h> // SSE2
-#elif defined(__x86_64__) || defined(__i386__)
+#define SNES_NTSC_HAVE_SIMD 1
+#elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
 #include <x86intrin.h>
+#define SNES_NTSC_HAVE_SIMD 1
+#elif defined(_M_ARM64) || defined(__aarch64__)
+/* AArch64 without NEON is unusual; if absent we fall back to scalar. */
+#define SNES_NTSC_HAVE_SIMD 0
 #else
-#error "Unsupported architecture: This implementation requires SSE4 or NEON."
+/* No SIMD available (e.g., ARMv6 / Raspberry Pi Zero W). Use scalar path. */
+#define SNES_NTSC_HAVE_SIMD 0
 #endif
 
 
@@ -45,6 +48,14 @@ extern "C" {
   #endif
 #endif
 
+// Portable byteswap primitive
+#if defined(_MSC_VER)  // MSVC (Windows)
+    #include <stdlib.h>
+    #define bswap32(x) _byteswap_ulong(x)
+#else                  // glibc / Linux / other GCC-like
+    #include <byteswap.h>
+    #define bswap32(x) bswap_32(x)
+#endif
 
 	/* Image parameters, ranging from -1.0 to 1.0. Actual internal values shown
 	in parenthesis and should remain fairly stable in future versions. */
@@ -92,15 +103,18 @@ extern "C" {
 		long in_row_width, int burst_phase, int in_width, int in_height,
 		void* rgb_out, long out_pitch, long Alevel);
 
+#if SNES_NTSC_HAVE_SIMD
+    // SIMD version of hires (SSE/NEON)
 	void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
 		int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel);
+#endif
 
 	/* Number of output pixels written by low-res blitter for given input width. Width
 	might be rounded down slightly; use SNES_NTSC_IN_WIDTH() on result to find rounded
 	value. Guaranteed not to round 256 down at all. */
 #define SNES_NTSC_OUT_WIDTH( in_width ) \
 	((((in_width) - 1) / snes_ntsc_in_chunk + 1) * snes_ntsc_out_chunk)
-	
+
 	/* SIMD version of the above (note - SIMD only works for hires inputs */
 #define SNES_NTSC_OUT_WIDTH_SIMD( in_width ) \
 	(((in_width - 16) * 7 / 6) + 24)
@@ -171,8 +185,8 @@ extern "C" {
 		kernelx0 [(x+7)%7+7] + kernelx2 [(x+5)%7+21] + kernelx4 [(x+3)%7+35] +\
 		kernel1  [(x+6)%7  ] + kernel3  [(x+4)%7+14] + kernel5  [(x+2)%7+28] +\
 		kernelx1 [(x+6)%7+7] + kernelx3 [(x+4)%7+21] + kernelx5 [(x+2)%7+35];\
-	SNES_NTSC_CLAMP_( raw_, 0 );\
-	SNES_NTSC_RGB_OUT_( rgb_out, (bits), 0, Alevel );\
+	SNES_NTSC_CLAMP_AND_CONVERT_SCALAR( raw_, Alevel );\
+	rgb_out = raw_;\
 }
 
 // this version ONLY does the maths on each pixel. Clamp and RGB_OUT are skipped,
@@ -185,9 +199,10 @@ extern "C" {
 )
 
 /* private */
+#include <stdint.h>
 	enum { snes_ntsc_entry_size = 128 };
 	enum { snes_ntsc_palette_size = 0x18000 }; // JJP - S16 is 5 bits per channel and three table (std/shadow/hilite)
-	typedef unsigned long snes_ntsc_rgb_t;
+	typedef uint32_t snes_ntsc_rgb_t;          // JJP - was unsigned long
 	struct snes_ntsc_t {
 		snes_ntsc_rgb_t table[snes_ntsc_palette_size][snes_ntsc_entry_size];
 	};
@@ -227,12 +242,13 @@ extern "C" {
 	snes_ntsc_rgb_t const* kernelx2 = kernel0
 
 #define SNES_NTSC_RGB_OUT_14_( x, rgb_out, bits, shift, Alevel ) {\
-	snes_ntsc_rgb_t raw_ =\
-		kernel0  [x       ] + kernel1  [(x+12)%7+14] + kernel2  [(x+10)%7+28] +\
-		kernelx0 [(x+7)%14] + kernelx1 [(x+ 5)%7+21] + kernelx2 [(x+ 3)%7+35];\
-	SNES_NTSC_CLAMP_( raw_, shift );\
-	SNES_NTSC_RGB_OUT_( rgb_out, bits, shift, Alevel );\
+    snes_ntsc_rgb_t raw_ =\
+        kernel0  [x       ] + kernel1  [(x+12)%7+14] + kernel2  [(x+10)%7+28] +\
+        kernelx0 [(x+7)%14] + kernelx1 [(x+ 5)%7+21] + kernelx2 [(x+ 3)%7+35];\
+        SNES_NTSC_CLAMP_( raw_, shift );                                      \
+        SNES_NTSC_RGB_OUT_( rgb_out, bits, shift, Alevel );                   \
 }
+
 
 /* Colour Clamp Macros */
 // Generic version
@@ -247,8 +263,40 @@ extern "C" {
 	io &= clamp;\
 }
 
+
+// Scalar version: processes a single pixel into RGBA (little-endian)
+#define SNES_NTSC_CLAMP_AND_CONVERT_SCALAR(io, Alevel) do {               \
+    /* ---- Clamp ---- */                                                 \
+    uint32_t sub   = ((io) >> 9) & snes_ntsc_clamp_mask;                  \
+    uint32_t clamp = snes_ntsc_clamp_add - sub;                           \
+    (io) |= clamp;                                                        \
+    clamp -= sub;                                                         \
+    (io) &= clamp;                                                        \
+                                                                          \
+    /* ---- Convert internal raw format directly to RGBA ---- */          \
+    uint32_t rgba = (((io) << 3) & 0xFF000000u) | /*R*/                   \
+                    (((io) << 5) & 0x00FF0000u) | /*G*/                   \
+                    (((io) << 7) & 0x0000FF00u) | /*B*/                   \
+                    (((uint32_t)(Alevel)));       /*A*/                   \
+                                                                          \
+    /* Final layout: RGBA little-endian (A in top byte, R in low byte) */ \
+    (io) = bswap32(rgba);                                                 \
+} while (0)
+
+
+//    uint32_t r = ((io) << 3) & 0xFF000000u;                               \
+//    uint32_t g = ((io) << 5) & 0x00FF0000u;                               \
+//    uint32_t b = ((io) << 7) & 0x0000FF00u;                               \
+//    uint32_t a = ((uint32_t)(Alevel));                                    \
+//                                                                          \
+//    /* Final layout: RGBA little-endian (A in top byte, R in low byte) */ \
+//    (io) = (Alevel<<24) | (b<<8) | (g>>8) | (r>>24);                      \
+
+
+
+
 /* JJP - SIMD macro predefined mask vectors for performance */
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#if SNES_NTSC_HAVE_SIMD && (defined(__ARM_NEON) || defined(__ARM_NEON__))
 	// ARM Architecture with NEON support
 #define SIMD_REGISTER_t uint32x4_t
 #define SIMD_ZERO SIMD_ZERO_NEON
@@ -263,7 +311,7 @@ extern "C" {
 #define SNES_NTSC_CLAMP_AND_CONVERT SNES_NTSC_CLAMP_AND_CONVERT_NEON
 #define SNES_NTSC_RGB_OUT_STORE SNES_NTSC_RGB_OUT_STORE_NEON
 #define SNES_NTSC_RGB_STORE SNES_NTSC_RGB_STORE_NEON
-#elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
+#elif SNES_NTSC_HAVE_SIMD && (defined(_M_X64) || defined(__x86_64__) || defined(__i386__))
 	// x86 Architecture with SSE4.1 support
 #define SIMD_REGISTER_t __m128i
 #define SIMD_ZERO                   SIMD_ZERO_SSE4
@@ -278,8 +326,6 @@ extern "C" {
 #define SNES_NTSC_CLAMP_AND_CONVERT SNES_NTSC_CLAMP_AND_CONVERT_SSE4
 #define SNES_NTSC_RGB_OUT_STORE     SNES_NTSC_RGB_OUT_STORE_SSE4
 #define SNES_NTSC_RGB_STORE         SNES_NTSC_RGB_STORE_SSE4
-#else
-#error "Unsupported architecture: This implementation requires SSE4 or NEON."
 #endif
 
 #define SIMD_ZERO_SSE4 _mm_setzero_si128()
@@ -455,9 +501,24 @@ extern "C" {
 
 // JJP - The following versions are Cannonball/S16 specific and assumes RGBA 32-bit output
 
-// Generic...
-#define SNES_NTSC_RGB_OUT_( rgb_out, bits, x, Alevel ) {\
-	rgb_out = (raw_<<3&0xFF000000)|(raw_<<5&0x00FF0000)|(raw_<<7&0x0000FF00)|Alevel;\
+// Generic (without SIMD) producing ABGR:
+#define SNES_NTSC_RGB_OUT_( rgb_out, bits, x, Alevel ) {                  \
+    uint32_t rgba = (((raw_) << (3+x)) & 0xFF000000u) |  /*R*/            \
+                    (((raw_) << (5+x)) & 0x00FF0000u) |  /*G*/            \
+                    (((raw_) << (7+x)) & 0x0000FF00u) |  /*B*/            \
+                    (((uint32_t)(Alevel)));              /*A*/            \
+                                                                          \
+    /* Final layout: RGBA little-endian (A in top byte, R in low byte) */ \
+    (rgb_out) = bswap32(rgba);                                            \
+}
+
+
+#define SNES_NTSC_RGB_OUT_OLD( rgb_out, bits, x, Alevel ) {                  \
+    uint32_t r = ((raw_) << (3+x)) & 0xFF000000u;                               \
+    uint32_t g = ((raw_) << (5+x)) & 0x00FF0000u;                               \
+    uint32_t b = ((raw_) << (7+x)) & 0x0000FF00u;                               \
+    /* Final layout: RGBA little-endian (A in top byte, R in low byte) */ \
+    rgb_out = (Alevel<<24) | (b<<8) | (g>>8) | (r>>24);                      \
 }
 
 // SSE4 (Intel/AMD) - convert to RGB and store to RAM

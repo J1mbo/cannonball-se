@@ -13,8 +13,16 @@ public:
     void reset();
     void set_x_clip(bool);
     void swap();
-    uint8_t read(const uint16_t adr);
-    void write(const uint16_t adr, const uint16_t data);
+    uint8_t read(const uint16_t adr) {
+        uint8_t a = ram[adr >> 1];
+        if ((adr & 1) == 1)
+            return a & 0xff;
+        else
+            return a >> 8;
+    }
+    void write(const uint16_t adr, const uint16_t data) {
+        ram[adr >> 1] = data;
+    }
     void render(const uint8_t);
 
 private:

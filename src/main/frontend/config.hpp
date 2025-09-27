@@ -10,10 +10,12 @@
 
 #pragma once
 
+#include <SDL.h>
 #include <set>
 #include <string>
 #include <vector>
 #include "stdint.hpp"
+#include "xml_parser.h" // replaces Boost for XML handling
 
 struct data_settings_t
 {
@@ -80,12 +82,15 @@ struct video_settings_t
     int fps;
     int fps_count;
     int hires;
+    int hires_next;
     int filtering;
     int vsync;
     int shadow;
 
     // s16accuracy - 1 = accurate S16 glowy edges, 0 = approximation (faster)
     // this is used in hwsprites.cpp to short-cut sprite rendering for limited systems e.g. Pi2.
+    const static int S16_FAST     = 0;
+    const static int S16_ACCURATE = 1;
     int s16accuracy;
 
     // JJP - User configurable X and Y position
@@ -94,10 +99,10 @@ struct video_settings_t
     int y_offset;
 
     // JJP - Blargg CRT filtering constants
-    const static int BLARGG_DISABLE = 0;
+    const static int BLARGG_DISABLE   = 0;
     const static int BLARGG_COMPOSITE = 1;
-    const static int BLARGG_SVIDEO = 2;
-    const static int BLARGG_RGB = 3;
+    const static int BLARGG_SVIDEO    = 2;
+    const static int BLARGG_RGB       = 3;
 
     // JJP - Blargg filtering settings
     int blargg;            // Blargg mode - per above constants
@@ -108,6 +113,15 @@ struct video_settings_t
     int gamma;
     int hue;
     int resolution;
+
+    // JJP - Shader constants
+    const static int SHADOW_MASK_OFF     = 0;
+    const static int SHADOW_MASK_OVERLAY = 1;
+    const static int SHADOW_MASK_SHADER  = 2;
+
+    const static int SHADER_OFF          = 0;
+    const static int SHADER_FAST         = 1;
+    const static int SHADER_FULL         = 2;
 
     // JJP - CRT Shader settings
     int shader_mode;        // 0 = off (actually pass-through), 1 = fast, 2 = full
@@ -210,9 +224,16 @@ public:
     ttrial_settings_t      ttrial;
     smartypi_settings_t    smartypi;
 
+    int master_break_key = SDLK_ESCAPE;
+
     const static int CABINET_MOVING  = 0;
     const static int CABINET_UPRIGHT = 1;
     const static int CABINET_MINI    = 2;
+
+    /* S16 emulation accuracy modes. These affect the reproduction of glowy highlights in shadow */
+    const static int S16_FAST        = 0; // no glowy edges
+    const static int S16_APPROX      = 1; // some glowy edges - trees on start line look correct
+    const static int S16_ACCURATE    = 2; // glowy edges match arcade cabinet
 
     // Internal screen width and height
     uint16_t s16_width, s16_height;
@@ -228,7 +249,7 @@ public:
 
     // Continuous Mode: Traffic Setting
     int cont_traffic;
-    
+
     Config(void);
     ~Config(void);
 
@@ -240,8 +261,8 @@ public:
     void save_scores(bool original_mode);
     void load_stats();
     void save_stats();
-    void load_tiletrial_scores();
-    void save_tiletrial_scores();
+    void load_timetrial_scores();
+    void save_timetrial_scores();
     bool clear_scores();
     void set_fps(int fps);
     void inc_time();
@@ -250,6 +271,7 @@ public:
     // To support multi-threaded SDL module:
     bool videoRestartRequired = false;
 private:
+    xml_parser::ptree cfg;
 };
 
 extern Config config;

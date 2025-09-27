@@ -363,6 +363,8 @@ void OSprites::map_palette(oentry* spr)
 
 void OSprites::do_spr_order_shadows(oentry* input)
 {
+    if (input->hidden) return;  // JJP ghost car related safety-net check
+
     // LayOut specific fix to avoid memory crash on over populated scenery segments
     if (spr_cnt_main + spr_cnt_shadow >= JUMP_ENTRIES_TOTAL)
         return;
@@ -585,10 +587,17 @@ void OSprites::do_sprite(oentry* input)
         return;
     }
 
+    // JJP - Ghost car fix. Hide the sprite if it's hidden count-down is >0
+    // The 'hidden' field is set in OTraffic::move_spawned_sprite()
+    if (input->hidden > 0) {
+        hide_hwsprite(input, output);
+        return;
+    }
+
     // Sprite Width/Height Settings
     uint16_t width = 0;
     uint16_t height = 0;
-    
+
     // Set real h/v zoom values
     uint32_t index = (input->zoom * 4);
     output->set_vzoom(ZOOM_LOOKUP[index]); // note we don't increment src_rom here

@@ -3,8 +3,7 @@
 
     Copyright (c) 2012,2020 Manuel Alfayate and Chris White.
 
-    Threading, Blargg filter, GLSL filter and CRT masks Copyright (c)
-    2020,2025 James Pearce.
+    Modifications for CannonBall-SE are Copyright (c) 2020,2025 James Pearce.
 
     See license.txt for more details.
 
@@ -35,7 +34,7 @@ public:
               int scanlines);
     void swap_buffers();
     void disable();
-    bool start_frame();
+    bool start_frame() {return true;};
     bool finalize_frame();
     void draw_frame(uint16_t* pixels, int fastpass);
 
@@ -72,6 +71,8 @@ private:
     void set_scaling();
     bool init_sdl(int video_mode);
     void init_overlay();
+    long get_video_config();
+    int  get_blargg_config();
     void blargg_filter(uint16_t* pixels, uint32_t* outputPixels, int section);
 
     // constants
@@ -92,19 +93,7 @@ private:
     // GLSL shader related settings
     std::string vs;
     std::string fs;
-/*
-    float warpX = 0.0f, warpY = 0.0f, expandX = 0.0f, expandY = 0.0f;
-    float brightboost1 = 1.0f, brightboost2 = 1.0f;
-    float nois = 0.0f;
-    float vignette = 0.0f;
-    float desaturate = 0.0f;
-    float desaturateEdges = 0.0f;
-    float sharpX = 0.0f, sharpY = 0.0f;
-    float Shadowmask = 0.0f;
-    float maskDim    = 0.75f;
-    float maskBoost  = 1.33f;
-    float maskSize   = 1.0f;
-*/
+
     // processing data
     int Alevel = 255;       // default alpha value for game image
 
@@ -127,4 +116,7 @@ private:
     int                       fastpassArrivals = 0;   // 0 → 1 → 2 then reset
     bool                      fastpassPostFxDone = false; // lets the first waiter proceed
 
+    // keep track of UI settings changes
+    int last_blargg_config = 0;
+    long last_config = 0;
 };

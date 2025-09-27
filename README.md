@@ -6,20 +6,22 @@
 
 ## Overview
 
-CannonBall‑SE is a maintained fork of the cross‑platform OutRun engine, focused on an authentic arcade‑cab experience. Graphics seem more natural thanks to the video filter, subtle screen curvature, shadow‑mask effects, attention to accurate colour reproduction, subtle noise and desaturation, and automatic 30/60fps selection.
+CannonBall‑SE is a fork of the cross‑platform OutRun engine, focused on an authentic arcade‑cab experience.
 
-Authentic game audio is ensured with a re-written audio module, and this also supports MP3/WAV custom music.
+* Graphics seem more natural thanks to the video filter, subtle screen curvature, shadow‑mask effects, attention to accurate colour reproduction, subtle noise and desaturation, and automatic 30/60fps selection.
+* The re-written audio module tightens up stability, ensures accurate playback speed, and also supports MP3/WAV custom music.
+* Gameplay is refined with various game bug fixes, additional rumble, performance improvements and stability fixes.
+* The hardware watchdog is used (if available) to ensure reliable continuous operation.
+* Play count and "machine hours" are tracked.
 
-Gameplay is refined with additional rumble and various performance and stability fixes (it also hooks a hardware watchdog where available to ensure reliable continuous operation). Play count and “machine hours” are also tracked.
-
-> **Note:** SDL\_gpu is **no longer required**.
+> **Note:** Can now be used on all Raspberry Pi systems including the Pi Zero.
 
 ---
 
 ## Supported Platforms
 
-* **Raspberry Pi (Pi 2/3/4/5/Zero-2W)** running Raspberry Pi OS.
-* **x86/x64 PCs** (Intel/AMD with SSE4) running a recent Linux distribution (e.g., Ubuntu).
+* **All Raspberry Pi Boards** running Raspberry Pi OS.
+* **x86/x64 PCs** (Intel/AMD) running a recent Linux distribution (e.g., Ubuntu).
 
 A desktop is not required - use the command-line version of the OS.
 
@@ -48,7 +50,7 @@ chmod +x install.sh
 mkdir -p roms
 # copy your ROM set into ./roms
 
-# 4) Run
+# 4) Reboot, then run
 build/cannonball-se
 # Note: If running under a desktop, Wayland will likely improve frame-rate; start as:
 # SDL_VIDEODRIVER=wayland build/cannonball-se
@@ -66,6 +68,8 @@ The script installs system packages, configures the linker as needed, compiles t
 * `-file <layout>` — Load LayOut Editor track data (custom routes)
 * `-30` or `-60` — Force 30 or 60 fps (disables auto selection)
 * `-t [1–4]` — Override hardware thread detection (1–4 threads)
+* `-x` - Disable single-core RaspberryPi board detection
+* `-1` - Use single-core mode (game with run in one thread (plus sound)
 
 ---
 
@@ -76,6 +80,8 @@ The script installs system packages, configures the linker as needed, compiles t
 * **Menu** `M`, **Up/Down** ↑ ↓, **Select/Confirm** `S`, **Quit** `Esc`
 
 Controls (keyboard, wheels, pads) can be remapped in *Menu → Settings → Controls*.
+
+Quit can be remapped to `F10` instead of `Esc` in *Menu → Settings → Master Break Key*.
 
 ---
 
@@ -100,17 +106,25 @@ Indexes **01–03** replace the built‑in tracks (01 = *Magical Sound Showe
 
 ## Performance Notes
 
-* **Pi4** is a great sweet spot for 60 fps with the full shader at 1080p.
-* **Pi2 (v1.2)/Pi3/Zero-2W** can reach 60 fps with the “Fast” shader (and with the "Full" shader when the GPU is overclocked to 400MHz)
-* **Pi2 (v1.1)** is typically locked at 30 fps unless heavily overclocked.
-* Higher‑DPI displays need more power - Pi5 or Intel/AMD.
+The **Pi4** is the sweet spot, easily providing 60 fps with the full shader at 1080p. Higher‑DPI displays will need more power - Pi5 or Intel/AMD.
+
+* **Pi2 (v1.2)/Pi3/Zero-2W** can reach 60 fps with the "Fast" shader (and with the "Full" shader when the GPU is overclocked to 400MHz)
+* **Pi2 (v1.1)** can run at 30fps in hires or 60fps in standard res ("Full" shader)
+
+A special mode is automatically selected for **Single-Core Pi Models (Pi1, PiZero)** to enable them to run the game at ~30 fps with a 1280x1024 screen:
+
+* The game engine runs in standard resolution mode (same as the original arcade)
+* The Blarrg filter is disabled.
+* The "Full" shader is used.
+
+Use the onboard audio with Pi1 - USB audio devices will reduce game frame rate substantially.
 
 ---
 
 ## Audio Troubleshooting (Pi)
 
 * **USB audio on Pi2/3/Zero-2W**: Set USB to *full‑speed* to avoid drop-outs (append `dwc_otg.speed=1` to `/boot/firmware/cmdline.txt`). Be aware this may affect some USB keyboards; BT keyboards or SSH are alternatives.
-* **Callback rate**: On slower setups using analog output (Pi2 especially), switch the music callback from **8ms** to **16ms** (*Menu → Settings → Sound/Music → Callback Rate*).
+* **Callback rate**: Callback rate can be halved to 16ms, which may help some systems (*Menu → Settings → Sound/Music → Callback Rate*).
 
 ---
 
@@ -123,7 +137,7 @@ On hardware with a watchdog (all Raspberry Pi boards), the game integrates wit
 ## License
 
 * **Upstream CannonBall license**: non‑commercial use; modified redistributions must include full source; warranty disclaimer. See `license.txt` in the repo.
-* **CannonBall‑SE additional terms**: this fork’s enhancements © 2020–2025 James Pearce; provided “as is”; not for sale/monetisation; preserve notices. See `CannonBall-SE-license.txt`.
+* **CannonBall‑SE additional terms**: this fork’s enhancements © 2020–2025 James Pearce; provided "as is"; not for sale/monetisation; preserve notices. See `CannonBall-SE-license.txt`.
 * **Third‑party notices**: includes Blargg’s `snes_ntsc` under **LGPL‑2.1**; if statically linking, provide relinkable objects or equivalent. See `THIRD-PARTY-NOTICES.md` and `licenses/`.
 
 *OutRun is a trademark of SEGA Corporation. This project is not affiliated with SEGA.*
@@ -133,7 +147,6 @@ On hardware with a watchdog (all Raspberry Pi boards), the game integrates wit
 ## Credits
 
 * Original engine by **Chris White** and contributors.
-* CannonBall‑SE by **James Pearce**.
 * NTSC Filter library by **Shay Green** ('Blargg').
 
 ---

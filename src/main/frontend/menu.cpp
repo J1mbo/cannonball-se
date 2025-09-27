@@ -8,9 +8,6 @@
     Modifications for CannonBall-SE Copyright (c) 2025, James Pearce
 ***************************************************************************/
 
-// Boost string prediction
-#include <boost/algorithm/string/predicate.hpp>
-
 #include "main.hpp"
 #include "menu.hpp"
 #include "menulabels.hpp"
@@ -28,6 +25,45 @@
 #include "frontend/ttrial.hpp"
 
 #include <iostream>
+
+
+// Drop Boost string predicates; use lightweight std helpers instead
+#include <string>
+#include <string_view>
+#include <cctype>
+#include <algorithm>
+
+namespace detail_menu_predicates {
+    // ASCII‑only, case‑insensitive compare of two characters
+    constexpr unsigned char tolow(unsigned char c) { return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c; }
+
+    // Case‑insensitive equals for string views (ASCII). Keeps previous behaviour of Boost's iequals used here.
+    inline bool iequals(std::string_view a, std::string_view b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (tolow(static_cast<unsigned char>(a[i])) != tolow(static_cast<unsigned char>(b[i])))
+                return false;
+        return true;
+    }
+
+    // Case‑insensitive starts_with (ASCII). Mirrors prior usage of boost::starts_with in SELECTED().
+    inline bool istarts_with(std::string_view s, std::string_view prefix) {
+        if (prefix.size() > s.size()) return false;
+        for (size_t i = 0; i < prefix.size(); ++i)
+            if (tolow(static_cast<unsigned char>(s[i])) != tolow(static_cast<unsigned char>(prefix[i])))
+                return false;
+        return true;
+    }
+}
+
+// Many call sites use a SELECTED(x) macro that previously relied on boost::starts_with.
+// Re‑define it here to avoid touching call sites.
+#ifdef SELECTED
+#undef SELECTED
+#endif
+#define SELECTED(X) detail_menu_predicates::istarts_with(OPTION, X)
+
+
 
 // Logo Y Position
 const static int16_t LOGO_Y = -60;
@@ -89,8 +125,6 @@ void Menu::populate()
     menu_about.push_back("COPYRIGHT 2012-2024 CHRIS WHITE");
     menu_about.push_back("");
     menu_about.push_back("SE BUILD COPYRIGHT 2025 JAMES PEARCE");
-    //menu_about.push_back(ENTRY_TOTAL_PLAYS);
-    //menu_about.push_back(ENTRY_RUN_TIME);
 
     // Redefine menu text
     text_redefine.push_back("PRESS UP");
@@ -132,6 +166,7 @@ void Menu::populate_for_pc()
     menu_settings.push_back(ENTRY_CONTROLS);
     menu_settings.push_back(ENTRY_ENGINE);
     menu_settings.push_back(ENTRY_SCORES);
+    menu_settings.push_back(ENTRY_MASTER_BREAK);
     menu_settings.push_back(ENTRY_SAVE);
 
     // FPS not now needed - frame rate now automatically switches
@@ -201,6 +236,7 @@ void Menu::populate_for_pc()
     menu_engine.push_back(ENTRY_SUB_HANDLING);
     menu_engine.push_back(ENTRY_BACK);
 
+    menu_enhancements.push_back(ENTRY_HIRES);
     menu_enhancements.push_back(ENTRY_TIMER);
     menu_enhancements.push_back(ENTRY_ATTRACT);
     menu_enhancements.push_back(ENTRY_OBJECTS);
@@ -325,11 +361,19 @@ void Menu::init(bool init_main_menu)
         refresh_menu();
     }
 
-    // Reset audio, so we can play tones
-    osoundint.has_booted = true;
-    osoundint.init();
+    // Stop any wav/mp3 playback
     cannonball::audio.clear_wav();
-
+    osoundint.init();
+    osoundint.has_booted = true;
+/*
+std::cout << "Pausing audio\n";
+    cannonball::audio.pause_audio();
+std::cout << "osound.init...\n";
+    osoundint.init();
+std::cout << "Resuming audio\n";
+    cannonball::audio.resume_audio();
+std::cout << "Done.\n";
+*/
     frame = 0;
     message_counter = 0;
 
@@ -484,8 +528,6 @@ void Menu::draw_text(std::string s)
     ohud.blit_text_new(x, y, s.c_str(), ohud.GREEN);
 }
 
-#define SELECTED(string) boost::starts_with(OPTION, string)
-
 void Menu::tick_menu()
 {
     // Tick Controls
@@ -599,12 +641,17 @@ void Menu::tick_menu()
         }
         else if (menu_selected == &menu_settings)
         {
-            if (SELECTED(ENTRY_VIDEO))              set_menu(&menu_video);
-            else if (SELECTED(ENTRY_SOUND))         set_menu(&menu_sound);
-            else if (SELECTED(ENTRY_ENGINE))        set_menu(&menu_engine);
-            else if (SELECTED(ENTRY_SCORES))        display_message(config.clear_scores() ? "SCORES CLEARED" : "NO SAVED SCORES FOUND!");
-            else if (SELECTED(ENTRY_CONTROLS))
-            {
+            if (SELECTED(ENTRY_VIDEO))       set_menu(&menu_video);
+            else if (SELECTED(ENTRY_SOUND))  set_menu(&menu_sound);
+            else if (SELECTED(ENTRY_ENGINE)) set_menu(&menu_engine);
+            else if (SELECTED(ENTRY_SCORES)) {
+                display_message(config.clear_scores() ? "SCORES CLEARED" : "NO SAVED SCORES FOUND!");
+            } else if (SELECTED(ENTRY_MASTER_BREAK)) {
+                if (config.master_break_key == SDLK_ESCAPE)
+                    config.master_break_key = SDLK_F10;
+                else
+                    config.master_break_key = SDLK_ESCAPE;
+            } else if (SELECTED(ENTRY_CONTROLS)) {
                 display_message(input.gamepad ? "GAMEPAD FOUND" : "NO GAMEPAD FOUND!");
                 populate_controls();
                 set_menu(&menu_controls);
@@ -613,10 +660,15 @@ void Menu::tick_menu()
         // Extra Settings Menu (SmartyPi Only)
         else if (menu_selected == &menu_s_exsettings)
         {
-            if (SELECTED(ENTRY_TRACKS))        config.engine.jap ^= 1;
-            else if (SELECTED(ENTRY_GEAR))          config.controls.gear = config.controls.gear == config.controls.GEAR_PRESS ? config.controls.GEAR_AUTO : config.controls.GEAR_PRESS;
-            else if (SELECTED(ENTRY_ENHANCE))       set_menu(&menu_s_enhance);
-            else if (SELECTED(ENTRY_SCORES))        display_message(config.clear_scores() ? "SCORES CLEARED" : "NO SAVED SCORES FOUND!");
+            if (SELECTED(ENTRY_TRACKS))
+                config.engine.jap ^= 1;
+            else if (SELECTED(ENTRY_GEAR))
+                config.controls.gear =
+                config.controls.gear == config.controls.GEAR_PRESS ? config.controls.GEAR_AUTO : config.controls.GEAR_PRESS;
+            else if (SELECTED(ENTRY_ENHANCE))
+                set_menu(&menu_s_enhance);
+            else if (SELECTED(ENTRY_SCORES))
+                display_message(config.clear_scores() ? "SCORES CLEARED" : "NO SAVED SCORES FOUND!");
             else if (SELECTED(ENTRY_MUTE))
             {
                 config.sound.enabled ^= 1;
@@ -673,18 +725,18 @@ void Menu::tick_menu()
             else if (SELECTED(ENTRY_FREEPLAY))      config.engine.freeplay = !config.engine.freeplay;
             else if (SELECTED(ENTRY_TIME))          config.inc_time();
             else if (SELECTED(ENTRY_TRAFFIC))       config.inc_traffic();
-            else if (SELECTED(ENTRY_ADVERTISE))     config.sound.advertise ^= 1;
+            else if (SELECTED(ENTRY_ADVERTISE))     config.sound.advertise      ^= 1;
         }
         // Enahnce Menu (SmartyPi Only)
         else if (menu_selected == &menu_s_enhance)
         {
             if (SELECTED(ENTRY_SUB_HANDLING))       set_menu(&menu_handling);
-            else if (SELECTED(ENTRY_PREVIEWSND))    config.sound.preview ^= 1;
-            else if (SELECTED(ENTRY_ATTRACT))       config.engine.new_attract ^= 1;
+            else if (SELECTED(ENTRY_PREVIEWSND))    config.sound.preview        ^= 1;
+            else if (SELECTED(ENTRY_ATTRACT))       config.engine.new_attract   ^= 1;
             else if (SELECTED(ENTRY_OBJECTS))       config.engine.level_objects ^= 1;
-            else if (SELECTED(ENTRY_PROTOTYPE))     config.engine.prototype ^= 1;
-            else if (SELECTED(ENTRY_S_BUGS))        config.engine.fix_bugs ^= 1;
-            else if (SELECTED(ENTRY_TIMER))         config.engine.fix_timer ^= 1;
+            else if (SELECTED(ENTRY_PROTOTYPE))     config.engine.prototype     ^= 1;
+            else if (SELECTED(ENTRY_S_BUGS))        config.engine.fix_bugs      ^= 1;
+            else if (SELECTED(ENTRY_TIMER))         config.engine.fix_timer     ^= 1;
             else if (SELECTED(ENTRY_BACK))          menu_back();
         }
 
@@ -742,24 +794,39 @@ void Menu::tick_menu()
             {
                 // s16accuracy. 0 = fast, 1 = accurate
                 // affects glowy edges around sprites in shadow
-                config.video.s16accuracy ^= 1;
+                if (config.video.s16accuracy == video_settings_t::S16_FAST)
+                    config.video.s16accuracy = video_settings_t::S16_ACCURATE;
+                else
+                    config.video.s16accuracy = video_settings_t::S16_FAST;
             }
             else if (SELECTED(ENTRY_CRT_SHADER_MODE))
             {
-                // 0 = off (actually pass-through), 1 = Fast, 2 = Full
-                config.video.shader_mode += 1;
-                switch (config.video.shader_mode) {
-                    case 1 :    // user has enabled 'Fast' shader. If shadow_mask is enabled, set it to 'Overlay'
-                                if (config.video.shadow_mask == 2) config.video.shadow_mask = 1;
-                                break;
-                    case 2 :    // user has enabled 'Full' shader. If shadow_mask is enabled, set to 'Shader'
-                                if (config.video.shadow_mask == 1) config.video.shadow_mask = 1;
-                                break;
-                    case 3 :    // wrap
-                                config.video.shader_mode = 0;
-                                // user has set shader to 'None' - If shadow_mask is enabled, set this 'Overlay'
-                                if (config.video.shadow_mask != 0) config.video.shadow_mask = 1;
-                                break;
+                switch (++config.video.shader_mode) {
+                    case video_settings_t::SHADER_OFF:
+                        break;
+                    case video_settings_t::SHADER_FAST:
+                        // user has enabled 'Fast' shader. If shadow_mask is enabled, set it to 'Overlay'
+                        if (config.video.shadow_mask != video_settings_t::SHADOW_MASK_OFF) {
+                            config.video.shadow_mask = video_settings_t::SHADOW_MASK_OVERLAY;
+                            display_message("SHADOW MASK ALSO SET TO OVERLAY");
+                        }
+                        break;
+                    case video_settings_t::SHADER_FULL:
+                        // user has enabled 'Full' shader. If shadow_mask is enabled, set to 'Shader'
+                        if (config.video.shadow_mask != video_settings_t::SHADOW_MASK_OFF) {
+                            config.video.shadow_mask = video_settings_t::SHADOW_MASK_SHADER;
+                            display_message("SHADOW MASK ALSO SET TO SHADER MODE");
+                        }
+                        break;
+                    default:
+                        // out of range; reset
+                        config.video.shader_mode = video_settings_t::SHADER_OFF;
+                        // If shadow_mask is enabled, set this 'Overlay'
+                        if (config.video.shadow_mask != video_settings_t::SHADOW_MASK_OFF) {
+                            config.video.shadow_mask = video_settings_t::SHADOW_MASK_OVERLAY;
+                            display_message("SHADOW MASK ALSO SET TO OVERLAY");
+                        }
+                        break;
                 }
                 config.videoRestartRequired = true;
             }
@@ -779,54 +846,75 @@ void Menu::tick_menu()
             if (SELECTED(ENTRY_SHADOW_MASK))
             {
                 // defines the type of mask shown
-                config.video.shadow_mask += 1;
-                switch (config.video.shadow_mask) {
-                    case 1 :    // user has enabled 'overlay' shadow mask.
-                                // Can be applied with any shader option so nothing to change.
-                                break;
-                    case 2 :    // user has enabled 'shader' shadow mask. Set shader to 'Full'
-                                config.video.shader_mode = 2;
-                                break;
-                    case 3 :    //wrap (user has selected no shadow mask)
-                                config.video.shadow_mask = 0;
-                                break;
+                switch (++config.video.shadow_mask) {
+                    case video_settings_t::SHADOW_MASK_OFF:
+                        break;
+                    case video_settings_t::SHADOW_MASK_OVERLAY:
+                        // user has enabled 'overlay' shadow mask.
+                        // Can be applied with any shader option so nothing to change.
+                        if (config.video.shader_mode == video_settings_t::SHADER_FULL) {
+                            display_message("USE FAST SHADER FOR HIGHER FPS");
+                        }
+                        break;
+                    case video_settings_t::SHADOW_MASK_SHADER:
+                        // user has enabled 'shader' shadow mask. Set shader to 'Full'
+                        if (config.video.shader_mode != video_settings_t::SHADER_OFF) {
+                            config.video.shader_mode = video_settings_t::SHADER_FULL;
+                            display_message("ALSO ENABLED FULL SHADER");
+                        }
+                        break;
+                    default:
+                        //wrap (user has selected no shadow mask)
+                        config.video.shadow_mask = video_settings_t::SHADOW_MASK_OFF;
+                        break;
                 }
                 // restart is always needed as the mask overlay needs to be rebuilt regardless
                 config.videoRestartRequired = true;
             }
             else if (SELECTED(ENTRY_MASK_DIM))
             {
-                config.video.maskDim -= 5;
-                if (config.video.maskDim < 0)
-                    config.video.maskDim = 100;
-                if (config.video.shadow_mask==1)
-                    config.videoRestartRequired = true;
+                if (config.video.shadow_mask == video_settings_t::SHADOW_MASK_OFF)
+                    display_message("ENABLE SHADOW MASK FIRST");
+                else {
+                    config.video.maskDim -= 5;
+                    if (config.video.maskDim < 0)
+                        config.video.maskDim = 100;
+                    if (config.video.shadow_mask==1)
+                        config.videoRestartRequired = true;
+                }
             }
             else if (SELECTED(ENTRY_MASK_BOOST))
             {
-                config.video.maskBoost += 5;
-                if (config.video.maskBoost > 150)
-                    config.video.maskBoost = 100;
-                if (config.video.shader_mode==0)
-                    display_message("Mask Boost requires Full shader");
+                if (config.video.shader_mode != video_settings_t::SHADER_FULL)
+                    display_message("BOOST REQUIRES FULL SHADER");
+                else {
+                    config.video.maskBoost += 5;
+                    if (config.video.maskBoost > 150)
+                        config.video.maskBoost = 100;
+                }
             }
             else if (SELECTED(ENTRY_MASK_SIZE))
             {
-                config.video.mask_size += 1;
-                if (config.video.mask_size > 3)
-                    config.video.mask_size = 1;
-                if (config.video.shader_mode!=2)
-                    display_message("Mask Size requires Full shader");
+                if (config.video.shader_mode != video_settings_t::SHADER_FULL)
+                    display_message("SIZE REQUIRES FULL SHADER");
+                else {
+                    config.video.mask_size += 1;
+                    if (config.video.mask_size > 3)
+                        config.video.mask_size = 1;
+                }
             }
             else if (SELECTED(ENTRY_SCANLINES))
             {
                 config.video.scanlines += 1;
                 if (config.video.scanlines > 3)
                     config.video.scanlines = 0;
-                else if (config.video.shader_mode==0) {
-                    // enable fast shader, looks terrible without it
-                    config.video.shader_mode = 1;
-                    config.videoRestartRequired = true;
+                else {
+                    if (config.video.shader_mode == video_settings_t::SHADER_OFF) {
+                        // enable fast shader, looks terrible without it
+                        config.video.shader_mode = video_settings_t::SHADER_FAST;
+                        config.videoRestartRequired = true;
+                        display_message("ALSO ENABLED FAST SHADER");
+                    }
                 }
             }
             else if (SELECTED(ENTRY_BACK))
@@ -851,19 +939,23 @@ void Menu::tick_menu()
             }
             else if (SELECTED(ENTRY_WARPX))
             {
-                config.video.warpX += 1;
-                if (config.video.warpX > 10)
-                    config.video.warpX = 0;
-                if (config.video.shader_mode==0)
-                    display_message("Warp requires shader");
+                if (config.video.shader_mode == video_settings_t::SHADER_OFF)
+                    display_message("WARP REQUIRES SHADER");
+                else {
+                    config.video.warpX += 1;
+                    if (config.video.warpX > 10)
+                        config.video.warpX = 0;
+                }
             }
             else if (SELECTED(ENTRY_WARPY))
             {
-                config.video.warpY += 1;
-                if (config.video.warpY > 10)
-                    config.video.warpY = 0;
-                if (config.video.shader_mode==0)
-                    display_message("Warp requires shader");
+                if (config.video.shader_mode == video_settings_t::SHADER_OFF)
+                    display_message("WARP REQUIRES SHADER");
+                else {
+                    config.video.warpY += 1;
+                    if (config.video.warpY > 10)
+                        config.video.warpY = 0;
+                }
             }
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
@@ -873,35 +965,43 @@ void Menu::tick_menu()
         else if (menu_selected == &menu_crt_shader2) {
             if (SELECTED(ENTRY_NOISE))
             {
-                config.video.noise += 1;
-                if (config.video.noise > 20)
-                    config.video.noise = 0;
-                if (config.video.shader_mode==0)
-                    display_message("Noise requires shader");
+                if (config.video.shader_mode == video_settings_t::SHADER_OFF)
+                    display_message("NOISE REQUIRES SHADER");
+                else {
+                    config.video.noise += 1;
+                    if (config.video.noise > 20)
+                        config.video.noise = 0;
+                }
             }
             else if (SELECTED(ENTRY_DESATURATE))
             {
-                config.video.desaturate += 1;
-                if (config.video.desaturate > 10)
-                    config.video.desaturate = 0;
-                if (config.video.shader_mode!=2)
-                    display_message("Desaturate requires Full shader");
+                if (config.video.shader_mode != video_settings_t::SHADER_FULL)
+                    display_message("DESATURATE REQUIRES FULL SHADER");
+                else {
+                    config.video.desaturate += 1;
+                    if (config.video.desaturate > 10)
+                        config.video.desaturate = 0;
+                }
             }
             else if (SELECTED(ENTRY_DESATURATE_EDGES))
             {
-                config.video.desaturate_edges += 1;
-                if (config.video.desaturate_edges > 10)
-                    config.video.desaturate_edges = 0;
-                if (config.video.shader_mode!=2)
-                    display_message("Desaturate requires Full shader");
+                if (config.video.shader_mode != video_settings_t::SHADER_FULL)
+                    display_message("DESATURATE EDGES REQUIRES FULL SHADER");
+                else {
+                    config.video.desaturate_edges += 1;
+                    if (config.video.desaturate_edges > 10)
+                        config.video.desaturate_edges = 0;
+                }
             }
             else if (SELECTED(ENTRY_BRIGHTNESS_BOOST))
             {
-                config.video.brightboost += 1;
-                if (config.video.brightboost > 10)
-                    config.video.brightboost = 0;
-                if (config.video.shader_mode==0)
-                    display_message("Boost requires shader");
+                if (config.video.shader_mode != video_settings_t::SHADER_FULL)
+                    display_message("BRIGHTNESS BOOST REQUIRES FULL SHADER");
+                else {
+                    config.video.brightboost += 1;
+                    if (config.video.brightboost > 10)
+                        config.video.brightboost = 0;
+                }
             }
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
@@ -926,45 +1026,73 @@ void Menu::tick_menu()
             }
             else if (SELECTED(ENTRY_SATURATION))
             {
-                config.video.saturation += 10;
-                if (config.video.saturation > 50)
-                    config.video.saturation = -50;
+                if (config.video.blargg == video_settings_t::BLARGG_DISABLE)
+                    display_message("ENABLE BLARGG FILTER FIRST");
+                else {
+                    config.video.saturation += 10;
+                    if (config.video.saturation > 50)
+                        config.video.saturation = -50;
+                }
             }
             else if (SELECTED(ENTRY_CONTRAST))
             {
-                config.video.contrast += 10;
-                if (config.video.contrast > 50)
-                    config.video.contrast = -50;
+                if (config.video.blargg == video_settings_t::BLARGG_DISABLE)
+                    display_message("ENABLE BLARGG FILTER FIRST");
+                else {
+                    config.video.contrast += 10;
+                    if (config.video.contrast > 50)
+                        config.video.contrast = -50;
+                }
             }
             else if (SELECTED(ENTRY_BRIGHTNESS))
             {
-                config.video.brightness += 10;
-                if (config.video.brightness > 50)
-                    config.video.brightness = -50;
+                if (config.video.blargg == video_settings_t::BLARGG_DISABLE)
+                    display_message("ENABLE BLARGG FILTER FIRST");
+                else {
+                    config.video.brightness += 10;
+                    if (config.video.brightness > 50)
+                        config.video.brightness = -50;
+                }
             }
             else if (SELECTED(ENTRY_SHARPNESS))
             {
-                config.video.sharpness += 10;
-                if (config.video.sharpness > 50)
-                    config.video.sharpness = -50;
+                if (config.video.blargg == video_settings_t::BLARGG_DISABLE)
+                    display_message("ENABLE BLARGG FILTER FIRST");
+                else {
+                    config.video.sharpness += 10;
+                    if (config.video.sharpness > 50)
+                        config.video.sharpness = -50;
+                }
             }
             else if (SELECTED(ENTRY_RESOLUTION))
             {
-                config.video.resolution += 10;
-                if (config.video.resolution > 0)
-                    config.video.resolution = -100;
+                if (config.video.blargg == video_settings_t::BLARGG_DISABLE)
+                    display_message("ENABLE BLARGG FILTER FIRST");
+                else {
+                    config.video.resolution += 10;
+                    if (config.video.resolution > 0)
+                        config.video.resolution = -100;
+                }
             }
             else if (SELECTED(ENTRY_GAMMA))
             {
-                config.video.gamma += 1;
-                if (config.video.gamma > 10)
-                    config.video.gamma = -20;
+                if (config.video.blargg == video_settings_t::BLARGG_DISABLE)
+                    display_message("ENABLE BLARGG FILTER FIRST");
+                else {
+                    config.video.gamma += 1;
+                    if (config.video.gamma > 10)
+                        config.video.gamma = -20;
+                }
             }
             else if (SELECTED(ENTRY_HUE))
             {
-                config.video.hue += 1;
-                if (config.video.hue > 10)
-                    config.video.hue = -10;
+                if (config.video.blargg == video_settings_t::BLARGG_DISABLE)
+                    display_message("ENABLE BLARGG FILTER FIRST");
+                else {
+                    config.video.hue += 1;
+                    if (config.video.hue > 10)
+                        config.video.hue = -10;
+                }
             }
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
@@ -1057,7 +1185,15 @@ void Menu::tick_menu()
         }
         else if (menu_selected == &menu_enhancements)
         {
-            if (SELECTED(ENTRY_ATTRACT))                config.engine.new_attract ^= 1;
+            if (SELECTED(ENTRY_HIRES)) {
+                // historically in video but fits better here
+                // we flag to the main program loop that a change has been requested, which
+                // will be done (via video subsystem restart) once all workers for this frame are complete.
+                config.video.hires_next = config.video.hires ^ 1;
+                //start_game(Outrun::MODE_ORIGINAL);
+                config.videoRestartRequired = true;
+            }
+            else if (SELECTED(ENTRY_ATTRACT))           config.engine.new_attract ^= 1;
             else if (SELECTED(ENTRY_OBJECTS))           config.engine.level_objects ^= 1;
             else if (SELECTED(ENTRY_PROTOTYPE))         config.engine.prototype ^= 1;
             else if (SELECTED(ENTRY_TIMER))             config.engine.fix_timer ^= 1;
@@ -1099,7 +1235,7 @@ void Menu::tick_menu()
             }
             else if (SELECTED(ENTRY_CALLBACK_RATE))
             {
-                // SDL Audio callback rate. 0=8ms (default), 1=16ms (which enables smooth audio under WSL)
+                // SDL Audio callback rate. 0=8ms (default), 1=16ms (which can provide smoother audio under WSL and on Pi-1)
                 if (++config.sound.callback_rate > 1) config.sound.callback_rate = 0;
                 // changing this setting requires re-initialising the audio subsystem
                 cannonball::audio.stop_audio();
@@ -1168,7 +1304,13 @@ void Menu::refresh_menu()
         // Get option that was selected
         const char* OPTION = menu_selected->at(cursor).c_str();
 
-        if (menu_selected == &menu_about)  // JJP - include machine stats in about menu
+        if (menu_selected == &menu_settings)
+        {
+            // JJP - added master break key here
+            if (SELECTED(ENTRY_MASTER_BREAK))
+                set_menu_text(ENTRY_MASTER_BREAK, config.master_break_key == SDLK_ESCAPE ? "ESC" : "F10");
+        }
+        else if (menu_selected == &menu_about)  // JJP - include machine stats in about menu
         {
             auto message = "     " + Utils::to_string(config.stats.playcount) + " PLAYS ,  " +
                            Utils::to_string((config.stats.runtime / 60)) + " MACHINE HOURS";
@@ -1208,16 +1350,16 @@ void Menu::refresh_menu()
             // Screen feedback for selected options
             if (SELECTED(ENTRY_CRT_S16_EMU))
             {
-                if (config.video.s16accuracy == 0)
+                if (config.video.s16accuracy == video_settings_t::S16_FAST)
                     set_menu_text(ENTRY_CRT_S16_EMU, "FAST");
                 else
                     set_menu_text(ENTRY_CRT_S16_EMU, "ACCURATE");
             }
             else if (SELECTED(ENTRY_CRT_SHADER_MODE))
             {
-                if (config.video.shader_mode == 0)
+                if (config.video.shader_mode == video_settings_t::SHADER_OFF)
                     set_menu_text(ENTRY_CRT_SHADER_MODE, "NONE");
-                else if (config.video.shader_mode == 1)
+                else if (config.video.shader_mode == video_settings_t::SHADER_FAST)
                     set_menu_text(ENTRY_CRT_SHADER_MODE, "FAST");
                 else
                     set_menu_text(ENTRY_CRT_SHADER_MODE, "FULL");
@@ -1229,28 +1371,48 @@ void Menu::refresh_menu()
                 set_menu_text(ENTRY_CRT_SHAPE, config.video.crt_shape ? "ON" : "OFF");
             else if (SELECTED(ENTRY_VIGNETTE))
                 set_menu_text(ENTRY_VIGNETTE, config.video.vignette ? Utils::to_string(config.video.vignette) +"%": "OFF");
-            else if (SELECTED(ENTRY_WARPX))
-                set_menu_text(ENTRY_WARPX, Utils::to_string(config.video.warpX) + "%");
-            else if (SELECTED(ENTRY_WARPY))
-                set_menu_text(ENTRY_WARPY, Utils::to_string(config.video.warpY) + "%");
+            else if (SELECTED(ENTRY_WARPX)) {
+                if (config.video.shader_mode == video_settings_t::SHADER_OFF)
+                    set_menu_text(ENTRY_WARPX, "OFF");
+                else
+                    set_menu_text(ENTRY_WARPX, Utils::to_string(config.video.warpX) + "%");
+            }
+            else if (SELECTED(ENTRY_WARPY)) {
+                if (config.video.shader_mode == video_settings_t::SHADER_OFF)
+                    set_menu_text(ENTRY_WARPY, "OFF");
+                else
+                    set_menu_text(ENTRY_WARPY, Utils::to_string(config.video.warpY) + "%");
+            }
         }
         else if (menu_selected == &menu_crt_mask_settings)
         {
             if (SELECTED(ENTRY_SHADOW_MASK))
             {
-                if (config.video.shadow_mask == 0)
+                if (config.video.shadow_mask == video_settings_t::SHADOW_MASK_OFF)
                     set_menu_text(ENTRY_SHADOW_MASK, "OFF");
-                else if (config.video.shadow_mask == 1)
+                else if (config.video.shadow_mask == video_settings_t::SHADOW_MASK_OVERLAY)
                     set_menu_text(ENTRY_SHADOW_MASK, "OVERLAY");
                 else
                     set_menu_text(ENTRY_SHADOW_MASK, "SHADER");
             }
-            else if (SELECTED(ENTRY_MASK_DIM))
-                set_menu_text(ENTRY_MASK_DIM, Utils::to_string(config.video.maskDim) + "%");
-            else if (SELECTED(ENTRY_MASK_BOOST))
-                set_menu_text(ENTRY_MASK_BOOST, Utils::to_string(config.video.maskBoost) + "%");
-            else if (SELECTED(ENTRY_MASK_SIZE))
-                set_menu_text(ENTRY_MASK_SIZE, Utils::to_string(config.video.mask_size) + "px");
+            else if (SELECTED(ENTRY_MASK_DIM)) {
+                if (config.video.shadow_mask == video_settings_t::SHADOW_MASK_OFF)
+                    set_menu_text(ENTRY_MASK_DIM, "OFF");
+                else
+                    set_menu_text(ENTRY_MASK_DIM, Utils::to_string(config.video.maskDim) + "%");
+            }
+            else if (SELECTED(ENTRY_MASK_BOOST)) {
+                if (config.video.shadow_mask != video_settings_t::SHADOW_MASK_SHADER)
+                    set_menu_text(ENTRY_MASK_BOOST, "OFF");
+                else
+                    set_menu_text(ENTRY_MASK_BOOST, Utils::to_string(config.video.maskBoost) + "%");
+            }
+            else if (SELECTED(ENTRY_MASK_SIZE)) {
+                if (config.video.shadow_mask != video_settings_t::SHADOW_MASK_SHADER)
+                    set_menu_text(ENTRY_MASK_SIZE, "OFF");
+                else
+                    set_menu_text(ENTRY_MASK_SIZE, Utils::to_string(config.video.mask_size) + "px");
+            }
             else if (SELECTED(ENTRY_SCANLINES)) {
                 std::string s;
                 switch (config.video.scanlines) {
@@ -1264,17 +1426,33 @@ void Menu::refresh_menu()
         }
         else if (menu_selected == &menu_crt_shader2)
         {
-            if (SELECTED(ENTRY_NOISE))
-                set_menu_text(ENTRY_NOISE, Utils::to_string(config.video.noise));
-            else if (SELECTED(ENTRY_DESATURATE))
-                set_menu_text(ENTRY_DESATURATE,
-                    config.video.desaturate ? Utils::to_string(config.video.desaturate) + "%" : "OFF");
-            else if (SELECTED(ENTRY_DESATURATE_EDGES))
-                set_menu_text(ENTRY_DESATURATE_EDGES,
-                    config.video.desaturate_edges ? Utils::to_string(config.video.desaturate_edges) + "%" : "OFF");
-            else if (SELECTED(ENTRY_BRIGHTNESS_BOOST))
-                set_menu_text(ENTRY_BRIGHTNESS_BOOST,
-                    config.video.brightboost ? Utils::to_string(config.video.brightboost) + "%" : "OFF");
+            if (SELECTED(ENTRY_NOISE)) {
+                if (config.video.shader_mode == video_settings_t::SHADER_OFF)
+                    set_menu_text(ENTRY_NOISE, "OFF");
+                else
+                    set_menu_text(ENTRY_NOISE, Utils::to_string(config.video.noise));
+            }
+            else if (SELECTED(ENTRY_DESATURATE)) {
+                if (config.video.shader_mode != video_settings_t::SHADER_FULL)
+                    set_menu_text(ENTRY_DESATURATE, "OFF");
+                else
+                    set_menu_text(ENTRY_DESATURATE,
+                        config.video.desaturate ? Utils::to_string(config.video.desaturate) + "%" : "OFF");
+            }
+            else if (SELECTED(ENTRY_DESATURATE_EDGES)) {
+                if (config.video.shader_mode != video_settings_t::SHADER_FULL)
+                    set_menu_text(ENTRY_DESATURATE_EDGES, "OFF");
+                else
+                    set_menu_text(ENTRY_DESATURATE_EDGES,
+                        config.video.desaturate_edges ? Utils::to_string(config.video.desaturate_edges) + "%" : "OFF");
+            }
+            else if (SELECTED(ENTRY_BRIGHTNESS_BOOST)) {
+                if (config.video.shader_mode != video_settings_t::SHADER_FULL)
+                    set_menu_text(ENTRY_BRIGHTNESS_BOOST, "OFF");
+                else
+                    set_menu_text(ENTRY_BRIGHTNESS_BOOST,
+                        config.video.brightboost ? Utils::to_string(config.video.brightboost) + "%" : "OFF");
+            }
         }
         else if (menu_selected == &menu_blargg_filter)
         {
@@ -1353,13 +1531,14 @@ void Menu::refresh_menu()
         }
         else if (menu_selected == &menu_s_exsettings)
         {
-            if (SELECTED(ENTRY_TRACKS))        set_menu_text(ENTRY_TRACKS, config.engine.jap ? "JAPAN" : "WORLD");
+            if (SELECTED(ENTRY_TRACKS))             set_menu_text(ENTRY_TRACKS, config.engine.jap ? "JAPAN" : "WORLD");
             else if (SELECTED(ENTRY_GEAR))          set_menu_text(ENTRY_GEAR, GEAR_LABELS[config.controls.gear]);
             else if (SELECTED(ENTRY_MUTE))          set_menu_text(ENTRY_MUTE, config.sound.enabled ? "ON" : "OFF");
         }
         else if (menu_selected == &menu_enhancements || menu_selected == &menu_s_enhance)
         {
-            if (SELECTED(ENTRY_PREVIEWSND))         set_menu_text(ENTRY_PREVIEWSND, config.sound.preview ? "ON" : "OFF");
+            if (SELECTED(ENTRY_HIRES))              set_menu_text(ENTRY_HIRES, config.video.hires ? "HI-RES" : "ORIGINAL");
+            else if (SELECTED(ENTRY_PREVIEWSND))    set_menu_text(ENTRY_PREVIEWSND, config.sound.preview ? "ON" : "OFF");
             else if (SELECTED(ENTRY_FIXSAMPLES))    set_menu_text(ENTRY_FIXSAMPLES, config.sound.fix_samples ? "ON" : "OFF");
             else if (SELECTED(ENTRY_ATTRACT))       set_menu_text(ENTRY_ATTRACT, config.engine.new_attract ? "ON" : "OFF");
             else if (SELECTED(ENTRY_OBJECTS))       set_menu_text(ENTRY_OBJECTS, config.engine.level_objects ? "ENHANCED" : "ORIGINAL");
@@ -1509,7 +1688,6 @@ void Menu::restart_video()
 
 //    if (config.sound.enabled)
 //        cannonball::audio.stop_audio();
-
     video.disable();
     video.init(&roms, &config.video);
     config.videoRestartRequired = false;
@@ -1521,60 +1699,100 @@ void Menu::restart_video()
 
 void Menu::start_game(int mode, int settings)
 {
-    // Enhanced Settings
-    if (settings == 1)
-    {
-        if (!config.video.hires)
-        {
-            if (config.video.scale > 1)
-                config.video.scale >>= 1;
-        }
-
+    if (settings == 1) {
+        // Enhanced Settings
         if (!config.sound.fix_samples)
         {
             if (roms.load_pcm_rom(true) == 0)
                 config.sound.fix_samples = 1;
         }
 
-        config.set_fps(config.video.fps = 2);
-        config.video.widescreen     = 1;
-        config.video.hires          = 1;
+        config.video.scale          = 1;
+        config.video.widescreen     = 0;
+        config.video.hires_next     = 1;
+        config.video.s16accuracy    = video_settings_t::S16_ACCURATE;
+        config.video.shader_mode    = video_settings_t::SHADER_FULL;
+        config.video.shadow_mask    = video_settings_t::SHADOW_MASK_SHADER;
+        config.video.maskDim        = 75;
+        config.video.maskBoost      = 125;
+        config.video.scanlines      = 0;
+        config.video.crt_shape      = 1;
+        config.video.vignette       = 30;
+        config.video.noise          = 6;
+        config.video.warpX          = 1;
+        config.video.warpY          = 3;
+        config.video.desaturate     = 5;
+        config.video.desaturate_edges = 4;
+        config.video.brightboost    = 1;
+        config.video.blargg         = video_settings_t::BLARGG_COMPOSITE;
+        config.video.saturation     = 30;
+        config.video.contrast       = 0;
+        config.video.brightness     = 0;
+        config.video.sharpness      = 0;
+        config.video.resolution     = 0;
+        config.video.gamma          = 0;
+        config.video.hue            = -2;
+
         config.engine.level_objects = 1;
         config.engine.new_attract   = 1;
         config.engine.fix_bugs      = 1;
+
         config.sound.preview        = 1;
 
-        // restart_video();
+        // try to save the settings
+        display_message(config.save() ? "SETTINGS SAVED" : "ERROR SAVING SETTINGS!");
+
+        // flag to restart the video subsystem
         config.videoRestartRequired = true;
     }
-    // Original Settings
-    else if (settings == 2)
-    {
-        if (config.video.hires)
-        {
-            config.video.scale <<= 1;
-        }
-
+    else if (settings == 2) {
+        // Original Settings
         if (config.sound.fix_samples)
         {
             if (roms.load_pcm_rom(false) == 0)
                 config.sound.fix_samples = 0;
         }
 
-        config.set_fps(config.video.fps = 1);
+        config.video.scale          = 1;
         config.video.widescreen     = 0;
-        //config.video.hires          = 0;
+        config.video.hires_next     = 0;
+        config.video.s16accuracy    = video_settings_t::S16_ACCURATE;
+        config.video.shader_mode    = video_settings_t::SHADER_OFF;
+        config.video.shadow_mask    = video_settings_t::SHADOW_MASK_OFF;
+        config.video.maskDim        = 100;
+        config.video.maskBoost      = 100;
+        config.video.scanlines      = 0;
+        config.video.crt_shape      = 0;
+        config.video.vignette       = 0;
+        config.video.noise          = 0;
+        config.video.warpX          = 0;
+        config.video.warpY          = 0;
+        config.video.desaturate     = 0;
+        config.video.desaturate_edges = 0;
+        config.video.brightboost    = 0;
+        config.video.blargg         = video_settings_t::BLARGG_DISABLE;
+        config.video.saturation     = 0;
+        config.video.contrast       = 0;
+        config.video.brightness     = 0;
+        config.video.sharpness      = 0;
+        config.video.resolution     = 0;
+        config.video.gamma          = 0;
+        config.video.hue            = 0;
+
         config.engine.level_objects = 0;
         config.engine.new_attract   = 0;
         config.engine.fix_bugs      = 0;
+
         config.sound.preview        = 0;
 
-        // restart_video();
+        // try to save the settings
+        display_message(config.save() ? "SETTINGS SAVED" : "ERROR SAVING SETTINGS!");
+
+        // flag to restart the video subsystem
         config.videoRestartRequired = true;
     }
-    // Otherwise, use whatever is already setup...
-    else
-    {
+    else {
+        // Otherwise, use whatever is already setup...
         config.engine.fix_bugs = config.engine.fix_bugs_backup;
     }
 

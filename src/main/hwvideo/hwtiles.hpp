@@ -14,8 +14,9 @@ public:
         CENTRE,
     };
 
-    uint8_t text_ram[0x1000]; // Text RAM
-    uint8_t tile_ram[0x10000]; // Tile RAM
+    alignas(64) uint8_t text_ram[0x1000+4];  // Text RAM; +4 to eliminate need to check addresses on 16/32 bit writes
+    alignas(64) uint8_t tile_ram[0x10000+4]; // Tile RAM; +4 to eliminate need to check addresses on 16/32 bit writes
+    alignas(16) uint32_t PL0[256], PL1[256], PL2[256];
 
     hwtiles(void);
     ~hwtiles(void);
@@ -31,13 +32,13 @@ public:
 
 private:
     int16_t x_clamp;
-    
+
     // S16 Width, ignoring widescreen related scaling.
     uint16_t s16_width_noscale;
 
     static const int TILES_LENGTH = 0x10000;
-    uint32_t tiles[TILES_LENGTH];        // Converted tiles
-    uint32_t tiles_backup[TILES_LENGTH]; // Converted tiles (backup without patch)
+    alignas(64) uint32_t tiles[TILES_LENGTH];        // Converted tiles
+    alignas(64) uint32_t tiles_backup[TILES_LENGTH]; // Converted tiles (backup without patch)
 
     uint16_t page[4];
     uint16_t scroll_x[4];
@@ -108,5 +109,4 @@ private:
         uint16_t nMaskColour, 
         uint16_t nPaletteOffset);
         
-    inline void set_pixel_x4(uint16_t *buf, uint32_t data);
 };

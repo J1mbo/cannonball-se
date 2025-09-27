@@ -1,41 +1,25 @@
 /***************************************************************************
-    Data Types.
+    Fixed-width integer types — boost-free replacement.
+    Copyright (c) 2025, James Pearce
 
-    The Boost library is only used to enforce data type size at compile
-    time.
-
-    If you're sure the sizes are correct, it can be removed for your port.
-
-    Copyright Chris White.
-    See license.txt for more details.
+    This header replaces any Boost <cstdint> usage with the standard C++
+    <cstdint> header and provides a few convenience aliases that some parts
+    of the codebase may expect.
 ***************************************************************************/
-
 #pragma once
 
-#include <boost/static_assert.hpp>
+// Use the C++ standard fixed-width integer types
+#include <cstdint>
 
-/** C99 Standard Naming */
-#if defined(_MSC_VER)
-    typedef signed char int8_t;
-    typedef signed short int16_t;
-    typedef signed int int32_t;
-    typedef signed long long int64_t;
+// Bring the standard names into the current namespace (uint8_t, int16_t, ...)
+using std::int8_t;   using std::int16_t;   using std::int32_t;   using std::int64_t;
+using std::uint8_t;  using std::uint16_t;  using std::uint32_t;  using std::uint64_t;
+using std::intptr_t; using std::uintptr_t;
 
-    typedef unsigned char uint8_t;
-    typedef unsigned short uint16_t;
-    typedef unsigned int uint32_t;
-    typedef unsigned long long uint64_t;
-#else
-    #include <stdint.h>
-#endif
+// Optional short aliases used by parts of the project (non-standard)
+using s8  = int8_t;   using s16 = int16_t;   using s32 = int32_t;   using s64 = int64_t;
+using u8  = uint8_t;  using u16 = uint16_t;  using u32 = uint32_t;  using u64 = uint64_t;
 
-/* Report typedef errors */
-BOOST_STATIC_ASSERT_MSG(sizeof(int8_t)   == 1, "int8_t is not of the correct size" );
-BOOST_STATIC_ASSERT_MSG(sizeof(int16_t)  == 2, "int16_t is not of the correct size");
-BOOST_STATIC_ASSERT_MSG(sizeof(int32_t)  == 4, "int32_t is not of the correct size");
-BOOST_STATIC_ASSERT_MSG(sizeof(int64_t)  == 8, "int64_t is not of the correct size");
+// Size type convenience
+using usize = std::size_t;
 
-BOOST_STATIC_ASSERT_MSG(sizeof(uint8_t)  == 1, "int8_t is not of the correct size" );
-BOOST_STATIC_ASSERT_MSG(sizeof(uint16_t) == 2, "int16_t is not of the correct size");
-BOOST_STATIC_ASSERT_MSG(sizeof(uint32_t) == 4, "int32_t is not of the correct size");
-BOOST_STATIC_ASSERT_MSG(sizeof(uint64_t) == 8, "int64_t is not of the correct size");

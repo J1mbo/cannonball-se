@@ -1,12 +1,15 @@
 /***************************************************************************
     Yamaha YM2151 driver (version 2.150 final beta) - May, 11th 2002
-    
+
     (c) 1997-2002 Jarek Burczynski (s0246@poczta.onet.pl, bujar@mame.net)
     Some of the optimizing ideas by Tatsuyuki Satoh
-    
-    This driver is based upon the MAME source code, with some minor 
-    modifications to integrate it into the Cannonball framework. 
-    
+
+    This driver is based upon the MAME source code, with some minor
+    modifications to integrate it into the Cannonball framework.
+
+    Modifications for CannonBall-SE, including performance tuning in
+    YM2151::stream_update(), are Copyright (c) 2025 James Pearce.
+
     See http://mamedev.org/source/docs/license.txt for more details.
 ***************************************************************************/
 
@@ -1425,7 +1428,7 @@ signed int YM2151::op_calc1(YM2151Operator * OP, unsigned int env, signed int pm
 
 #define volume_calc(OP) ((OP)->tl + ((uint32_t)(OP)->volume) + (AM & (OP)->AMmask))
 
-void YM2151::chan_calc(unsigned int chan)
+inline void YM2151::chan_calc(unsigned int chan)
 {
     YM2151Operator *op;
     unsigned int env;
@@ -1475,7 +1478,7 @@ void YM2151::chan_calc(unsigned int chan)
     op->mem_value = mem;
 }
 
-void YM2151::chan7_calc()
+inline void YM2151::chan7_calc()
 {
     YM2151Operator *op;
     unsigned int env;
@@ -2011,6 +2014,98 @@ void YM2151::advance()
 *   '**buffers' is table of pointers to the buffers: left and right
 *   'length' is the number of samples that should be generated
 */
+
+void YM2151::stream_update()
+{
+    SoundChip::clear_buffer();
+
+    const uint32_t length = frame_size;
+
+    // Hoist pan masks out of the per-sample loop
+    const uint32_t p0L = pan[0],  p0R = pan[1];
+    const uint32_t p1L = pan[2],  p1R = pan[3];
+    const uint32_t p2L = pan[4],  p2R = pan[5];
+    const uint32_t p3L = pan[6],  p3R = pan[7];
+    const uint32_t p4L = pan[8],  p4R = pan[9];
+    const uint32_t p5L = pan[10], p5R = pan[11];
+    const uint32_t p6L = pan[12], p6R = pan[13];
+    const uint32_t p7L = pan[14], p7R = pan[15];
+
+    // Fixed-point gain once per frame (recompute only when volume changes)
+    const uint32_t vol_q15 = (int)lrintf(volume * 32768.0f);
+
+#ifndef USE_MAME_TIMERS
+    // timer B pre-pass (unchanged semantics)
+    if (tim_B) {
+        tim_B_val -= (length << TIMER_SH);
+        if (tim_B_val <= 0) {
+            tim_B_val = tim_B_tab[timer_B_index];     // single assignment
+            if (irq_enable & 0x08) {
+                int oldstate = status & 3;
+                status |= 2;
+                if (oldstate == 0) irq = true;
+            }
+        }
+    }
+#endif
+
+    for (uint32_t i = 0; i < length; ++i) {
+
+        advance_eg();
+
+        // zero the eight channels (globals used by operator graphs)
+        chanout[0]=chanout[1]=chanout[2]=chanout[3]=0;
+        chanout[4]=chanout[5]=chanout[6]=chanout[7]=0;
+
+        // 8 channels
+        chan_calc(0); chan_calc(1); chan_calc(2); chan_calc(3);
+        chan_calc(4); chan_calc(5); chan_calc(6); chan7_calc();
+
+        // mix with hoisted pan masks (FINAL_SH is 0, so no shifts)
+        int32_t outl  = (chanout[0] & p0L);
+        int32_t outr  = (chanout[0] & p0R);
+        outl += (chanout[1] & p1L);  outr += (chanout[1] & p1R);
+        outl += (chanout[2] & p2L);  outr += (chanout[2] & p2R);
+        outl += (chanout[3] & p3L);  outr += (chanout[3] & p3R);
+        outl += (chanout[4] & p4L);  outr += (chanout[4] & p4R);
+        outl += (chanout[5] & p5L);  outr += (chanout[5] & p5R);
+        outl += (chanout[6] & p6L);  outr += (chanout[6] & p6R);
+        outl += (chanout[7] & p7L);  outr += (chanout[7] & p7R);
+
+        outl >>= FINAL_SH;
+        outr >>= FINAL_SH;
+#ifndef __arm__
+        if (outl > MAXOUT) outl = MAXOUT;
+            else if (outl < MINOUT) outl = MINOUT;
+        if (outr > MAXOUT) outr = MAXOUT;
+            else if (outr < MINOUT) outr = MINOUT;
+#else
+        // saturate to 16-bit (ARMv6)
+        outl = __builtin_arm_ssat(outl, 16);
+        outr = __builtin_arm_ssat(outr, 16);
+#endif
+        write_buffer(LEFT,  i, (outl * vol_q15) >> 15);
+        write_buffer(RIGHT, i, (outr * vol_q15) >> 15);
+
+#ifndef USE_MAME_TIMERS
+        if (tim_A) {
+            tim_A_val -= (1 << TIMER_SH);
+            if (tim_A_val <= 0) {
+                tim_A_val = tim_A_tab[timer_A_index];  // single assignment
+                if (irq_enable & 0x04) {
+                    int oldstate = status & 3;
+                    status |= 1;
+                    if (oldstate == 0) irq = true;
+                }
+                if (irq_enable & 0x80) csm_req = 2;
+            }
+        }
+#endif
+        advance();
+    }
+}
+
+/*
 void YM2151::stream_update()
 {
     SoundChip::clear_buffer();
@@ -2019,7 +2114,7 @@ void YM2151::stream_update()
     uint32_t length = frame_size;
 
 #ifdef USE_MAME_TIMERS
-        /* ASG 980324 - handled by real timers now */
+        // ASG 980324 - handled by real timers now
 #else
     if (tim_B)
     {
@@ -2091,9 +2186,9 @@ void YM2151::stream_update()
         write_buffer(RIGHT, i, (int16_t) (outr * volume));
 
 #ifdef USE_MAME_TIMERS
-        /* ASG 980324 - handled by real timers now */
+        // ASG 980324 - handled by real timers now
 #else
-        /* calculate timer A */
+        // calculate timer A
         if (tim_A)
         {
             // JJP - each pass through this loop we decrememt (1<<TIMER_SH) from the
@@ -2113,10 +2208,11 @@ void YM2151::stream_update()
                     if (oldstate==0) irq = true;
                 }
                 if (irq_enable & 0x80)
-                    csm_req = 2;    /* request KEY ON / KEY OFF sequence */
+                    csm_req = 2;    // request KEY ON / KEY OFF sequence
             }
         }
 #endif
         advance();
     }
 }
+*/

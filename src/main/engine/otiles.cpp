@@ -547,10 +547,15 @@ void OTiles::h_scroll_tilemaps()
         if (oinitengine.rd_split_state != OInitEngine::SPLIT_NONE && 
             oinitengine.rd_split_state <= 4) return;
 
-        int32_t tilemap_h_target = (oroad.tilemap_h_target << 5) & 0xFFFF;
-        tilemap_h_target <<= 16;
-        int32_t tilemap_x = tilemap_h_target - (tilemap_h_scr << 5);
-        if (tilemap_x != 0) 
+        // JJP - replaced int32_t with uint32_t to avoid overflow condition
+        // int32_t tilemap_h_target = (oroad.tilemap_h_target << 5) & 0xFFFF;
+        // tilemap_h_target <<= 16;
+        // int32_t tilemap_x = tilemap_h_target - (tilemap_h_scr << 5);
+        uint32_t t = ((uint32_t)oroad.tilemap_h_target << 5) & 0xFFFFu;   // 0..0xFFFF
+        t <<= 16;                                                         // 0..0xFFFF0000
+        uint32_t x_u = t - ((uint32_t)tilemap_h_scr << 5);                // modulo 2^32
+        int32_t tilemap_x = (int32_t)x_u;                                 // cast back to signed
+        if (tilemap_x != 0)
         {
             tilemap_x >>= 8;
             if (tilemap_x == 0) 

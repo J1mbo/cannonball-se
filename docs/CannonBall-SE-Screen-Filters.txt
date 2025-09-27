@@ -12,7 +12,7 @@ The filtered image is then processed on GPU with a light-weight shader that adds
 
 3. Bezel & aperture overlay (GPU)
 
-Finally an overlay is used to simulate the CRT bezel shape by fadeing the border softly, further enhancing the curved glass effect.
+Finally an overlay is used to simulate the CRT bezel shape by fading the border softly, further enhancing the curved glass effect.
 
 
 By leveraging multi-threading, SIMD, and GPU all in parrallel, CannonBall-SE hits 60 fps on a 32-bit Pi2 despite the weight of the processing.

@@ -31,14 +31,16 @@ OSoundInt::~OSoundInt()
 
 void OSoundInt::init()
 {
-    if (pcm == NULL)
+    // JJP - init only when first called
+    if (pcm == NULL) {
         pcm = new SegaPCM(SOUND_CLOCK, &roms.pcm, pcm_ram, SegaPCM::BANK_512);
+        pcm->init(config.sound.rate);
+    }
 
-    if (ym == NULL)
+    if (ym == NULL) {
         ym = new YM2151(0.5f, SOUND_CLOCK);
-
-    pcm->init(config.sound.rate);
-    ym->init(config.sound.rate);
+        ym->init(config.sound.rate);
+    }
 
     reset();
 

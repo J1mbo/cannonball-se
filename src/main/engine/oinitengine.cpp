@@ -378,18 +378,24 @@ void OInitEngine::check_road_split()
                 rd_split_state = 6; // and fall through
             else
                 break;
-        
+
         // State 6: Road split. Only one road drawn.
+        //          Once the road curve starts, calls init_split6 which updates rd_split_state to 7.
         case 6:
             init_split5();
             break;
 
-        // Stage 7
+        // Stage 7: Once the road curve ends, calls init_split7 which swaps the roads - left becomes
+        //          right and vice-versa. This is because we join a new road, which merges the same
+        //          way that we left the last level.
         case 7:
             init_split6();
             break;
 
-        // State 8: Init Road Merge before checkpoint sign
+        // State 8: Init Road Merge before checkpoint sign. Setting traffic_split = -1 causes
+        //          OTraffic::tick_spawned_sprite() to swap traffic between roads using
+        //          sprite->control ^= OSprites::TRAFFIC_RHS.
+        //          This is probably the cause of the ghost cars.
         case 8:
             otraffic.traffic_split = -1;
             rd_split_state = 9;

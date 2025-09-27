@@ -9,14 +9,11 @@
     Provides:
     - GLES display with GLSL shaders via gl_backend.hpp
     - true NTSC (Blargg) filter
-    - overlay based screen shape/shadown mask
-    - multi-threaded processing
+    - overlay based screen shape/shadow mask
+    - base resolution scanline effect
+    - support for multi-threaded processing via double-buffering
 
 ***********************************************************************************/
-
-// Aligned Memory Allocation
-#include <boost/align/aligned_alloc.hpp>
-#include <boost/align/aligned_delete.hpp>
 
 #include <fstream>
 #include <iterator>
@@ -24,6 +21,10 @@
 #include <mutex>
 #include "rendersurface.hpp"
 #include "frontend/config.hpp"
+// Aligned Memory Allocation (standard C++17)
+#include <new>        // std::align_val_t, ::operator new/delete
+#include <cstddef>    // std::size_t
+#include <cstdint>
 #include <omp.h>
 #include <math.h>
 #include <SDL_opengles2.h>
@@ -32,19 +33,22 @@
 #define FRAGMENT_SHADER      "res/Cannonball-Shader-Fragment.glsl"       // light shader - curvature/noise/shadow mask/vignette
 #define FRAGMENT_SHADER_FAST "res/Cannonball-Shader-Fragment-Fast.glsl"  // extra light shader - curvature/noise only
 
+#ifndef CB_PIXEL_ALIGNMENT
+#define CB_PIXEL_ALIGNMENT 64
+#endif
+
 RenderSurface::RenderSurface()
 {
-    ntsc = (snes_ntsc_t*) malloc( sizeof(snes_ntsc_t) );
 }
 
 RenderSurface::~RenderSurface()
 {
-    free(ntsc);
 }
 
 bool RenderSurface::init(int source_width, int source_height,
                          int source_scale, int video_mode_requested, int scanlines_requested)
 {
+    ntsc = (snes_ntsc_t*) malloc( sizeof(snes_ntsc_t) );
     // Can only be called from the thread with the SDL context (usuablly the main thread)
     src_width  = source_width;
     src_height = source_height;
@@ -65,6 +69,7 @@ bool RenderSurface::init(int source_width, int source_height,
     std::lock_guard<std::mutex> gpulock(gpuMutex);
 
     // Initialise Blargg. Comes first as determins working image dimensions.
+    last_blargg_config = get_blargg_config();
     init_blargg_filter(); // NTSC filter (CPU based)
 
     // Initialise SDL
@@ -98,6 +103,7 @@ bool RenderSurface::init(int source_width, int source_height,
     init_overlay();       // CRT curved edge mask (applied as a mask by GPU rendering)
     create_buffers();     // used for working space processing image from [game output]->[blargg-filtered]->[renderer input]
     FrameCounter = 0;
+    last_config  = 0;
 
     // signal to workers we're running (e.g. after a video restart)
     shutting_down.store(false, std::memory_order_release);
@@ -140,6 +146,7 @@ void RenderSurface::disable()
 
     // Release any additional buffers.
     destroy_buffers();
+    free(ntsc);
 }
 
 
@@ -147,25 +154,25 @@ void RenderSurface::create_buffers() {
     uint32_t pixels;
 	uint32_t* t32p;
 
-    constexpr std::size_t alignment = 64;
+    // keep 64-byte alignment for SIMD/cache friendliness
+    constexpr std::size_t alignment = CB_PIXEL_ALIGNMENT;
 
     // allocates pixel buffers
     pixels = src_width * src_height;
     std::size_t size = pixels *sizeof(uint32_t);
-    t32p = rgb_pixels = (uint32_t*)boost::alignment::aligned_alloc(alignment, size);
+
+    rgb_pixels = static_cast<uint32_t*>(::operator new(size, std::align_val_t(alignment)));
+    t32p = rgb_pixels;
 
 	while (pixels--) *(t32p++) = 0x00000000; // fill with black
 }
 
 void RenderSurface::destroy_buffers() {
     // deallocates the pixel buffers
-    boost::alignment::aligned_free(rgb_pixels);
+    if (rgb_pixels) {
+        ::operator delete(rgb_pixels, std::align_val_t(CB_PIXEL_ALIGNMENT));
+    }
     rgb_pixels = nullptr;
-}
-
-bool RenderSurface::start_frame()
-{
-    return true;
 }
 
 void RenderSurface::init_blargg_filter()
@@ -175,8 +182,22 @@ void RenderSurface::init_blargg_filter()
     // in the game (fast).
     if (blargg) {
         // first calculate the resultant image size.
-        if (config.video.hires) snes_src_width = SNES_NTSC_OUT_WIDTH_SIMD(src_width); // for 640px input = 752;
-        else snes_src_width = SNES_NTSC_OUT_WIDTH(src_width);
+        if (config.video.hires) {
+            #if SNES_NTSC_HAVE_SIMD
+                // Only compiled when the fast function exists
+                snes_src_width = SNES_NTSC_OUT_WIDTH_SIMD(src_width); // for 640px input = 752;
+            #else
+                snes_src_width = SNES_NTSC_OUT_WIDTH((src_width>>1));
+                unsigned check_width = SNES_NTSC_IN_WIDTH(snes_src_width);
+                while (check_width < (src_width>>1))
+                    check_width = SNES_NTSC_IN_WIDTH(++snes_src_width);
+            #endif
+        } else {
+            snes_src_width = SNES_NTSC_OUT_WIDTH(src_width);
+            unsigned check_width = SNES_NTSC_IN_WIDTH(snes_src_width);
+            while (check_width < src_width)
+                check_width = SNES_NTSC_IN_WIDTH(++snes_src_width);
+        }
 
         // configure selcted filtering type
         switch (config.video.blargg) {
@@ -359,7 +380,7 @@ bool RenderSurface::init_sdl(int video_mode)
     printf("Window Pixel Format: %s (0x%08X)\n", SDL_GetPixelFormatName(window_format), window_format);
 
     //--------------------------------------------------------
-    // Create CPU surfaces for the game image and an overlay.
+    // Create CPU surfaces for the game image.
     //--------------------------------------------------------
 
     // Double-buffered game surfaces
@@ -654,6 +675,25 @@ void RenderSurface::init_overlay()
     );
 }
 
+long RenderSurface::get_video_config() {
+    return                ( config.video.hires          +
+                            config.video.shader_mode    +
+                            config.video.crt_shape      +
+                            config.video.x_offset       +
+                            config.video.y_offset       +
+                            config.video.blargg         +
+                            config.video.warpX          +
+                            config.video.warpY          +
+                            config.video.brightboost    +
+                            config.video.noise          +
+                            config.video.vignette       +
+                            config.video.desaturate     +
+                            config.video.shadow_mask    +
+                            config.video.maskDim        +
+                            config.video.maskBoost      +
+                            config.video.mask_size      +
+                            dst_rect.w + dst_rect.h );
+}
 
 
 bool RenderSurface::finalize_frame()
@@ -661,6 +701,8 @@ bool RenderSurface::finalize_frame()
 	// This function is called after the frame has been rendered, and is responsible for
 	// updating the screen with the new frame. It also applies post-processing effects
 	// via GPU shader and CRT edge overlay if enabled.
+
+    if (config.videoRestartRequired) return true;
 
     // check is disable() is waiting
     if (shutting_down.load(std::memory_order_acquire)) return true;
@@ -702,28 +744,24 @@ bool RenderSurface::finalize_frame()
 //    if (config.video.shader_mode != 0)
     if (1)
     {
-        long this_config =  config.video.shader_mode    +
-                            config.video.crt_shape      +
-                            config.video.x_offset       +
-                            config.video.y_offset       +
-                            config.video.blargg         +
-                            config.video.warpX          +
-                            config.video.warpY          +
-                            config.video.brightboost    +
-                            config.video.noise          +
-                            config.video.vignette       +
-                            config.video.desaturate     +
-                            config.video.shadow_mask    +
-                            config.video.maskDim        +
-                            config.video.maskBoost      +
-                            config.video.mask_size      +
-                            dst_rect.w + dst_rect.h;
+        long this_config = get_video_config();
         if ((this_config!=last_config) && ticks) {
             // Send updated config to the shader
             glb::set_uniform("warpX",           float(config.video.warpX) / 100.0f);
             glb::set_uniform("warpY",           float(config.video.warpY) / 100.0f);
 
-            float invExpandX = 1 / (1 + (float(config.video.warpX) / 200.0f));
+            float invExpandX;
+            if (config.video.hires==0) {
+                // add 3% width to the source as the non-SIMD blargg filter leaves a black bar on the right
+                invExpandX = 1 / (1 + (float(config.video.warpX+3) / 200.0f));
+            } else {
+                #if SNES_NTSC_HAVE_SIMD
+                    invExpandX = 1 / (1 + (float(config.video.warpX) / 200.0f));
+                #else
+                    // add 3% width to the source as the non-SIMD blargg filter leaves a black bar on the right
+                    invExpandX = 1 / (1 + (float(config.video.warpX) / 200.0f));
+                #endif
+            }
             float invExpandY = 1 / (1 + (float(config.video.warpY) / 300.0f));
             glb::set_uniform2("invExpand",      invExpandX, invExpandY);
 
@@ -818,13 +856,19 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
         uint32_t* tpix = outputPixels + (this_section * dst_pixel_count);
 
         // Calculated alpha mask
-        uint32_t Ashifted = uint32_t(Alevel) << Ashift;
+        uint32_t Ashifted = uint32_t(Alevel);// << Ashift;
 
         // Now call the blargg code, to do the work of translating S16 output to RGB
         if (config.video.hires) {
             // hi-res
-            snes_ntsc_blit_hires_fast(ntsc, bpix, long(src_width), phase,
-                src_width, block_height, tpix, output_pitch, Ashifted);
+            #if SNES_NTSC_HAVE_SIMD
+                // Only compiled when the fast function exists
+                snes_ntsc_blit_hires_fast(ntsc, bpix, long(src_width), phase, src_width,
+                                          block_height, tpix, output_pitch, Ashifted);
+            #else
+                snes_ntsc_blit_hires(ntsc, bpix, long(src_width), phase, src_width,
+                                     block_height, tpix, output_pitch, Ashifted);
+            #endif
         }
         else {
             // standard res processing
@@ -1000,6 +1044,17 @@ static void apply_crt_bloom(uint32_t *pixels,
 }
 
 
+int RenderSurface::get_blargg_config() {
+    return (    config.video.blargg +
+                config.video.saturation +
+                config.video.contrast +
+                config.video.brightness +
+                config.video.sharpness +
+                config.video.resolution +
+                config.video.gamma +
+                config.video.hue );
+}
+
 
 void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
 {
@@ -1009,6 +1064,8 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
     //   -1 = disabled; the whole frame is processed as well as the control values
     //    0 = enabled;  process the top half of the image with Blargg filter (if enabled) and control values
 	//    1 = enabled;  only process the lower half of the image with Blargg filter (if enabled) then return
+
+    if (config.videoRestartRequired) return;
 
     // check is disable() is waiting
     if (shutting_down.load(std::memory_order_acquire)) return;
@@ -1037,13 +1094,15 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
     } else if (fastpass!=1) {
         // Standard image processing; direct RGB value lookup from rgb array for backbuffer
         // Single-threaded only for standard path
-        int pixel_count = src_width * src_height;
+        size_t pixel_count = src_width * src_height;
         uint32_t Ashifted = uint32_t(Alevel) << Ashift;
 
         uint16_t* spix = pixels;
         uint32_t* tpix = writePixels;
 
         // translate game image to S16-correct RGB output levels
+
+/*
         int i = pixel_count >> 2; // unroll 4:1
         while (i--) {
             // Copy to surface->pixels, where finalize_frame will collect it from
@@ -1055,8 +1114,41 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
             tpix += 4;
             spix += 4;
         }
+*/
+
+        pixels      = (uint16_t*)__builtin_assume_aligned(pixels,      4);
+        writePixels = (uint32_t*)__builtin_assume_aligned(writePixels, 4);
+
+        size_t n = pixel_count >> 1;             // process 2 indices per step
+        while (n >= 4) {                    // 4×(2 indices) = 8 per iter
+            // load 4 words = 8 indices (minimise bus transactions)
+            uint32_t w0 = *(const uint32_t*)(pixels + 0);
+            uint32_t w1 = *(const uint32_t*)(pixels + 2);
+            uint32_t w2 = *(const uint32_t*)(pixels + 4);
+            uint32_t w3 = *(const uint32_t*)(pixels + 6);
+
+            uint32_t a0 =  w0 & 0xFFFFu;  uint32_t a1 =  w0 >> 16;
+            uint32_t a2 =  w1 & 0xFFFFu;  uint32_t a3 =  w1 >> 16;
+            uint32_t a4 =  w2 & 0xFFFFu;  uint32_t a5 =  w2 >> 16;
+            uint32_t a6 =  w3 & 0xFFFFu;  uint32_t a7 =  w3 >> 16;
+
+            writePixels[0] = rgb[a0] + Ashifted;
+            writePixels[1] = rgb[a1] + Ashifted;
+            writePixels[2] = rgb[a2] + Ashifted;
+            writePixels[3] = rgb[a3] + Ashifted;
+            writePixels[4] = rgb[a4] + Ashifted;
+            writePixels[5] = rgb[a5] + Ashifted;
+            writePixels[6] = rgb[a6] + Ashifted;
+            writePixels[7] = rgb[a7] + Ashifted;
+
+            pixels      += 8;
+            writePixels += 8;
+            n -= 4;
+        }
+
         // apply scanlines, if enabled (full frame single-thread)
         if (config.video.scanlines!=0) {
+            writePixels = tpix; // reset
             apply_scanlines(writePixels, src_width, src_height, config.video.scanlines,
                             Rshift, Gshift, Bshift, Ashift, -1);
 //            apply_crt_bloom(writePixels, src_width, src_height,
@@ -1064,32 +1156,14 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
         }
     }
 
-    if (fastpass!=1) {
+    if ((fastpass!=1) && (!config.videoRestartRequired)) {
         // Check for any changes to the configured video settings (that don't require full SDL restart)
         // Blargg filter settings. Changing these requires Blargg filter re-initialisation.
-        static int last_blargg_config = 0;
-        int this_blargg_config = config.video.blargg +
-                                 config.video.saturation +
-                                 config.video.contrast +
-                                 config.video.brightness +
-                                 config.video.sharpness +
-                                 config.video.resolution +
-                                 config.video.gamma +
-                                 config.video.hue;
-
-/*        if ((blargg           != config.video.blargg)                   ||
-            (setup.saturation != double(config.video.saturation) / 100) ||
-            (setup.contrast   != double(config.video.contrast) / 100)   ||
-            (setup.brightness != double(config.video.brightness) / 100) ||
-            (setup.sharpness  != double(config.video.sharpness) / 100)  ||
-            (setup.resolution != double(config.video.resolution) / 100) ||
-            (setup.gamma      != double(config.video.gamma) / 10)       ||
-            (setup.hue        != double(config.video.hue) / 100)) {
-*/
+        int this_blargg_config = get_blargg_config();
         if (this_blargg_config != last_blargg_config) {
             // Settings have been changed; capture new setting & re-initiatise the Blargg filter library
             // The filter uses doubles internally, so we need to convert the config values to doubles.
-            last_blargg_config = this_blargg_config;
+            last_blargg_config =  this_blargg_config;
             blargg             =  config.video.blargg;
             setup.saturation   =  double(config.video.saturation) / 100;
             setup.contrast     =  double(config.video.contrast) / 100;

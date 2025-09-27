@@ -7,8 +7,8 @@ licenses are included where required.
 
 ## Blargg SNES NTSC Video Filter
 
-- **Component:** `snes_ntsc` (as vendored)
-- **Author:** Shay Green (“Blargg”) <gblargg@gmail.com>
+- **Component:** `snes_ntsc`
+- **Author:** Shay Green ('Blargg') <gblargg@gmail.com>
 - **License:** GNU Lesser General Public License (LGPL) — see `licenses/LGPL-2.1.txt`
 - **Docs:** `docs/snes_ntsc.txt`
 
@@ -20,3 +20,4 @@ example, by providing relinkable object files); when dynamically linking, ensure
 can swap in a compatible modified library. Preserve copyright and license notices.
 
 For the full terms, see `licenses/LGPL-2.1.txt`.
+

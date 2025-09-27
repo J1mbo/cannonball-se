@@ -13,14 +13,19 @@ cmake_minimum_required(VERSION 3.10)
 project(cannonball-se)
 include(GNUInstallDirs)
 
-if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10)
-    message(FATAL_ERROR "C++20 support requires GCC 10+, Clang 10+, or MSVC 19.28+")
+# --- Compiler version checks ------------------------------------------------------
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 12)
+    message(FATAL_ERROR "C++23 support requires GCC 12+")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
+    message(FATAL_ERROR "C++23 support requires Clang 15+")
+elseif(MSVC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.36)
+    message(FATAL_ERROR "C++23 support requires MSVC 19.36+ (Visual Studio 2022 17.6+)")
 endif()
 
-# Standards
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
 
 # --- Build verbosity controls --------------------------------------------------
 option(QUIET_BUILD "Reduce build output & warning noise (recommended for users)" ON)
@@ -29,8 +34,8 @@ option(SUPER_QUIET "Silence *all* compiler warnings (-w) in Release-like configs
 # Keep build logs tidy (affects Makefiles/Unix Makefiles; Ninja is already terse)
 set(CMAKE_VERBOSE_MAKEFILE OFF CACHE BOOL "Do not echo full compile/link commands")
 if(QUIET_BUILD)
-# Hide per-target boilerplate like "Building CXX object ..."
-set(CMAKE_RULE_MESSAGES OFF CACHE BOOL "Suppress CMake rule messages" FORCE)
+  # Hide per-target boilerplate like "Building CXX object ..."
+  set(CMAKE_RULE_MESSAGES OFF CACHE BOOL "Suppress CMake rule messages" FORCE)
 endif()
 
 # Default to Release if nothing is specified (single-config generators)
@@ -252,34 +257,73 @@ SOURCE_GROUP(src\\engine\\audio FILES ${src_engine_audio})
 
 add_executable(cannonball-se ${SRCS})
 
-# --- Dependencies: Boost and SDL2 ---
-find_package(Boost REQUIRED PATHS ${SDL2_PATH})
-find_package(SDL2 REQUIRED PATHS ${BOOST_ROOT})
+# --- Dependencies: SDL2 (robust handling), TinyXML2, EGL/GLESv2 -------------------
+
+# SDL2: Prefer modern imported targets; fall back to MODULE or pkg-config.
+set(_SDL2_TARGETS "")
+set(_SDL2_INCLUDE_DIRS "")
+set(_SDL2_LINK_TARGET "")
+
+find_package(SDL2 QUIET CONFIG)
+if(TARGET SDL2::SDL2)
+    list(APPEND _SDL2_TARGETS SDL2::SDL2)
+    if(WIN32 AND TARGET SDL2::SDL2main)
+        list(APPEND _SDL2_TARGETS SDL2::SDL2main)
+    endif()
+else()
+    # Try FindSDL2.cmake (MODULE mode) which defines SDL2_INCLUDE_DIRS/SDL2_LIBRARIES
+    find_package(SDL2 QUIET MODULE)
+    if(SDL2_FOUND)
+        set(_SDL2_INCLUDE_DIRS ${SDL2_INCLUDE_DIRS})
+        set(_SDL2_LINK_TARGET ${SDL2_LIBRARIES})
+    else()
+        # Fallback: pkg-config
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+        set(_SDL2_LINK_TARGET PkgConfig::SDL2)
+    endif()
+endif()
+
+# --- TinyXML2 for XML config I/O (replaces Boost.PropertyTree in config.cpp) ---
+find_package(TinyXML2 QUIET)
+if(NOT TARGET TinyXML2::TinyXML2)
+    find_package(tinyxml2 QUIET) # alternate export name on some distros
+endif()
+
+if(TARGET TinyXML2::TinyXML2)
+    set(_TINYXML2_TARGET TinyXML2::TinyXML2)
+elseif(TARGET tinyxml2::tinyxml2)
+    set(_TINYXML2_TARGET tinyxml2::tinyxml2)
+else()
+    # Fall back to pkg-config
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(TINYXML2 REQUIRED IMPORTED_TARGET tinyxml2)
+    set(_TINYXML2_TARGET PkgConfig::TINYXML2)
+endif()
 
 # ——————————————————————————————————————
 # EGL / OpenGLES2 via pkg-config (Linux, Android, etc)
 # ——————————————————————————————————————
-find_package(PkgConfig REQUIRED)
+if(NOT WIN32)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(EGL    REQUIRED IMPORTED_TARGET egl)
+    pkg_check_modules(GLESv2 REQUIRED IMPORTED_TARGET glesv2)
+    # Includes
+    target_include_directories(cannonball-se PRIVATE
+        ${main_cpp_base}
+        ${_SDL2_INCLUDE_DIRS}
+    )
+endif()
 
-# try to find EGL
-pkg_check_modules(EGL     REQUIRED IMPORTED_TARGET egl)
-# try to find GLESv2
-pkg_check_modules(GLESv2  REQUIRED IMPORTED_TARGET glesv2)
-
-# includes & links
-target_include_directories(cannonball-se PRIVATE
-    ${main_cpp_base}
-    ${Boost_INCLUDE_DIRS}
-    ${SDL2_INCLUDE_DIRS}
-    # bring in EGL/GLES2 headers (provided by pkg-config)
-    PkgConfig::EGL_INCLUDE_DIRS
-    PkgConfig::GLESv2_INCLUDE_DIRS
-)
+# Links
+if(_SDL2_TARGETS)
+    target_link_libraries(cannonball-se PRIVATE ${_SDL2_TARGETS})
+elseif(_SDL2_LINK_TARGET)
+    target_link_libraries(cannonball-se PRIVATE ${_SDL2_LINK_TARGET})
+endif()
 
 target_link_libraries(cannonball-se PRIVATE
-    ${SDL2_LIBRARIES}
-    ${Boost_LIBRARIES}
-    # link EGL/GLES2
+    ${_TINYXML2_TARGET}
     PkgConfig::EGL
     PkgConfig::GLESv2
 )
@@ -323,19 +367,43 @@ if(MSVC)
 else()
     target_compile_options(cannonball-se PRIVATE -Wall -Wextra -Wpedantic)
 
+    # Optimize Release builds aggressively (-Ofast) on GCC/Clang
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(cannonball-se PRIVATE $<$<CONFIG:Release>:-Ofast>)
+    endif()
+endif()
 
-# Optimize Release builds aggressively (-Ofast) on GCC/Clang
+# Debug builds
+# --- Debug hardening & sanitizers (GCC/Clang only) ------------------------------
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND
+   (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i[345]86"))
+  # This flag is only relevant on Intel/AMD CPUs
+  set(SSE_FLAG "-msse4.1")
+endif()
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(cannonball-se PRIVATE $<$<CONFIG:Release>:-Ofast>)
+  # Compile-time flags (Debug only)
+  target_compile_options(cannonball-se PRIVATE
+    $<$<CONFIG:Debug>:-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer -ftrapv $<$<BOOL:${SSE_FLAG}>:${SSE_FLAG}>>
+  )
+
+  # Link-time flags (Debug only) — needed for sanitizers
+  target_link_options(cannonball-se PRIVATE
+    $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+  )
+
+  # Preprocessor defines (Debug only)
+  target_compile_definitions(cannonball-se PRIVATE
+    $<$<CONFIG:Debug>:_FORTIFY_SOURCE=2>
+  )
 endif()
 
-endif()
 
 # --- Quiet warnings on noisy toolchains ---------------------------------------
 # These are conservative suppressions aimed at legacy/portability code paths.
 if(QUIET_BUILD)
     if(MSVC)
-    # Drop to /W3 and silence a few common noise warnings (narrowing, signed/unsigned, deprecations)
+        # Drop to /W3 and silence a few common noise warnings (narrowing, signed/unsigned, deprecations)
         target_compile_options(cannonball-se PRIVATE /W3 /wd4244 /wd4267 /wd4018 /wd4996)
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(cannonball-se PRIVATE

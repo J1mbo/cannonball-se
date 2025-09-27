@@ -22,15 +22,15 @@ class OSoundInt
 {
 public:
     // SoundChip: Sega Custom Sample Generator
-    SegaPCM* pcm;
+    SegaPCM* pcm = nullptr;
 
     // SoundChip: Yamaha YM2151
-    YM2151*  ym;
+    YM2151*  ym = nullptr;
 
     const static uint16_t PCM_RAM_SIZE = 0x100;
 
     // Note whether the game has booted
-    bool has_booted;
+    bool has_booted = false;
 
     // [+0] Unused
     // [+1] Engine pitch high
