@@ -1,0 +1,32 @@
+CannonBall-SE Change Log
+
+== v1.1 ==
+
+1. Removed dependency on Boost, reducing the disk space required to compile CannonBall-SE.
+2. To support use on single-core Pi's e.g. Pi-1 and Pi-Zero(W) (see below):
+2.1 Reinstated original resolution (320x224) mode.
+2.2 Added scalar fallbacks to Blargg filter (to enable use on CPUs without SIMD).
+2.3 Automatically detects when operating on a single-core Pi and selects optimised settings at launch.
+3. Performance improvements in critical parts (hwsprites, hwtiles, hwroad).
+4. Added option to use F10 as master break key instead of Escape
+5. Bug fixes:
+5.1 Ghost cars no longer appear briefly on the players road when approaching checkpoints.
+5.2 Trapped out-of-bounds write at launch in OTraffic::update_props()
+5.3 Resolved overflow in calculation in OTiles::h_scroll_tilemaps()
+5.4 Resolved potential seg fault when going from game to menu caused by unsafe sound subsystem reinitialisation in OSoundInt::init().
+5.5 Resolved potential seg fault on changes requiring video restart due to free of ROM data on initial video subsystem initialisation.
+5.6 Settings are now saved when selecting Enhanced or Original in Menu, Game Modes.
+
+== v1.0 ==
+
+1. Added OpenGL interface module to add support for shaders without needing SDLgpu.
+2. Heavily revised the sound module to include MP3 audio playback.
+
+== Older ==
+
+1. Added CRT effect using customised version of Blargg's NTSC filter optimised for ARM NEON
+2. Added CRT effect settings to settings menu
+3. Added GLSL shader support using SDLgpu
+4. Added some multi-threading to improve performance on Pi2/3/4
+5. Fixed hang on high-score screen
+
