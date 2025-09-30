@@ -1,8 +1,8 @@
 .\" Manpage for CannonBall SE
 .TH "cannonball-se" "6" "September 2025" "CannonBall SE 1.1" "CannonBall SE Configuration Help"
 .SH OVERVIEW
-\fBCannonBall-SE\fP is a fork of Chris White's incredible cross-platform OutRun engine, adding enhanced image processing, MP3 playback,
-and performance optimisations.
+\fBCannonBall-SE\fP is a fork of Chris White's incredible cross-platform OutRun engine optimised for home-brew arcade cabinets.
+It adds adding enhanced image processing to provide an authentic CRT look, MP3 playback, and performance optimisations.
 
 .SH OPTIONS
 Command line options:
@@ -88,7 +88,7 @@ also 44.1kHz, 16-bit stereo.
 
 .SH FUNCTIONALITY
 .PP
-CannonBall-SE is tailored for use in homemade arcade cabinets. On top of the game port provided by CannonBall, CannonBall-SE provides:
+On top of the game port provided by CannonBall, CannonBall-SE provides:
 .RS
 .IP \(bu 2
 Video-processing enhancements - an accurate NTSC filter (Blargg's SNES library), subtle screen curvature effect, analogue noise,
@@ -107,37 +107,44 @@ Various stablity and bug fixes.
 
 .SH CHOOSING A PLATFORM
 .PP
-Cannonball-SE has been optimised to run on RaspberryPi boards with RaspberryPi OS, and also runs on any Intel/AMD PC that can
-run Ubuntu 24.04 or above. All RaspberryPi boards are supported. CPU SIMD extensions (NEON/SSE4) are used where available to
-drive higher frame rates with lower power consumption.
+Cannonball-SE is optimised for RaspberryPi boards with RaspberryPi OS, and also runs on any Intel/AMD PC with Ubuntu. All
+RaspberryPi boards are supported.
 .PP
 If you have a spare Pi, PC, or laptop - it can probably run CannonBall-SE and any USB steering wheel should work - Thrustmaster
 Ferarri branded wheels are readily available on popular auction sites.
 .PP
-For most users, Pi4 is the sweet-spot with no overclocking needed to achieve 60fps at 1080p and its 4 USB ports on-board providing
-connectivity for a steering wheel, external amplifier/DSP, case fan, and a keyboard for diagnostics when needed. Higher resolution
-screens will need more power (Pi5 or Intel/AMD).
+Pi4 easily achieves 60fps at 1080p and its 4 USB ports provide connectivity for a steering wheel, external amplifier/DSP, case
+fan, and a keyboard for diagnostics when needed. Higher resolution screens will need more power (Pi5 or Intel/AMD). When using any
+multi-core Pi, a CPU heatsink is required.
 .PP
-The game switches dynamically between 30 and 60fps depending on system capability. Most systems will run at 60fps with all effects
-enabled (the 'Full' shader) with standard dpi screens (upto 1920x1080). For Pi2/Pi3 users (and assuming 1280x1024):
+The game has automatic frame-rate control and drops frames as needed to keep gameplay at full speed on all systems.
+For Pi2/Pi3 users (and assuming 1280x1024):
 .RS
 .IP \(bu 2
-Pi2 (v1.1): Solid 30fps will full shader at stock clocks in hi-res mode. To try 60fps mode with hi-res, overclock the board to
-1050MHz CPU, 500MHz GPU, 500MHz SRAM and set in the game: Fast shader, Fast S16 Emulation, Overlay Mask, and 16ms sound callbacks.
-The board will run at 60fps at stock clocks in standard-res mode (use Fast Shader, Fast S16 Emulation, and Overlay Mask).
+Pi2 (v1.1): 30fps in hi-res mode, 60fps in original res (use Fast Shader, Fast S16 Emulation, and Overlay Mask).
 .IP \(bu 2
-Pi2 (v1.2), Pi3, and Pi-Zero2W: Solid 60fps with Fast shader at stock clocks. Set GPU to 400MHz to use Full shader.
+Pi2 (v1.2), Pi3, and Pi-Zero2W: 60fps in hi-res mode with Fast shader at stock clocks. Set GPU to 400MHz to use Full shader.
 .RE
 .PP
-When using any multi-core Pi board, a CPU heatsink is required (larger the better). For single-core Pi Boards (Pi1, Pi-Zero,
-Pi-ZeroW), a special mode is automatically selected to enable smooth gameplay at about 30fps (with a 1280x1024 screen)
-with the full shader enabled. The Blargg NTSC filter is disabled and the game runs in the arcade-original resolution under-the-hood.
+For single-core Pi Boards e.g. Pi1 and Pi-Zero(W), the following settings are automatically applied at launch:
+.RS
+.IP \(bu 2
+Orignal resolution
+.IP \(bu 2
+30 FPS
+.IP \(bu 2
+Full shader
+.IP \(bu 2
+Blargg NTSC filter disabled
+.IP \(bu 2
+16ms sound callback
+.RE
 .PP
-A special mode is automatically selected to single-core boards (Pi1, Pi-Zero, Pi-ZeroW) that provides 30fps at 1280x1024. The Blargg filter is disabled and the game runs in the original arcade resolution internally.
+Use HDMI audio for best performance.
 .PP
 .SH STUTTERING AUDIO
 .PP
-There are two potential causes of stuttering audio:
+Potential causes of stuttering audio include:
 .RS
 .IP \(bu 2
 The Pi USB stack is known to be problematic with USB audio devices (see
@@ -148,19 +155,23 @@ generally OK). Workaround is to use a bluetooth keyboard or to SSH.
 .IP \(bu 2
 The system may struggle to keep up with the sound callback rate. This is most noticable on the Pi2 when using 60fps mode with the
 analogue audio output. Fix is to switch the game from 8ms to 16ms callback (Menu/Settings/Sound/Music/Callback Rate).
+.IP \(bu 2
+HDMI audio on Pi boards is handled by the GPU, so is almost free. Analogue audio and USB connected devices are processed on CPU,
+which impacts frame-rate on Pi1 and Pi2 boards and may introduce stutter.
+.IP \(bu 2
+The fkms video driver (which is needed for HDMI audio on Pi 1 boards) causes lower frame rates and stuttering audio. Use kms driver
+and analogue audio instead.
 .RE
-.PP
-Note that USB audio reduces the frame rate (significantly) for single-core Raspberry Pi systems. Use HDMI audio or analogue (if present) for these systems.
 .PP
 .SH WATCHDOG SUPPORT
 .PP
-For systems with a hardware watchdog (including all RaspberryPi boards), CannonBall-SE hooks this so that the system will be automatically
-rebooted if a hang occurs, for example due to aggressive overclocking.
+For systems with a hardware watchdog (including all RaspberryPi boards), CannonBall-SE hooks this so that the system will be
+automatically rebooted if a hang occurs, for example due to aggressive overclocking.
 
 .SH SEE ALSO
-CannonBall Wiki     : <github.com/djyt/cannonball/wiki>
+Original CannonBall Wiki     : <github.com/djyt/cannonball/wiki>
 .PP
-CannonBall Manual   : <github.com/djyt/cannonball/wiki/Cannonball-Manual>
+Original CannonBall Manual   : <github.com/djyt/cannonball/wiki/Cannonball-Manual>
 
 .SH BUGS
 Please log bugs relating to CannonBall-SE at: <github.com/J1mbo/cannonball-se/issues>

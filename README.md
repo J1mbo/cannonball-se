@@ -106,18 +106,22 @@ Indexes **01–03** replace the built‑in tracks (01 = *Magical Sound Showe
 
 ## Performance Notes
 
-The **Pi4** is the sweet spot, easily providing 60 fps with the full shader at 1080p. Higher‑DPI displays will need more power - Pi5 or Intel/AMD.
+The **Pi4** can easily provide 60 fps with the full shader at 1080p. Higher‑DPI displays will need more power - Pi5 or Intel/AMD.
 
-* **Pi2 (v1.2)/Pi3/Zero-2W** can reach 60 fps with the "Fast" shader (and with the "Full" shader when the GPU is overclocked to 400MHz)
+* **Pi2 (v1.2)/Pi3/Zero-2W** can reach 60 fps (use "Fast" shader, or "Full" shader if GPU is overclocked to 400MHz)
 * **Pi2 (v1.1)** can run at 30fps in hires or 60fps in standard res ("Full" shader)
 
-A special mode is automatically selected for **Single-Core Pi Models (Pi1, PiZero)** to enable them to run the game at ~30 fps with a 1280x1024 screen:
+**Single-Core Pi Models (Pi-Zero(W), Pi B+)**
+
+The following settings are automatically applied at launch:
 
 * The game engine runs in standard resolution mode (same as the original arcade)
 * The Blarrg filter is disabled.
 * The "Full" shader is used.
 
-Use the onboard audio with Pi1 - USB audio devices will reduce game frame rate substantially.
+Use HDMI audio (which is handled by the GPU) on Pi-Zero(W) to run at 30fps. Analogue and USB audio require CPU and will reduce frame rate (significantly).
+
+HDMI audio on the original Pi boards (e.g. B+) can be problematic (and requires fkms video driver); use on-board analogue audio on these boards and expect lower frame rates.
 
 ---
 
