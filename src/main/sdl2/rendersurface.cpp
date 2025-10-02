@@ -85,20 +85,6 @@ bool RenderSurface::init(int source_width, int source_height,
     Bmask = GameSurface[0]->format->Gmask;
     Amask = GameSurface[0]->format->Rmask;
 
-/*
-    std::cout << "Ashift: " << static_cast<int>(Ashift) << "\n";
-    std::cout << "Bshift: " << static_cast<int>(Bshift) << "\n";
-    std::cout << "Gshift: " << static_cast<int>(Gshift) << "\n";
-    std::cout << "Rshift: " << static_cast<int>(Rshift) << "\n";
-
-    std::cout << std::hex << std::showbase; // showbase adds "0x" prefix
-    std::cout << "Amask: " << Amask << "\n";
-    std::cout << "Bmask: " << Bmask << "\n";
-    std::cout << "Gmask: " << Gmask << "\n";
-    std::cout << "Rmask: " << Rmask << "\n";
-    std::cout << std::dec; // back to decimal
-*/
-
     // call other initialisation routines
     init_overlay();       // CRT curved edge mask (applied as a mask by GPU rendering)
     create_buffers();     // used for working space processing image from [game output]->[blargg-filtered]->[renderer input]
@@ -759,7 +745,7 @@ bool RenderSurface::finalize_frame()
                     invExpandX = 1 / (1 + (float(config.video.warpX) / 200.0f));
                 #else
                     // add 3% width to the source as the non-SIMD blargg filter leaves a black bar on the right
-                    invExpandX = 1 / (1 + (float(config.video.warpX) / 200.0f));
+                    invExpandX = 1 / (1 + (float(config.video.warpX+3) / 200.0f));
                 #endif
             }
             float invExpandY = 1 / (1 + (float(config.video.warpY) / 300.0f));
@@ -1097,53 +1083,16 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
         size_t pixel_count = src_width * src_height;
         uint32_t Ashifted = uint32_t(Alevel) << Ashift;
 
-        uint16_t* spix = pixels;
-        uint32_t* tpix = writePixels;
-
         // translate game image to S16-correct RGB output levels
-
-/*
-        int i = pixel_count >> 2; // unroll 4:1
-        while (i--) {
-            // Copy to surface->pixels, where finalize_frame will collect it from
-            // translates game image to S16-correct RGB output levels
-            *(tpix) = rgb[*(spix)] + Ashifted;
-            *(tpix+1) = rgb[*(spix+1)] + Ashifted;
-            *(tpix+2) = rgb[*(spix+2)] + Ashifted;
-            *(tpix+3) = rgb[*(spix+3)] + Ashifted;
-            tpix += 4;
-            spix += 4;
-        }
-*/
-
         pixels      = (uint16_t*)__builtin_assume_aligned(pixels,      4);
         writePixels = (uint32_t*)__builtin_assume_aligned(writePixels, 4);
-
-        size_t n = pixel_count >> 1;             // process 2 indices per step
-        while (n >= 4) {                    // 4×(2 indices) = 8 per iter
-            // load 4 words = 8 indices (minimise bus transactions)
-            uint32_t w0 = *(const uint32_t*)(pixels + 0);
-            uint32_t w1 = *(const uint32_t*)(pixels + 2);
-            uint32_t w2 = *(const uint32_t*)(pixels + 4);
-            uint32_t w3 = *(const uint32_t*)(pixels + 6);
-
-            uint32_t a0 =  w0 & 0xFFFFu;  uint32_t a1 =  w0 >> 16;
-            uint32_t a2 =  w1 & 0xFFFFu;  uint32_t a3 =  w1 >> 16;
-            uint32_t a4 =  w2 & 0xFFFFu;  uint32_t a5 =  w2 >> 16;
-            uint32_t a6 =  w3 & 0xFFFFu;  uint32_t a7 =  w3 >> 16;
-
-            writePixels[0] = rgb[a0] + Ashifted;
-            writePixels[1] = rgb[a1] + Ashifted;
-            writePixels[2] = rgb[a2] + Ashifted;
-            writePixels[3] = rgb[a3] + Ashifted;
-            writePixels[4] = rgb[a4] + Ashifted;
-            writePixels[5] = rgb[a5] + Ashifted;
-            writePixels[6] = rgb[a6] + Ashifted;
-            writePixels[7] = rgb[a7] + Ashifted;
-
-            pixels      += 8;
-            writePixels += 8;
-            n -= 4;
+        uint16_t* spix = pixels;
+        uint32_t* tpix = writePixels;
+        for (size_t i = 0; i < pixel_count; i += 4) {
+            tpix[i+0] = rgb[spix[i+0]];
+            tpix[i+1] = rgb[spix[i+1]];
+            tpix[i+2] = rgb[spix[i+2]];
+            tpix[i+3] = rgb[spix[i+3]];
         }
 
         // apply scanlines, if enabled (full frame single-thread)
