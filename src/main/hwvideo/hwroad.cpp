@@ -10,6 +10,10 @@
     Copyright Aaron Giles.
     Performance optimisations Copyright (c) 2025, James Pearce
     All rights reserved.
+
+    This version for CannonBall-SE incorporates revisions Copyright (c)
+    2025 James Pearce:
+    - Performance tuning
 ***************************************************************************/
 
 /*******************************************************************************************

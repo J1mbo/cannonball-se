@@ -3,7 +3,6 @@
 #include "romloader.hpp"
 #include "hwvideo/hwtiles.hpp"
 #include "frontend/config.hpp"
-#include <cstring>
 
 /***************************************************************************
     Video Emulation: OutRun Tilemap Hardware.
@@ -11,6 +10,10 @@
 
     Copyright Aaron Giles.
     All rights reserved.
+
+    This version for CannonBall-SE incorporates revisions Copyright (c)
+    2025 James Pearce:
+    - Performance tuning
 ***************************************************************************/
 
 /*******************************************************************************************
