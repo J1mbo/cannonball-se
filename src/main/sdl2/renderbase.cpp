@@ -1,3 +1,18 @@
+/**********************************************************************************
+    SDL2 Video Rendering
+    Original SDL works Copyright (c) 2012,2020 Manuel Alfayate, Chris White.
+
+    See license.txt for more details.
+
+    This version, for CannnonBall SE, Copyright (c) 2020,2025 James Pearce.
+
+    Provides:
+    - Internal format palette conversion for Blargg filter (eliminates one step)
+    - Improved S16 colour mapping for unfiltered output
+    - Colour curve support for unfiltered output
+
+***********************************************************************************/
+
 #include "renderbase.hpp"
 #include <iostream>
 
@@ -68,7 +83,7 @@ uint32_t b_hiliteVal[32];
 
 
 // See: SDL_PixelFormat
-#define CURRENT_RGB() (r << Rshift) | (g << Gshift) | (b << Bshift);
+#define CURRENT_RGB() (r << Rshift) | (g << Gshift) | (b << Bshift) | (255 << Ashift);
 // Blargg filter expects 565 format
 //#define CURRENT_RGB_BLARRG() ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xF8) >> 3);
 
