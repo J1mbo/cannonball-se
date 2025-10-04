@@ -1667,7 +1667,7 @@ void Menu::redefine_joystick()
 // Display a contextual message in the top left of the screen
 void Menu::display_message(std::string s)
 {
-    msg = s;
+    msg = " " + s;
     message_counter = MESSAGE_TIME * config.fps;
 }
 
