@@ -1,6 +1,6 @@
 # CannonBall‑SE
 
-*An easy-to-use fork of Chris White’s CannonBall OutRun engine, with enhanced graphics and cabinet‑friendly enhancements.*
+*A performance tuned and easy-to-use fork of Chris White’s CannonBall OutRun engine with enhanced graphics and cabinet‑friendly enhancements.*
 
 ---
 
@@ -14,7 +14,7 @@ CannonBall‑SE is a fork of the cross‑platform OutRun engine, focused on an a
 * The hardware watchdog is used (if available) to ensure reliable continuous operation.
 * Play count and "machine hours" are tracked.
 
-> **Note:** Can now be used on all Raspberry Pi systems including the Pi Zero.
+> **Note:** Can be used on all Raspberry Pi systems including the Pi Zero.
 
 ---
 
@@ -35,7 +35,7 @@ CannonBall‑SE requires a copy of the original **OutRun revision B** ROM set.
 
 ## Quick Start Guide
 
-Use the included script 'install.sh' to install prerequisites, build the project, and set device permissions automatically.
+Use the included script 'install.sh' to install prerequisites, build the project, and set device permissions automatically. On a Pi4 or Intel machine, this will only take a few minutes.
 
 ```bash
 # 1) Fetch sources
@@ -56,7 +56,7 @@ build/cannonball-se
 # SDL_VIDEODRIVER=wayland build/cannonball-se
 ```
 
-The script installs system packages, configures the linker as needed, compiles the game (optimised for the system it's building on) with CMake into `./build/`, and applies permissions so it can access `/dev/watchdog` and `/dev/hidraw` for rumble.
+The script installs system packages, compiles the game (optimised for the system it's building on) with CMake into `./build/`, and applies permissions so it can access `/dev/watchdog` and `/dev/hidraw` for rumble.
 
 ---
 
@@ -69,7 +69,7 @@ The script installs system packages, configures the linker as needed, compiles t
 * `-30` or `-60` — Force 30 or 60 fps (disables auto selection)
 * `-t [1–4]` — Override hardware thread detection (1–4 threads)
 * `-x` - Disable single-core RaspberryPi board detection
-* `-1` - Use single-core mode (game with run in one thread (plus sound)
+* `-1` - Use single-core mode (game will run in one thread (plus sound)
 
 ---
 
@@ -104,28 +104,24 @@ Indexes **01–03** replace the built‑in tracks (01 = *Magical Sound Showe
 
 ---
 
-## Performance Notes
+## Board Selection & Performance Notes
 
-The **Pi4** can easily provide 60 fps with the full shader at 1080p. Higher‑DPI displays will need more power - Pi5 or Intel/AMD.
+* **Pi Zero-2W** is the cheapest way to full experience with 1280x1024 screens.
+* **Pi 3 Model A** is the most compact board with onboard analogue audio.
 
-* **Pi2 (v1.2)/Pi3/Zero-2W** can reach 60 fps (use "Fast" shader, or "Full" shader if GPU is overclocked to 400MHz)
-* **Pi2 (v1.1)** can run at 30fps in hires or 60fps in standard res ("Full" shader). Overclocked (1050MHz CPU, 450MHz GPU) can reach 60 fps in high-res with "Fast" shader.
-
-**Single-Core Pi Models (Pi-Zero(W), Pi B+)**
-
-The following settings are automatically applied at launch:
-
-* The game engine runs in standard resolution mode (same as the original arcade)
-* The Blarrg filter is disabled.
-* The "Full" shader is used.
-
-HDMI audio is lightest as it's handled by the GPU, so is best on Pi-Zero(W). USB audio requires CPU so may reduce frame rate.
-
-HDMI audio on the original Pi boards (e.g. B+) can be problematic (and requires fkms video driver); use on-board analogue audio on these boards. Running at 1GHz CPU and 350MHz GPU, 30fps is nevertheless achievable. 
+| Board        | 30 fps                                                                                                   | 60 fps                                                                                                                                                                                    | Notes                                                                                                                     |
+|--------------|---------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| 2014 Pi B+   | Requires:<br>1. CPU @ 1 GHz<br>2. GPU @ 400 MHz<br>3. Core @ 350 MHz<br>4. Sound 22 kHz / 16 ms callbacks<br>5. Original game resolution | Not supported                                                                                                                                                                            | Settings are automatically applied at startup                                                                             |
+| Pi Zero (W)  | As per 2014 Pi B+.<br>CPU clock is 1 GHz by default.                                                     | Not supported                                                                                                                                                                            | Settings are automatically applied at startup                                                                             |
+| Pi 2 (v1.1)  | Supported at stock clocks                                                                               | Supported in hi-res mode with:<br>1. GPU @ 450 MHz<br>2. Fast shader<br>3. Overlay mask<br>Boards that can be overclocked to 1.1 GHz CPU + 500 MHz GPU run full shader close to 60 fps. | 32-bit ARMv7 CPU.                                                                                                         |
+| Pi 2 (v1.2)  | Supported at stock clocks                                                                               | Supported with CPU @ 1 GHz with Fast shader + overlay mask.<br>Set GPU to 400 MHz to use Full shader + shader mask.                                                                      | 64-bit ARMv8 CPU (as Pi 3). When using USB audio device, set USB to full-speed. HDMI or analogue audio preferred.          |
+| Pi 3 (all)   | Supported at stock clocks                                                                               | Supported at stock clocks with Fast shader + overlay mask.<br>Set GPU to 400 MHz to use Full shader + shader mask.                                                                       | When using USB audio device, set USB to full-speed. HDMI or analogue audio preferred.                                     |
+| Pi Zero 2 W  | Supported at stock clocks                                                                               | As per Pi 2 (v1.2)                                                                                                                                                                       | When using USB audio device, set USB to full-speed. HDMI audio preferred.                                                 |
+| Pi 4 & 5     | Supported at stock clocks                                                                               | Supported at stock clocks                                                                                                                                                                |                                                                                                                           |
 
 ---
 
-## Audio Troubleshooting (Pi)
+## Audio Troubleshooting
 
 * **USB audio on Pi2/3/Zero-2W**: Set USB to *full‑speed* to avoid drop-outs (append `dwc_otg.speed=1` to `/boot/firmware/cmdline.txt`). Be aware this may affect some USB keyboards; BT keyboards or SSH are alternatives.
 * **Callback rate**: Callback rate can be halved to 16ms, which may help some systems (*Menu → Settings → Sound/Music → Callback Rate*).
