@@ -769,13 +769,14 @@ int main(int argc, char* argv[]) {
                 // user can override these in-game through the menu system
                 if (!cannonball::singlecore_mode)
                     std::cout << "Single-core RaspberryPi detected. Setting parameters for optimal performance\n";
-                cannonball::game_threads   =  1; // disabled multi-threading
-                config.video.hires         =  0; // run at original arcade res (half the normal CannonBall-SE res)
-                config.video.blargg        =  0; // disable Blargg NTSC filter
-                config.video.shader_mode   =  2; // full glsl shader (VideoCore IV can handle it easily at 30fps)
-                config.video.shadow_mask   =  2; // glsl shader based overlay (looks better)
-                config.video.s16accuracy   =  0; // fast mode; S16 glowing edges are approximated
-                config.sound.callback_rate =  1; // 16ms sound callbacks
+                cannonball::game_threads   =  1;        // disabled multi-threading
+                config.video.hires         =  0;        // run at original arcade res (half the normal CannonBall-SE res)
+                config.video.blargg        =  0;        // disable Blargg NTSC filter
+                config.video.shader_mode   =  2;        // full glsl shader (VideoCore IV can handle it easily at 30fps)
+                config.video.shadow_mask   =  2;        // glsl shader based overlay (looks better)
+                config.video.s16accuracy   =  0;        // fast mode; no S16 glowing edges
+                config.sound.rate          =  22050;    // 22kHz audio rate
+                config.sound.callback_rate =  1;        // 16ms sound callbacks
                 if (cannonball::fps_lock == 0) cannonball::fps_lock = 30; // lock to 30fps unless user has overriden
             }
         }
