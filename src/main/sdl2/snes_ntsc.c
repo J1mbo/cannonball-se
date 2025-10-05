@@ -8,6 +8,7 @@ Updates Aug-25:  removed AVX dependency (now works with only SSE4.1)
                  removed ARM AArch64 dependency (now works with ARMv7 NEON e.g. Pi2 v1.1)
 Updates Sep-25:  added scalar fall-back for Pi1 and PiZero
 */
+#include <stdio.h>
 
 #include "snes_ntsc.h"
 #ifdef _OPENMP
@@ -53,16 +54,13 @@ pixel_info_t const snes_ntsc_pixels[alignment_count] = {
     { PIXEL_OFFSET(0, -5), {                  0, .6667f, 1, 1 } },
 };
 
-const unsigned int S16_rgbVals[96] = {
+const unsigned int S16_rgbVals[64] = {
     // standard levels
     0,8,16,24,31,39,47,55,62,70,78,86,94,102,109,117,125,133,140,148,156,164,171,179,187,195,203,211,
     218,226,234,242,
     // shadow levels
     0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,105,110,115,120,126,130,136,140,146,
-    150,156,
-    // hilite levels
-    91,96,101,106,111,116,121,126,131,137,141,147,151,157,161,167,172,177,182,187,192,197,202,207,212,
-    217,222,227,232,237,242,247
+    150,156
 };
 
 static void merge_kernel_fields(snes_ntsc_rgb_t* io)
@@ -303,70 +301,74 @@ void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, 
 // Macro to check equality of 24 input pixels and store the result in
 // variable this_colour. The input pixels are stored in:
 // xmm0 lanes 2 and 3; xmm1 to xmm5; and xmm6 lanes 0 and 1.
+// Note - assumes we're working with 4x uint16_t in each register (even if those
+// registers are wider, e.g. 128-bit on SSE)
+
 // This version is for Intel/AMD chips
-#define CHECK_ALL_EQUAL_SSE4 do { \
-    /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1, as we're running 2-pixels out*/ \
-    __m128i first_line = ROTATE_OUT(xmm0,xmm6,2);\
-    /* Extract first value and broadcast to another register */ \
-    uint32_t first_val = _mm_cvtsi128_si32(first_line); \
-    __m128i ref = _mm_set1_epi32((int)first_val); /* AVX equivalent _mm_broadcastd_epi32(first_line);*/ \
-    /* Compare each SIMD register to the reference and aggregate */ \
-    __m128i cmp = _mm_cmpeq_epi32(first_line, ref); \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi32(xmm1, ref)); \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi32(xmm2, ref)); \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi32(xmm3, ref)); \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi32(xmm4, ref)); \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi32(xmm5, ref)); \
-    /* Create a bitmask from the comparison results */ \
-    /* _mm_movemask_epi8 only checks the most significant bit of each byte */ \
-    this_colour = first_val & -(_mm_test_all_ones(cmp)); \
+
+#define CHECK_ALL_EQUAL_SSE4 do {                                                   \
+    /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1, as we're running 2-pixels out */   \
+    SIMD_INPUT_REGISTER_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                   \
+    /* Extract first 16-bit value and broadcast */                                  \
+    uint16_t first_val = (uint16_t)_mm_extract_epi16(first_line, 0);                \
+    SIMD_INPUT_REGISTER_t ref = _mm_set1_epi16(first_val);                          \
+    /* Compare each SIMD register to the reference and aggregate (AND) */           \
+    SIMD_INPUT_REGISTER_t cmp = _mm_cmpeq_epi16(first_line, ref);                   \
+    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm1, ref));                           \
+    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm2, ref));                           \
+    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm3, ref));                           \
+    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm4, ref));                           \
+    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm5, ref));                           \
+    /* Only the low 64 bits (4x u16 -> 8 bytes) matter: check their 8 MSBs */       \
+    int mm = _mm_movemask_epi8(cmp);                                                \
+    uint16_t mask = (uint16_t)-((mm & 0x00FF) == 0x00FF);                           \
+    /* set this_colour = first_val if all equal (in low half), else 0 */            \
+    this_colour = first_val & mask;                                                 \
 } while (0)
 
+
 // This version is for ARM 64-bit AArch64
-#define CHECK_ALL_EQUAL_AARCH64 do { \
-    /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1, as we're running 2-pixels out */ \
-    uint32x4_t first_line = ROTATE_OUT(xmm0, xmm6, 2); \
-    /* Extract first value and broadcast to another register */          \
-    uint32_t first_val = vgetq_lane_u32(first_line, 0);                  \
-    uint32x4_t ref = vdupq_n_u32(first_val);                             \
-    /* Compare each SIMD register to the reference and aggregate */      \
-    uint32x4_t cmp = vceqq_u32(first_line, ref);                         \
-    cmp = vandq_u32(cmp, vceqq_u32(xmm1, ref));                          \
-    cmp = vandq_u32(cmp, vceqq_u32(xmm2, ref));                          \
-    cmp = vandq_u32(cmp, vceqq_u32(xmm3, ref));                          \
-    cmp = vandq_u32(cmp, vceqq_u32(xmm4, ref));                          \
-    cmp = vandq_u32(cmp, vceqq_u32(xmm5, ref));                          \
-    /* Check if all comparisons are true (i.e., all lanes are 0xFFFFFFFF) */ \
-    uint32_t min_c = vminvq_u32(cmp);                                    \
-    uint32_t mask = -(min_c == 0xFFFFFFFF);                              \
-    /* Set this_colour based on the mask */                              \
-    this_colour = first_val & mask; /* this_colour = first_val if all equal, else 0 */ \
+#define CHECK_ALL_EQUAL_AARCH64 do {                                                \
+    /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1, as we're running 2-pixels out */   \
+    SIMD_INPUT_REGISTER_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                   \
+    /* Extract first value and broadcast to another register */                     \
+    uint16_t first_val = vget_lane_u16(first_line, 0);                              \
+    SIMD_INPUT_REGISTER_t ref = vdup_n_u16(first_val);                              \
+    /* Compare each SIMD register to the reference and aggregate */                 \
+    SIMD_INPUT_REGISTER_t cmp = vceq_u16(first_line, ref);                          \
+    cmp = vand_u16(cmp, vceq_u16(xmm1, ref));                                       \
+    cmp = vand_u16(cmp, vceq_u16(xmm2, ref));                                       \
+    cmp = vand_u16(cmp, vceq_u16(xmm3, ref));                                       \
+    cmp = vand_u16(cmp, vceq_u16(xmm4, ref));                                       \
+    cmp = vand_u16(cmp, vceq_u16(xmm5, ref));                                       \
+    /* Check if all comparisons are true (i.e., all lanes are 0xFFFF) */            \
+    uint16_t min_c = vminv_u16(cmp);                                                \
+    uint16_t mask = -(min_c == 0xFFFF);                                             \
+    /* set this_colour = first_val if all equal, else 0 */                          \
+    this_colour = first_val & mask;                                                 \
 } while(0)
 
 /* --- ARMv7 NEON helpers (safe on Cortex-A7 / Pi 2) --- */
-#define CHECK_ALL_EQUAL_NEON do {                                                 \
-  /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1 */                                  \
-  uint32x4_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                              \
-  /* Use lane 0 as the reference value */                                         \
-  uint32_t first_val = vgetq_lane_u32(first_line, 0);                             \
-  uint32x4_t ref = vdupq_n_u32(first_val);                                        \
-                                                                                  \
-  /* Compare each vector to the reference (0xFFFFFFFF = equal, 0 = not equal) */  \
-  uint32x4_t cmp = vceqq_u32(first_line, ref);                                    \
-  cmp = vandq_u32(cmp, vceqq_u32(xmm1, ref));                                     \
-  cmp = vandq_u32(cmp, vceqq_u32(xmm2, ref));                                     \
-  cmp = vandq_u32(cmp, vceqq_u32(xmm3, ref));                                     \
-  cmp = vandq_u32(cmp, vceqq_u32(xmm4, ref));                                     \
-  cmp = vandq_u32(cmp, vceqq_u32(xmm5, ref));                                     \
-                                                                                  \
-  /* Pairwise-min reduction (min==AND for {0, 0xFFFFFFFF} masks) */               \
-  uint32x2_t r = vpmin_u32(vget_low_u32(cmp), vget_high_u32(cmp));                \
-  r = vpmin_u32(r, r);                                                            \
-  uint32_t lanes_min = vget_lane_u32(r, 0);                                       \
-                                                                                  \
-  /* Set this_colour = first_val iff ALL lanes matched; else 0 */                 \
-  uint32_t mask = (lanes_min == 0xFFFFFFFFu) ? 0xFFFFFFFFu : 0u;                  \
-  this_colour = first_val & mask;                                                 \
+#define CHECK_ALL_EQUAL_NEON do {                                                   \
+  /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1 (now 16-bit lanes) */                 \
+  SIMD_INPUT_REGISTER_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                     \
+  /* Use lane 0 as the reference value */                                           \
+  uint16_t first_val = vget_lane_u16(first_line, 0);                                \
+  SIMD_INPUT_REGISTER_t ref = vdup_n_u16(first_val);                                \
+  /* Compare each vector to the reference (0xFFFF = equal, 0 = not equal) */        \
+  SIMD_INPUT_REGISTER_t cmp = vceq_u16(first_line, ref);                            \
+  cmp = vand_u16(cmp, vceq_u16(xmm1, ref));                                         \
+  cmp = vand_u16(cmp, vceq_u16(xmm2, ref));                                         \
+  cmp = vand_u16(cmp, vceq_u16(xmm3, ref));                                         \
+  cmp = vand_u16(cmp, vceq_u16(xmm4, ref));                                         \
+  cmp = vand_u16(cmp, vceq_u16(xmm5, ref));                                         \
+  /* Pairwise-min reduction (min == AND for {0, 0xFFFF} masks) */                   \
+  SIMD_INPUT_REGISTER_t r = vpmin_u16(cmp, cmp);                                    \
+  r = vpmin_u16(r, r);                                                              \
+  uint16_t lanes_min = vget_lane_u16(r, 0);                                         \
+  /* Set this_colour = first_val iff ALL lanes matched; else 0 */                   \
+  uint16_t mask = (uint16_t)-(lanes_min == 0xFFFFu);                                \
+  this_colour = first_val & mask;                                                   \
 } while (0)
 
 
@@ -381,17 +383,17 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
     // to keep output line width divisable by 4 and hence 128-bit aligned.
 {
     int chunk_count = in_width / (snes_ntsc_in_chunk * 2); // should be 640 / (3 * 2) = 106
-    
+
     // Prepare SIMD vectors
     SET_SNES_MASK_VECTORS;
     //for (int y = 0; y<in_height; y++)
     for (; in_height; --in_height)
     {
         int x = 0;
-        // SIMD Registers
-        SIMD_REGISTER_t xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6; // inputs
-        
-        // Outputs - xmm10..16
+        // SIMD Input Registers (uint16_t x4)
+        SIMD_INPUT_REGISTER_t xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6; // inputs
+
+        // Outputs - xmm10..16 (uint32_t x4)
         SIMD_REGISTER_t xmm10 = SIMD_ZERO;
         SIMD_REGISTER_t xmm11 = SIMD_ZERO;
         SIMD_REGISTER_t xmm12 = SIMD_ZERO;
@@ -401,11 +403,11 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
         SIMD_REGISTER_t xmm16 = SIMD_ZERO;
 
         // setup the first block, which will affect the second block.
-        
+
         // load the first four pixels from memory
         SNES_NTSC_IN_T const* restrict line_in = input;
         xmm0 = LOAD_SIMD_REGISTER(&line_in[0]);
-        
+
         // and use the first two pixels for this initial block
         SNES_NTSC_HIRES_ROW(ntsc, burst_phase,
             snes_ntsc_black, snes_ntsc_black, snes_ntsc_black,
@@ -415,12 +417,12 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
 
         // set up SIMD registers and flags
         int iterations = 0;
-        uint32_t last_colour = 0;
-        uint32_t this_colour = 0;
+        uint16_t last_colour = 0;
+        uint16_t this_colour = 0;
 
         for (int n = (chunk_count>>2); n; --n)
         {
-            // Load the next 5x4 = 20 pixels
+            // Load the next 6x4 = 24 pixels
             xmm1 = LOAD_SIMD_REGISTER(&line_in[4]);
             xmm2 = LOAD_SIMD_REGISTER(&line_in[8]);
             xmm3 = LOAD_SIMD_REGISTER(&line_in[12]);
@@ -649,7 +651,6 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
         rgb_out = (char*)rgb_out + out_pitch;
     }
 }
-
 
 #endif
 

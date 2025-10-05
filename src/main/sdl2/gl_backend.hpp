@@ -164,6 +164,39 @@ static void upload_alpha8(GLuint tex, GLenum fmt, const void* pixels, int pitchB
     }
 }
 
+// 16bpp uploader (RGB5_A1). Uses row length when available; otherwise packs rows tightly.
+static void upload_rgb555_16(GLuint tex, const void* pixels, int pitchBytes, int w, int h) {
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    const bool tight = (pitchBytes == w * 2);
+    const bool haveRowLen = hasExtensionStr("GL_EXT_unpack_subimage");
+    if (tight) {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, pixels);
+    } else if (haveRowLen) {
+    #ifdef GL_UNPACK_ROW_LENGTH
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, pitchBytes / 2);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, pixels);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    #else
+        std::vector<uint16_t> tmp; tmp.resize((size_t)w * h);
+        const uint8_t* src = static_cast<const uint8_t*>(pixels);
+        for (int y = 0; y < h; ++y) {
+            std::memcpy(&tmp[(size_t)y * w], src + (size_t)y * pitchBytes, (size_t)w * 2);
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, tmp.data());
+    #endif
+    } else {
+        std::vector<uint16_t> tmp; tmp.resize((size_t)w * h);
+        const uint8_t* src = static_cast<const uint8_t*>(pixels);
+        for (int y = 0; y < h; ++y) {
+            std::memcpy(&tmp[(size_t)y * w], src + (size_t)y * pitchBytes, (size_t)w * 2);
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, tmp.data());
+    }
+}
+
+
+
 static GLuint makeVBO(const float* verts, size_t bytes){
     GLuint b = 0; glGenBuffers(1, &b);
     glBindBuffer(GL_ARRAY_BUFFER, b);
@@ -206,7 +239,7 @@ struct State {
     GLint locUV  = -1;
 
     // Pixel format for uploads
-    enum class PixFmt { RGBA, ABGR, A8 };
+    enum class PixFmt { RGBA, ABGR, A8, RGB555 };
     PixFmt gameFmt    = PixFmt::RGBA;
     PixFmt overlayFmt = PixFmt::A8; // default to compact 8-bit overlays
 
@@ -323,6 +356,11 @@ inline bool init(SDL_Window* window,
     glGenTextures(1, &G.texGame);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, G.texGame);
+
+    GLenum game_ifmt = (G.gameFmt == State::PixFmt::RGB555) ? GL_RGB5_A1 : GL_RGBA;
+    GLenum game_fmt  = (G.gameFmt == State::PixFmt::RGB555) ? GL_RGBA    : GL_RGBA;
+    GLenum game_type = (G.gameFmt == State::PixFmt::RGB555) ? GL_UNSIGNED_SHORT_5_5_5_1 : GL_UNSIGNED_BYTE;
+
     if (vertexSrc && fragmentSrc) {
         // use GL_Linear as user shader will likely curve etc
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -334,7 +372,7 @@ inline bool init(SDL_Window* window,
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, gameW, gameH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, game_ifmt, gameW, gameH, 0, game_fmt, game_type, nullptr);
 
     // Overlay texture
     glGenTextures(1, &G.texOverlay);
@@ -418,6 +456,9 @@ inline State::PixFmt deduce_pixfmt_from_surface(const SDL_Surface* s){
     if (f->BitsPerPixel == 8) {
         return State::PixFmt::A8;
     }
+    if (f->BitsPerPixel == 16) {
+        return State::PixFmt::RGB555;
+    }
     if (f->BitsPerPixel != 32) {
         // Fallback to RGBA when unknown
         return State::PixFmt::RGBA;
@@ -461,6 +502,12 @@ inline void reallocate_overlay_storage() {
 // -------- Uploads --------
 inline void update_game_texture(const void* pixels, int pitchBytes, int w, int h) {
     glActiveTexture(GL_TEXTURE0);
+
+     if (G.gameFmt == State::PixFmt::RGB555) {
+        upload_rgb555_16(G.texGame, pixels, pitchBytes, w, h);
+        return;
+    }
+
     GLenum fmt = GL_RGBA;
     bool needConvert = false;
     if (G.gameFmt == State::PixFmt::ABGR) {
@@ -499,6 +546,7 @@ inline void update_game_texture(const void* pixels, int pitchBytes, int w, int h
         upload_rgba8(G.texGame, GL_RGBA, G.scratch.data(), w*4, w, h);
     }
 }
+
 
 inline void update_overlay_texture(const void* pixels, int pitchBytes, int w, int h) {
     glActiveTexture(GL_TEXTURE1);

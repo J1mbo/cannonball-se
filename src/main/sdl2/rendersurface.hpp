@@ -45,9 +45,9 @@ private:
     SDL_Surface* overlaySurface;
     SDL_Surface* GameSurface[2];
 
-    int current_game_surface;
-    uint32_t* GameSurfacePixels;
-    uint32_t* overlaySurfacePixels;
+    int current_game_surface = 0;
+    void* GameSurfacePixels = nullptr;
+    uint32_t* overlaySurfacePixels = nullptr;
     uint32_t FrameCounter = 0; // enough space for over 2 years of continuous operation at 60fps
 
     // SDL2 texture
@@ -99,7 +99,7 @@ private:
 
     // working buffers for video processing
     uint32_t* game_pixels = 0;
-    uint32_t* rgb_pixels = 0;            // used by Blargg filter
+    uint16_t* rgb_pixels = 0;            // used by Blargg filter
 
 	// Locks due to threaded activity
 	std::mutex drawFrameMutex, finalizeFrameMutex, gpuMutex;

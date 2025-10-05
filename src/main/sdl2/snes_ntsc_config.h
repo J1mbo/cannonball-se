@@ -17,8 +17,8 @@ handle things however it wants. */
 #define SNES_NTSC_OUT_DEPTH 24
 
 /* Type of input pixel values */
-//#define SNES_NTSC_IN_T unsigned short
-#define SNES_NTSC_IN_T unsigned int // JJP - 32 bits per pixel
+#define SNES_NTSC_IN_T unsigned short
+//#define SNES_NTSC_IN_T unsigned int // JJP - 32 bits per pixel
 
 /* Each raw pixel input value is passed through this. You might want to mask
 the pixel index if you use the high bits as flags, etc. */

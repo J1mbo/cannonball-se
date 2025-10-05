@@ -138,19 +138,19 @@ void RenderSurface::disable()
 
 void RenderSurface::create_buffers() {
     uint32_t pixels;
-	uint32_t* t32p;
+	uint16_t* t32p;
 
     // keep 64-byte alignment for SIMD/cache friendliness
     constexpr std::size_t alignment = CB_PIXEL_ALIGNMENT;
 
     // allocates pixel buffers
     pixels = src_width * src_height;
-    std::size_t size = pixels *sizeof(uint32_t);
+    std::size_t size = pixels *sizeof(uint16_t);
 
-    rgb_pixels = static_cast<uint32_t*>(::operator new(size, std::align_val_t(alignment)));
+    rgb_pixels = static_cast<uint16_t*>(::operator new(size, std::align_val_t(alignment)));
     t32p = rgb_pixels;
 
-	while (pixels--) *(t32p++) = 0x00000000; // fill with black
+	while (pixels--) *(t32p++) = 0x0000; // fill with black
 }
 
 void RenderSurface::destroy_buffers() {
@@ -352,6 +352,11 @@ bool RenderSurface::init_sdl(int video_mode)
         }
     }
     // Initialize GL backend
+    if (blargg)
+        glb::set_game_pixel_format(glb::State::PixFmt::RGBA);
+    else
+        glb::set_game_pixel_format(glb::State::PixFmt::RGB555);
+
     if (!glb::init(window,
                    /*gameW*/    src_rect.w, /*gameH*/    src_rect.h,
                    /*overlayW*/ dst_rect.w, /*overlayH*/ dst_rect.h,
@@ -370,14 +375,20 @@ bool RenderSurface::init_sdl(int video_mode)
     //--------------------------------------------------------
 
     // Double-buffered game surfaces
-    GameSurface[0] = SDL_CreateRGBSurfaceWithFormat(0, src_rect.w, src_rect.h, BPP, SDL_PIXELFORMAT_RGBA8888);
-    GameSurface[1] = SDL_CreateRGBSurfaceWithFormat(0, src_rect.w, src_rect.h, BPP, SDL_PIXELFORMAT_RGBA8888);
-    if (!GameSurface[0] || !GameSurface[1]) { // || !overlaySurface) {
+    auto pix_format = (blargg) ? SDL_PIXELFORMAT_RGBA8888 : SDL_PIXELFORMAT_RGB555;
+    int  bpp        = (blargg) ? 32 : 16;
+    GameSurface[0] = SDL_CreateRGBSurfaceWithFormat(0, src_rect.w, src_rect.h, bpp, pix_format);
+    GameSurface[1] = SDL_CreateRGBSurfaceWithFormat(0, src_rect.w, src_rect.h, bpp, pix_format);
+    if (!GameSurface[0] || !GameSurface[1]) {
         std::cerr << "SDL Surface creation failed: " << SDL_GetError() << std::endl;
         return false;
     }
     current_game_surface = 0;
-    GameSurfacePixels = static_cast<uint32_t*>(GameSurface[current_game_surface]->pixels);
+    if (blargg) {
+        GameSurfacePixels = static_cast<uint32_t*>(GameSurface[current_game_surface]->pixels);
+    } else {
+        GameSurfacePixels = static_cast<uint16_t*>(GameSurface[current_game_surface]->pixels);
+    }
 
     glb::set_swap_interval(1);  // vsync on
     //glb::auto_configure_pixel_formats_from_surfaces(GameSurface[0], overlaySurface);
@@ -817,7 +828,7 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
     }
 
     uint16_t* spix = gamePixels + (this_section * src_pixel_count); // S16 Output
-    uint32_t* bpix = rgb_pixels + (this_section * src_pixel_count); // converted colour buffer
+    uint16_t* bpix = rgb_pixels + (this_section * src_pixel_count); // converted colour buffer
 
     if (blargg) {
         // convert pixel data to format used by Blarrg filtering code
@@ -827,7 +838,7 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
 		while (pixel_count--) {
             // translate game image to lookup format that Blargg filter will use to
             // convert to RGB output levels in one step based on pre-defined S16-correct DAC output values
-            *(bpix) = rgb_blargg[*(spix)];
+            *(bpix+0) = rgb_blargg[*(spix+0)];
             *(bpix+1) = rgb_blargg[*(spix+1)];
             *(bpix+2) = rgb_blargg[*(spix+2)];
             *(bpix+3) = rgb_blargg[*(spix+3)];
@@ -966,6 +977,67 @@ static inline void apply_scanlines(uint32_t *pixels,
 }
 
 
+// == 16-bit ARGB1555 ==
+static inline void apply_scanlines(uint16_t *pixels,
+                                   size_t width, size_t height,
+                                   uint8_t shift,
+                                   uint8_t Rshift, uint8_t Gshift, uint8_t Bshift, uint8_t Ashift,
+                                   int     section)
+{
+    // Helper lambdas to scale between 5-bit and 8-bit without branches
+    auto expand5  = [](uint32_t v5) -> uint32_t { return (v5 << 3) | (v5 >> 2); };                 // 0..31 -> 0..255
+    auto quantize5 = [](uint32_t v8) -> uint32_t { return (v8 >> 3); };             // 0..255 -> 0..31
+
+    const size_t block_height = (section >= 0 ? (height >> 1) : height);
+    const size_t starty = (section == 1 ? block_height : 0);
+    const size_t endy   = starty + block_height;
+
+    const uint16_t Amask = (Ashift < 16) ? (uint16_t(1u) << Ashift) : 0; // A is 1 bit in 1555; 0 if no alpha in format
+
+    for (size_t y = starty + 1; y < endy; y += 2) {
+        uint16_t *row = pixels + y * width;
+        for (size_t x = 0; x < width; ++x, ++row) {
+            uint16_t p = *row;
+
+            // Extract 5-bit channels
+            const uint32_t r5 = (p >> Rshift) & 0x1Fu;
+            const uint32_t g5 = (p >> Gshift) & 0x1Fu;
+            const uint32_t b5 = (p >> Bshift) & 0x1Fu;
+            const uint16_t a1 = (Ashift < 16) ? (p & Amask) : 0;
+
+            // Upscale to 0..255
+            const uint32_t r8 = expand5(r5);
+            const uint32_t g8 = expand5(g5);
+            const uint32_t b8 = expand5(b5);
+
+            // Perceptual luminance (0..255)
+            const uint32_t lum = (77u*r8 + 150u*g8 + 29u*b8) >> 8;
+
+            // Dimmed versions (by 1 >> shift)
+            const uint32_t rd8 = r8 >> shift;
+            const uint32_t gd8 = g8 >> shift;
+            const uint32_t bd8 = b8 >> shift;
+
+            // Blend: darker where lum is low; preserve hue in bright areas
+            const uint32_t out_r8 = ( rd8 * (255u - lum) + r8 * lum ) >> 8;
+            const uint32_t out_g8 = ( gd8 * (255u - lum) + g8 * lum ) >> 8;
+            const uint32_t out_b8 = ( bd8 * (255u - lum) + b8 * lum ) >> 8;
+
+            // Quantize back to 5 bits
+            const uint16_t out_r5 = (uint16_t)quantize5(out_r8);
+            const uint16_t out_g5 = (uint16_t)quantize5(out_g8);
+            const uint16_t out_b5 = (uint16_t)quantize5(out_b8);
+
+            // Repack to ARGB1555 (R,G,B at their shifts; keep incoming A bit if present)
+            *row = uint16_t((out_r5 << Rshift)
+                          | (out_g5 << Gshift)
+                          | (out_b5 << Bshift)
+                          | a1);
+        }
+    }
+}
+
+
 static void apply_crt_bloom(uint32_t *pixels,
                             size_t   width,
                             size_t   height,
@@ -1058,13 +1130,15 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
     activity_counter.fetch_add(1, std::memory_order_acq_rel);
 
     // Snapshot the current write pointer under the lock (race-proof target for this call)
-    uint32_t* writePixels;
+    void* current_writePixels;
     {
         std::lock_guard<std::mutex> lock(drawFrameMutex);
-        writePixels = GameSurfacePixels;
+        current_writePixels = GameSurfacePixels;
     }
 
     if (blargg) {
+        pixels = (uint16_t*)__builtin_assume_aligned(pixels, 4);
+        uint32_t* writePixels = (uint32_t*)__builtin_assume_aligned(current_writePixels, 4);
         if (fastpass!=1) {
             if (config.fps == 60) phase = (phase + 1) % 3; // cycle through 0/1/2
             else                  phase = (phase + 2) % 3; // cycle through 0/1/2, but at twice the rate
@@ -1084,22 +1158,23 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
         uint32_t Ashifted = uint32_t(Alevel) << Ashift;
 
         // translate game image to S16-correct RGB output levels
-        pixels      = (uint16_t*)__builtin_assume_aligned(pixels,      4);
-        writePixels = (uint32_t*)__builtin_assume_aligned(writePixels, 4);
+        pixels = (uint16_t*)__builtin_assume_aligned(pixels, 4);
+        uint16_t* writePixels = (uint16_t*)__builtin_assume_aligned(current_writePixels, 4);
         uint16_t* spix = pixels;
-        uint32_t* tpix = writePixels;
-        for (size_t i = 0; i < pixel_count; i += 4) {
-            tpix[i+0] = rgb[spix[i+0]];
-            tpix[i+1] = rgb[spix[i+1]];
-            tpix[i+2] = rgb[spix[i+2]];
-            tpix[i+3] = rgb[spix[i+3]];
+        uint16_t* tpix = writePixels;
+        for (size_t i = 0; i < pixel_count; i+=4) {
+            tpix[i+0] = s16_rgb555[spix[i+0]];
+            tpix[i+1] = s16_rgb555[spix[i+1]];
+            tpix[i+2] = s16_rgb555[spix[i+2]];
+            tpix[i+3] = s16_rgb555[spix[i+3]];
         }
 
         // apply scanlines, if enabled (full frame single-thread)
         if (config.video.scanlines!=0) {
             writePixels = tpix; // reset
             apply_scanlines(writePixels, src_width, src_height, config.video.scanlines,
-                            Rshift, Gshift, Bshift, Ashift, -1);
+                            1,6,11,0,-1);
+//                            Rshift, Gshift, Bshift, Ashift, -1);
 //            apply_crt_bloom(writePixels, src_width, src_height,
 //                            Rshift, Gshift, Bshift, Ashift, -1);
         }

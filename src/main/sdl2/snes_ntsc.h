@@ -201,8 +201,9 @@ extern "C" {
 /* private */
 #include <stdint.h>
 	enum { snes_ntsc_entry_size = 128 };
-	enum { snes_ntsc_palette_size = 0x18000 }; // JJP - S16 is 5 bits per channel and three table (std/shadow/hilite)
-	typedef uint32_t snes_ntsc_rgb_t;          // JJP - was unsigned long
+	enum { snes_ntsc_palette_size = 0x10000 };  // JJP - S16 is 5 bits per channel and two tables (std/shadow).
+	                                            // Hilite not use in Outun so support removed.
+	typedef uint32_t snes_ntsc_rgb_t;           // JJP - was unsigned long
 	struct snes_ntsc_t {
 		snes_ntsc_rgb_t table[snes_ntsc_palette_size][snes_ntsc_entry_size];
 	};
@@ -299,6 +300,7 @@ extern "C" {
 #if SNES_NTSC_HAVE_SIMD && (defined(__ARM_NEON) || defined(__ARM_NEON__))
 	// ARM Architecture with NEON support
 #define SIMD_REGISTER_t uint32x4_t
+#define SIMD_INPUT_REGISTER_t uint16x4_t
 #define SIMD_ZERO SIMD_ZERO_NEON
 #define INSERT_SIMD_REGISTER_VALUE INSERT_SIMD_REGISTER_VALUE_NEON
 #define EXTRACT_SIMD_REGISTER_VALUE EXTRACT_SIMD_REGISTER_VALUE_NEON
@@ -314,6 +316,7 @@ extern "C" {
 #elif SNES_NTSC_HAVE_SIMD && (defined(_M_X64) || defined(__x86_64__) || defined(__i386__))
 	// x86 Architecture with SSE4.1 support
 #define SIMD_REGISTER_t __m128i
+#define SIMD_INPUT_REGISTER_t __m128i
 #define SIMD_ZERO                   SIMD_ZERO_SSE4
 #define INSERT_SIMD_REGISTER_VALUE  INSERT_SIMD_REGISTER_VALUE_SSE4
 #define EXTRACT_SIMD_REGISTER_VALUE EXTRACT_SIMD_REGISTER_VALUE_SSE4
@@ -356,23 +359,29 @@ extern "C" {
 	vsetq_lane_u32(value, reg, pos)
 
 #define EXTRACT_SIMD_REGISTER_VALUE_SSE4(reg, pos) \
-	_mm_extract_epi32(reg, pos)
+	(uint16_t)_mm_extract_epi16((reg), (pos))
 
 #define EXTRACT_SIMD_REGISTER_VALUE_NEON(reg, pos) \
-	vgetq_lane_u32(reg, pos)
+	vget_lane_u16(reg, pos)
 
 #define LOAD_SIMD_REGISTER_SSE4(ptr) \
-	_mm_load_si128((__m128i*)ptr)
+	_mm_loadl_epi64((__m128i*)ptr)
 
 #define LOAD_SIMD_REGISTER_NEON(ptr) \
-	vld1q_u32(ptr)
+	vld1_u16(ptr)
 
-#define ROTATE_OUT_SSE4(A, B, elements) \
-	_mm_alignr_epi8(B, A, elements*4)
+#define ROTATE_OUT_SSE4_128(A, B, elements) \
+	_mm_alignr_epi8((B), (A), (elements)*4)
+
+/*  N must be a compile‑time constant (0 … 4).
+    Result: low 64 bits contain the rotated data, high 64 bits are zero. */
+#define ROTATE_OUT_SSE4(A, B, N)                                            \
+    ( _mm_or_si128(                                                         \
+        _mm_slli_si128( (A), (N) * 2 ),   /* shift left  N·2 bytes */       \
+        _mm_srli_si128( (B), 8 - (N) * 2 ) ) /* shift right 8‑N·2 bytes */ )
 
 #define ROTATE_OUT_NEON(A, B, elements) \
-	vextq_u32(A, B, elements)
-
+	vext_u16((A), (B), (elements))
 
 /* JJP - SIMD versions of clamp macros for S16, where shift = 0 */
 

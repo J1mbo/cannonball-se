@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstddef> // For std::size_t
 constexpr std::size_t ALIGNMENT = 16; // 16 for SSE, 32 for AVX
+constexpr std::size_t LOOKUP_SIZE = (32 * 32 * 32 * 2); // 32 colours per channel plus shadow bit
 
 // Abstract Rendering Class
 class RenderBase
@@ -31,12 +32,17 @@ public:
     virtual bool supports_window() { return true; }
     virtual bool supports_vsync() { return false; }
 
+    // S16 video hardware ladder DAC values
+    alignas(ALIGNMENT) uint32_t rgb_lookup[LOOKUP_SIZE];
+
 protected:
     SDL_Surface *surface;
 
-    // Palette Lookup
-    alignas(ALIGNMENT) uint32_t rgb[S16_PALETTE_ENTRIES * 3];         // x3 allows for base colours, shadow colours, and hilite colours
-    alignas(ALIGNMENT) uint32_t rgb_blargg[S16_PALETTE_ENTRIES * 3];  // This palette avoids re-calculating for the Blargg filter for every pixel
+    // Palette Lookup (note - hilights are not used in Outrun)
+    // x2 allows for base colours and shadow colours
+    alignas(ALIGNMENT) uint16_t s16_rgb555[S16_PALETTE_ENTRIES * 2];
+    // This palette avoids re-calculating for the Blargg filter for every pixel
+    alignas(ALIGNMENT) uint16_t rgb_blargg[S16_PALETTE_ENTRIES * 2];
 
     uint32_t *screen_pixels;
 
@@ -44,7 +50,7 @@ protected:
     uint16_t orig_width, orig_height;
 
     // --------------------------------------------------------------------------------------------
-    // Screen setup properties. Example below: 
+    // Screen setup properties. Example below:
     // ________________________
     // |  |                |  | <- screen size      (e.g. 1280 x 720)
     // |  |                |  |
