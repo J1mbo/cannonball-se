@@ -6,10 +6,10 @@
 #
 # CannonBall is Copyright (c) Chris White, see: https://github.com/djyt/cannonball
 #
-# Tested on Linux (Ubuntu on Intel and Raspbian).
+# Tested on Linux (Ubuntu on Intel and Raspbian) and Windows 11
 # ----------------------------------------------------------------------------------
 
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.20)
 project(cannonball-se)
 include(GNUInstallDirs)
 
@@ -71,7 +71,8 @@ option(WITH_MP3 "Enable MP3 playback via mpg123" ON)
 option(INSTALL_MANPAGE "Install cannonball-se man page" ON)
 
 # --- Source directory base ---
-set(main_cpp_base ../src/main)
+set(main_base cannonball-se)
+set(main_cpp_base src/main)
 
 # -----------------------------------------------------------------------------
 # Project Source Files
@@ -257,6 +258,21 @@ SOURCE_GROUP(src\\engine\\audio FILES ${src_engine_audio})
 
 add_executable(cannonball-se ${SRCS})
 
+if(WIN32)
+    target_compile_features(cannonball-se PRIVATE cxx_std_23)
+    target_compile_definitions(cannonball-se PRIVATE
+        MPG123_NO_LARGENAME      # stop header from mapping foo -> foo_64
+        MPG123_NO_64BIT_API
+    )
+endif()
+
+if(MSVC)
+    set_property(TARGET cannonball-se
+        PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+endif()
+
+
 # --- Dependencies: SDL2 (robust handling), TinyXML2, EGL/GLESv2 -------------------
 
 # SDL2: Prefer modern imported targets; fall back to MODULE or pkg-config.
@@ -304,16 +320,32 @@ endif()
 # ——————————————————————————————————————
 # EGL / OpenGLES2 via pkg-config (Linux, Android, etc)
 # ——————————————————————————————————————
+# headers used like #include "sdl2/foo.hpp" live under src/main
+target_include_directories(cannonball-se PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/main"
+  ${_SDL2_INCLUDE_DIRS}               # present on all platforms
+)
+
 if(NOT WIN32)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(EGL    REQUIRED IMPORTED_TARGET egl)
-    pkg_check_modules(GLESv2 REQUIRED IMPORTED_TARGET glesv2)
-    # Includes
-    target_include_directories(cannonball-se PRIVATE
-        ${main_cpp_base}
-        ${_SDL2_INCLUDE_DIRS}
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(EGL    REQUIRED IMPORTED_TARGET egl)
+  pkg_check_modules(GLESv2 REQUIRED IMPORTED_TARGET glesv2)
+  # If you link with pkg-config libs, do it here:
+  target_link_libraries(cannonball-se PRIVATE
+    PkgConfig::EGL
+    PkgConfig::GLESv2
+  )
+else()
+  # Windows: prefer ANGLE from vcpkg
+  find_package(unofficial-angle CONFIG QUIET)
+  if(TARGET unofficial::angle::libEGL AND TARGET unofficial::angle::libGLESv2)
+    target_link_libraries(cannonball-se PRIVATE
+      unofficial::angle::libEGL
+      unofficial::angle::libGLESv2
     )
+  endif()
 endif()
+
 
 # Links
 if(_SDL2_TARGETS)
@@ -323,9 +355,11 @@ elseif(_SDL2_LINK_TARGET)
 endif()
 
 target_link_libraries(cannonball-se PRIVATE
-    ${_TINYXML2_TARGET}
-    PkgConfig::EGL
-    PkgConfig::GLESv2
+  ${_TINYXML2_TARGET}
+  $<$<PLATFORM_ID:Windows>:unofficial::angle::libEGL>
+  $<$<PLATFORM_ID:Windows>:unofficial::angle::libGLESv2>
+  $<$<NOT:$<PLATFORM_ID:Windows>>:PkgConfig::EGL>
+  $<$<NOT:$<PLATFORM_ID:Windows>>:PkgConfig::GLESv2>
 )
 
 # --- Linux: udev for joystick hotplugging ---
@@ -469,7 +503,7 @@ if(ENABLE_PROFILING)
 
     if(PROFILE_WITH_GPERFTOOLS)
         # To enable this, run:
-        # $ cmake -DENABLE_PROFILING=ON -DPROFILE_WITH_GPERFTOOLS=ON -S ../cmake/ -B build
+        # $ cmake -DENABLE_PROFILING=ON -DPROFILE_WITH_GPERFTOOLS=ON -S ../ -B build
         # $ cmake --build build -j
         #
         message(STATUS "Profiling: Google perftools (CPU) enabled")
@@ -518,10 +552,18 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(cannonball-se PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# Copy out DLLs on Windows
+if(WIN32)
+    add_custom_command(TARGET cannonball-se POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_RUNTIME_DLLS:cannonball-se> $<TARGET_FILE_DIR:cannonball-se>
+        COMMAND_EXPAND_LISTS
+    )
+endif()
+
 # Copy out config files
-configure_file(../res/tilemap.bin ${CMAKE_CURRENT_BINARY_DIR}/tilemap.bin COPYONLY)
-configure_file(../res/tilepatch.bin ${CMAKE_CURRENT_BINARY_DIR}/tilepatch.bin COPYONLY)
-configure_file(../res/gamecontrollerdb.txt ${CMAKE_CURRENT_BINARY_DIR}/gamecontrollerdb.txt COPYONLY)
+configure_file(res/tilemap.bin ${CMAKE_CURRENT_BINARY_DIR}/tilemap.bin COPYONLY)
+configure_file(res/tilepatch.bin ${CMAKE_CURRENT_BINARY_DIR}/tilepatch.bin COPYONLY)
+configure_file(res/gamecontrollerdb.txt ${CMAKE_CURRENT_BINARY_DIR}/gamecontrollerdb.txt COPYONLY)
 
 # -----------------------------
 # Install: man page & licenses
