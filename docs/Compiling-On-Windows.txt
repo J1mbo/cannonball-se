@@ -6,18 +6,20 @@ Process:
 
 1. Install Visual Studio 22 (VS), being sure to select "Desktop Development with C++" under "Workloads" in the installer.
 
-2. Open VS, and select "Clone a Respository" and enter https://github.com/J1mbo/CannonBall-SE and note where this will be
-   saved to, shown in the 'Path' box (defaults to C:\Users\[username]\Source\Repos)
+2. Open VS, select "Clone a Respository", and enter "https://github.com/J1mbo/CannonBall-SE". Note where this will be
+   saved to, shown in the 'Path' box (defaults to C:\Users\[username]\Source\Repos). Click Clone, and VS will download the
+   source code directly from GitHub.
 
-3. VS will now download the source files and CMake will install the dependencies. This does take a while, about 20 minutes
-   on my machine, and unfortuately, VS shows "Ready" in the bottom left corner throughout this process. It's not finished
-   until you see in the Output window:
+3. In the "Solution Explorer" pane on the right, VS should now show "Folder View" with the 'Path' from the previous step.
+   Double-click on that to start the build. The CMake configuration take care of installing dependencies, which does take
+   a while (about 20 minutes on my machine) and unfortuately, VS shows "Ready" in the bottom left corner throughout this
+   process. It's not finished until you see in the Output window:
 
    1> CMake generation finsihed.
 
-4. While CMake is running, find your ROMs and copy them into the 'res' folder under the project path from step 2. e.g.:
+4. While CMake is running, find your ROMs and copy them into the 'roms' folder under the project path from step 2. e.g.:
 
-   C:\Users\[username]\Source\Repos\CannonBall-SE\res\
+   C:\Users\[username]\Source\Repos\CannonBall-SE\roms\
    
 5. Once CMake is finished, ensure "windows-release" is selected in the drop-down next to "Local Machine", then click on the
    green play button just to it's right to compile.
