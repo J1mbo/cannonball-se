@@ -1,5 +1,16 @@
 CannonBall-SE Change Log
 
+== v1.2 ==
+
+1. Added Windows support. Can now be compiled with Visual Studio 2022 (requires vcpkg)
+2. Dropped support for S16 highlights (which are unused in Outrun), enabling use of a 16-bit intermediate pixel buffer
+3. Single-core mode now uses 22kHz audio sample rate
+4. Revised sprite rendering code to improve performance on Pi 1 and Pi Zero(W)
+5. Bug fixes:
+5.1 Resolved crash if config.xml could not be found
+5.2 Previously missing settings are now written to a fresh config.xml if no config.xml was found
+5.3 Info messages displayed in menu are no longer cropped by the CRT shape overlay
+
 == v1.1 ==
 
 1. Removed dependency on Boost, reducing the disk space required to compile CannonBall-SE.
