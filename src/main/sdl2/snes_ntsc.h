@@ -21,17 +21,21 @@ extern "C" {
 #endif
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-#include <arm_neon.h>
-#define SNES_NTSC_HAVE_SIMD 1
+    #include <arm_neon.h>
+    #define SNES_NTSC_HAVE_SIMD 1
 #elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
-#include <x86intrin.h>
-#define SNES_NTSC_HAVE_SIMD 1
+    #if defined(_MSC_VER)
+        #include <immintrin.h>
+    #else
+        #include <x86intrin.h>
+    #endif
+    #define SNES_NTSC_HAVE_SIMD 1
 #elif defined(_M_ARM64) || defined(__aarch64__)
-/* AArch64 without NEON is unusual; if absent we fall back to scalar. */
-#define SNES_NTSC_HAVE_SIMD 0
+    /* AArch64 without NEON is unusual; if absent we fall back to scalar. */
+    #define SNES_NTSC_HAVE_SIMD 0
 #else
-/* No SIMD available (e.g., ARMv6 / Raspberry Pi Zero W). Use scalar path. */
-#define SNES_NTSC_HAVE_SIMD 0
+    /* No SIMD available (e.g., ARMv6 / Raspberry Pi Zero W). Use scalar path. */
+    #define SNES_NTSC_HAVE_SIMD 0
 #endif
 
 

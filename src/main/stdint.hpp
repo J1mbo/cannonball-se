@@ -10,6 +10,7 @@
 
 // Use the C++ standard fixed-width integer types
 #include <cstdint>
+#include <cstddef>
 
 // Bring the standard names into the current namespace (uint8_t, int16_t, ...)
 using std::int8_t;   using std::int16_t;   using std::int32_t;   using std::int64_t;

@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 
 #ifdef __linux__
 // --------------------------- Linux (evdev) ---------------------------
@@ -24,7 +25,7 @@
 #include <sys/ioctl.h>
 #include <vector>
 #include <string>
-#include <algorithm>
+
 
 namespace forcefeedback {
 
@@ -160,6 +161,7 @@ bool is_supported()
 #elif defined(_WIN32)
 // --------------------------- Windows (DirectInput 8) ---------------------------
 #define DIRECTINPUT_VERSION 0x0800
+#define NOMINMAX
 #include <windows.h>
 #include <dinput.h>
 
@@ -236,7 +238,12 @@ static BOOL CALLBACK EnumFFDevicesCallback(const DIDEVICEINSTANCE* pdidInstance,
     eff.dwSize = sizeof(DIEFFECT);
     eff.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
     eff.cAxes = 1;
-    eff.rgdwAxes = (DWORD*)(& (DWORD){ DIJOFS_X });
+
+    // JJP - this line doesn't compile on Windows
+    // eff.rgdwAxes = (DWORD*)(& (DWORD){ DIJOFS_X });
+    static const DWORD axisX = DIJOFS_X;          // storage for the value
+    eff.rgdwAxes = const_cast<DWORD*>(&axisX);
+
     eff.rglDirection = lDirection;
     eff.lpEnvelope = 0;
     eff.cbTypeSpecificParams = sizeof(DICONSTANTFORCE);
@@ -305,7 +312,8 @@ int set(int, int force)
     if (!g_supported || !g_pEffect) return -1;
 
     // map 1..5 → 100%..20%
-    force = std::max(1, std::min(5, force));
+    force = (std::max)(1, (std::min)(5, force));
+    //force = std::clamp(force, 1, 5);
     LONG mag = (LONG)(DI_FFNOMINALMAX * (1.0f - (force - 1) * 0.2f));
 
     DICONSTANTFORCE cf; std::memset(&cf, 0, sizeof(cf));

@@ -54,11 +54,17 @@
 #include <algorithm>
 #include <atomic>
 
-#include <pthread.h>
-#include <sched.h>
-#include <sys/resource.h>
-#include <sys/syscall.h>   // for SYS_gettid
-#include <unistd.h>        // for syscall()
+#ifdef _WIN32
+  #include <thread>
+#else
+  #include <pthread.h>
+#endif
+
+#ifndef _WIN32
+  #include <sys/resource.h>
+  #include <sys/syscall.h>   // for SYS_gettid
+  #include <unistd.h>        // for syscall()
+#endif
 
 #ifdef PROFILE_WITH_GPERFTOOLS
 #include <gperftools/profiler.h> // performance profiling
@@ -66,6 +72,14 @@ static uint32_t perf_end_frame = 0;
 #endif
 
 #include "singlecorepi.hpp" // detects if running on a single-core RaspberryPi
+
+#ifdef _WIN32
+  #include <thread>
+  #define sched_yield() std::this_thread::yield()
+#else
+  #include <pthread.h>
+  #include <sched.h>
+#endif
 
 // ------------------------------------------------------------------------------------------------
 // Watchdog close handler (prevents hardware reset on e.g. seg fault
@@ -417,6 +431,11 @@ void prepare_thread() {
 
 
 void pin_thread_to_core(std::thread& t, int core_id) {
+#ifdef _WIN32
+        std::cerr << "Error setting affinity for thread to core: "
+                  << "CannonBall-SE does not support thread pinning on Windows" << "\n";
+    return;
+#else
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(core_id, &cpuset);
@@ -427,6 +446,7 @@ void pin_thread_to_core(std::thread& t, int core_id) {
         std::cerr << "Error setting affinity for thread to core "
                   << core_id << ": " << std::strerror(err) << "\n";
     }
+#endif
 }
 
 
@@ -449,6 +469,16 @@ static void main_loop() {
 
     // Determine if we'll be using threaded or sequential rendering
     int threads = cannonball::game_threads;
+
+#ifdef WIN32
+    // On Windows, input must be on the main thread. We therefore cap the thread-count to 3,
+    // thereby setting prepare_threads to 0 (below)
+    if (threads > 3) threads = 3;
+#else
+    // On Linux, we can use up to 4 threads
+    if (threads > 4) threads = 4; // max used by cannonball-se
+#endif
+
     int using_threading = (threads > 1);
     int render_threads = (threads > 2 ? 2 : 1);
     int prepare_threads = (threads >= 4);
@@ -788,9 +818,9 @@ int main(int argc, char* argv[]) {
 
     // Display help text around custom music if none was found
     if (config.sound.custom_tracks_loaded == 0) {
-        std::cout << "Custom Music: Put .WAV, .MP3, or .YM files in res/ folder named as:" << std::endl;
-        std::cout << "[01–99]_Track_Display_Name.[wav|mp3|ym] - e.g. 04_AHA_Take_On_Me.mp3" << std::endl;
-        std::cout << "Indexes 01–03 will replace the built‑in tracks (01=Magical Sound Shower), higher indexes add tracks." \
+        std::cout << "Custom Music: Put .WAV, .MP3, or .YM files in res/ folder named as:" << std::endl;
+        std::cout << "[01-99]_Track_Display_Name.[wav|mp3|ym] - e.g. 04_AHA_Take_On_Me.mp3" << std::endl;
+        std::cout << "Indexes 01-03 will replace the built-in tracks (01=Magical Sound Shower), higher indexes add tracks." \
                   << std::endl;
     }
 
@@ -816,7 +846,8 @@ int main(int argc, char* argv[]) {
 #endif
     SDL_SetHint(SDL_HINT_APP_NAME, "Cannonball");
     //SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "1");
-    if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) == -1) {
+    if (SDL_Init(   SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER |
+                    SDL_INIT_HAPTIC | SDL_INIT_EVENTS) == -1) {
         std::cerr << "SDL Initialization Failed: " << SDL_GetError() << std::endl;
         return 1;
     }

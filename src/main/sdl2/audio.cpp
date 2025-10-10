@@ -21,6 +21,7 @@
 #include <iostream>
 #include <SDL.h>
 #include <mpg123.h>         // to enable mp3 file music
+
 #include "sdl2/wav123.hpp"  // WAV "mpg123-like" decoder
 #include <cctype>
 #include <algorithm>        // for std::min & std::clamp
@@ -256,8 +257,10 @@ void Audio::stop_audio()
     SDL_PauseAudioDevice(dev, 1);
     SDL_LockAudioDevice(dev);
 
-    running.store(false);
-    spaceAvailable.release(BUFFER_COUNT);
+//    running.store(false);
+//    spaceAvailable.release(BUFFER_COUNT);
+    // Fix for Windows to avoid over-release of counting semaphore
+    running.store(false, std::memory_order_relaxed);
     if (mixThread.joinable()) mixThread.join();
 
     audio_paused = 2;
@@ -300,6 +303,7 @@ void Audio::tick()
 }
 
 
+/* Linux safe version
 void Audio::mixing_loop() {
     while (running.load()) {
         // wait for space
@@ -308,6 +312,20 @@ void Audio::mixing_loop() {
         auto &dst = ringBuffer[prodIndex.load()];
         fill_and_mix(reinterpret_cast<uint8_t*>(dst.data()), mix_buffer_bytes);
         // signal data ready
+        samplesReady.release();
+        prodIndex = (prodIndex + 1) % BUFFER_COUNT;
+    }
+}
+*/
+// JJP - Cross-platform safe version; avoids over-release of counting semaphore
+void Audio::mixing_loop() {
+    while (running.load(std::memory_order_relaxed)) {
+        // wait for space, but time out so we can re-check 'running'
+        if (!spaceAvailable.try_acquire_for(std::chrono::milliseconds(2))) {
+            continue; // timed out; loop back and re-check 'running'
+        }
+        auto &dst = ringBuffer[prodIndex.load(std::memory_order_relaxed)];
+        fill_and_mix(reinterpret_cast<uint8_t*>(dst.data()), mix_buffer_bytes);
         samplesReady.release();
         prodIndex = (prodIndex + 1) % BUFFER_COUNT;
     }

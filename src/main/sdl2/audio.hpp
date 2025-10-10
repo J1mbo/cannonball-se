@@ -29,6 +29,7 @@
 #include <array>
 #include <string>
 #include <SDL.h>
+#include <semaphore>
 
 #ifdef COMPILE_SOUND_CODE
 
