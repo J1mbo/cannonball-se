@@ -1,6 +1,6 @@
 # CannonBall‑SE
 
-*A performance tuned and easy-to-use fork of Chris White’s CannonBall OutRun engine with enhanced graphics and cabinet‑friendly enhancements.*
+*A performance tuned and cabinet-focused fork of Chris White’s CannonBall OutRun engine with enhanced graphics and cabinet‑friendly enhancements.*
 
 ---
 
@@ -14,16 +14,16 @@ CannonBall‑SE is a fork of the cross‑platform OutRun engine, focused on an a
 * The hardware watchdog is used (if available) to ensure reliable continuous operation.
 * Play count and "machine hours" are tracked.
 
-> **Note:** Can be used on all Raspberry Pi systems including the Pi Zero.
+> **Note:** Can be used on all Raspberry Pi systems including the Pi Zero, as well as on Windows 11 and Ubuntu.
 
 ---
 
 ## Supported Platforms
 
 * **All Raspberry Pi Boards** running Raspberry Pi OS.
-* **x86/x64 PCs** (Intel/AMD) running a recent Linux distribution (e.g., Ubuntu).
+* **x86/x64 PCs** (Intel/AMD) running Ubuntu or Windows 11.
 
-A desktop is not required - use the command-line version of the OS.
+For Linux, a desktop is not required - use the command-line version of the OS.
 
 ---
 
@@ -33,7 +33,7 @@ CannonBall‑SE requires a copy of the original **OutRun revision B** ROM set.
 
 ---
 
-## Quick Start Guide
+## Quick Start Guide (Linux)
 
 Use the included script 'install.sh' to install prerequisites, build the project, and set device permissions automatically. On a Pi4 or Intel machine, this will only take a few minutes.
 
@@ -57,6 +57,13 @@ build/cannonball-se
 ```
 
 The script installs system packages, compiles the game (optimised for the system it's building on) with CMake into `./build/`, and applies permissions so it can access `/dev/watchdog` and `/dev/hidraw` for rumble.
+
+---
+
+## Quick Start Guide (Windows)
+
+CannonBall-SE can be compiled with Visual Studio Community Edition, and the process is fully automated. Please see
+`docs/Compiling-On-Windows.txt`.
 
 ---
 
@@ -119,16 +126,18 @@ Indexes **01–03** replace the built‑in tracks (01 = *Magical Sound Showe
 | Pi Zero 2 W  | Supported at stock clocks                                                                               | As per Pi 2 (v1.2)                                                                                                                                                                       | When using USB audio device, set USB to full-speed. HDMI audio preferred.                                                 |
 | Pi 4 & 5     | Supported at stock clocks                                                                               | Supported at stock clocks                                                                                                                                                                |                                                                                                                           |
 
+For those running on Windows, just about any PC capable of running Windows 11 should work fine.
+
 ---
 
-## Audio Troubleshooting
+## Audio Troubleshooting on Linux
 
 * **USB audio on Pi2/3/Zero-2W**: Set USB to *full‑speed* to avoid drop-outs (append `dwc_otg.speed=1` to `/boot/firmware/cmdline.txt`). Be aware this may affect some USB keyboards; BT keyboards or SSH are alternatives.
 * **Callback rate**: Callback rate can be halved to 16ms, which may help some systems (*Menu → Settings → Sound/Music → Callback Rate*).
 
 ---
 
-## Watchdog
+## Watchdog (Linux only)
 
 On hardware with a watchdog (all Raspberry Pi boards), the game integrates with it so the OS will auto‑reboot on hang (e.g., aggressive overclocks).
 
@@ -154,3 +163,4 @@ On hardware with a watchdog (all Raspberry Pi boards), the game integrates wit
 ## See Also
 
 * Man page: `docs/cannonball-se.6` (accessible via `man -l ~/cannonball-se/docs/cannonball-se`
+* Windows compiling guide: `docs/Compiling-On-Windows.txt`

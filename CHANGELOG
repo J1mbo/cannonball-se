@@ -2,7 +2,7 @@ CannonBall-SE Change Log
 
 == v1.2 ==
 
-1. Added Windows support. Can now be compiled with Visual Studio 2022 (requires vcpkg)
+1. Added Windows support. Can now be compiled with Visual Studio 2022 (see docs/Compiling-On-Windows.txt)
 2. Dropped support for S16 highlights (which are unused in Outrun), enabling use of a 16-bit intermediate pixel buffer
 3. Single-core mode now uses 22kHz audio sample rate
 4. Revised sprite rendering code to improve performance on Pi 1 and Pi Zero(W)
@@ -31,13 +31,19 @@ CannonBall-SE Change Log
 == v1.0 ==
 
 1. Added OpenGL interface module to add support for shaders without needing SDLgpu.
-2. Heavily revised the sound module to include MP3 audio playback.
+2. Heavily revised the sound module to include MP3 audio playback and eliminate periodical sync pops
 
 == Older ==
 
+New functionality:
 1. Added CRT effect using customised version of Blargg's NTSC filter optimised for ARM NEON
 2. Added CRT effect settings to settings menu
 3. Added GLSL shader support using SDLgpu
 4. Added some multi-threading to improve performance on Pi2/3/4
-5. Fixed hang on high-score screen
+5. Added additional rumble (when tyre smoke effect is shown)
 
+Fixes:
+1. Fixed countdown clock speed
+2. Fixed hang on high-score screen when timing fixes are in place
+3. Ferrari engine stops during crash sequence
+4. Revised sound code to work correctly at arcade sample rate (15,625Hz) and playback at exactly correct speed.
