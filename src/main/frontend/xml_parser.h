@@ -144,6 +144,23 @@ namespace xml_parser
         /* helper to change the root name after construction */
         void set_root_name(const std::string& newName)
         {
+            tinyxml2::XMLElement* newRoot = doc.NewElement(newName.c_str());
+
+            // Clone each child to the new root, then delete the original
+            while (auto* child = root->FirstChild()) {
+                auto* clone = child->DeepClone(&doc);
+                newRoot->InsertEndChild(clone);
+                root->DeleteChild(child);                // delete the original
+            }
+
+            doc.DeleteChild(root);
+            doc.InsertFirstChild(newRoot);
+            root = newRoot;
+        }
+
+/* Old version
+        void set_root_name(const std::string& newName)
+        {
             // 1.  Create the new element
             tinyxml2::XMLElement* newRoot = doc.NewElement(newName.c_str());
 
@@ -164,7 +181,7 @@ namespace xml_parser
             // 5.  Update the member pointer
             root = newRoot;
         }
-
+*/
         void clear()
         {
             // Replace the current object with a fresh one.
@@ -340,8 +357,14 @@ namespace xml_parser
 
         tinyxml2::XMLElement* find_node(const std::string& key) const
         {
+            if (!root) return nullptr;
+
+            // ignore attribute part like ".<xmlattr>.name"
+            std::string elem_path, attr_name;
+            const std::string& path = split_attr_key(key, elem_path, attr_name) ? elem_path : key;
+
             tinyxml2::XMLElement* cur = root;
-            std::istringstream iss(key);
+            std::istringstream iss(path);
             std::string part;
             while (std::getline(iss, part, '.')) {
                 cur = cur->FirstChildElement(part.c_str());
@@ -371,21 +394,22 @@ namespace xml_parser
         T get_attribute(const std::string& key,
                         const T& default_value = T{}) const
         {
-            // key format:  a.b.<xmlattr>.attrName
-            auto pos = key.find("<xmlattr>");
-            if (pos == std::string::npos)          // not an attribute key
-                return get<T>(key, default_value); // fallback to normal get
-
-            // Element path is the part before "<xmlattr>"
-            std::string elem_path = key.substr(0, pos);
-            // attribute name is the part after "<xmlattr>."
-            std::string attr_name = key.substr(pos + 10); // 10 = strlen("<xmlattr>")
+            std::string elem_path, attr_name;
+            if (!split_attr_key(key, elem_path, attr_name)) {
+                // not an attribute key, return default
+                return get<T>(key, default_value);
+            }
 
             tinyxml2::XMLElement* elem = find_node(elem_path);
             if (!elem) return default_value;
 
             const char* txt = elem->Attribute(attr_name.c_str());
-            std::string s = txt ? txt : "";
+            if (!txt || !*txt) {
+                // missing/empty, return default
+                return default_value;
+            }
+
+            std::string s(txt);
 
             if constexpr (std::is_same_v<T, int>)
                 return std::stoi(s);

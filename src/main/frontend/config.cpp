@@ -155,15 +155,22 @@ void Config::set_config_file(const std::string& file)
 void Config::load()
 {
     cfg.clear();
+    bool file_found = true;
 
     // Try current directory
     if (!xml_parser::read_xml(data.cfg_file, cfg)) {
-        std::cerr << "Warning: " << data.cfg_file << " could not be loaded.\n";
+        // settings not found. Flag that we need to create the file.
+        file_found = false;
+        // std::cerr << "Warning: " << data.cfg_file << " could not be loaded.\n";
         // Try res directory (which should contain a default configuration)
         std::string default_cfg_path = "res/" + data.cfg_file;
         if (!xml_parser::read_xml(default_cfg_path, cfg)) {
-            std::cerr << "Warning: " << default_cfg_path << " could not be loaded. Using defaults.\n";
+            std::cout << "Unable to load config.xml. Using defaults.";
+            cfg.clear(); // reset the cfg ptree
+        } else {
+            std::cout << "Loaded settings from " << default_cfg_path << ".";
         }
+        std::cout << " config.xml will be created in current directory.\n";
     }
 
     // ------------------------------------------------------------------------
@@ -199,7 +206,7 @@ void Config::load()
     // Video Settings
     // ------------------------------------------------------------------------
 
-    video.mode          = cfg.get_int("video.mode",            2); // Video Mode: Default is Full Screen 
+    video.mode          = cfg.get_int("video.mode",            1); // Video Mode: Default is Full Screen
     video.scale         = cfg.get_int("video.window.scale",    1); // Video Scale: Default is 1x
     video.fps           = cfg.get_int("video.fps",             0); // Open game at 30fps; will auto-switch to 60fps if possible
     video.fps_count     = cfg.get_int("video.fps_counter",     0); // FPS Counter
@@ -217,22 +224,22 @@ void Config::load()
     video.maskDim       = cfg.get_int("video.maskDim",        75); // shadow mask type dim multiplier (75=75%)
     video.maskBoost     = cfg.get_int("video.maskBoost",     135); // shadow mask type boost multiplier (135=135%)
     video.scanlines     = cfg.get_int("video.scanlines",       0); // scanlines (0=off, 3=max)
-    video.crt_shape     = cfg.get_int("video.crt_shape",       0); // CRT shape overlay on or off
-    video.vignette      = cfg.get_int("video.vignette",        0); // amount to dim edges (1=1%)
-    video.noise         = cfg.get_int("video.noise",           0); // amount of random noise to add (1=1%)
-    video.warpX         = cfg.get_int("video.warpX",           0); // amount of warp to add along X axis (1=1%)
-    video.warpY         = cfg.get_int("video.warpY",           0); // amount of warp to add along Y axis (1=1%)
-    video.desaturate    = cfg.get_int("video.desaturate",      0); // amount to desaturate the entire image (raises black level) (1=1%)
-    video.desaturate_edges = cfg.get_int("video.desaturate_edges", 0); // amount further desaturate towards edges (1=1%)
+    video.crt_shape     = cfg.get_int("video.crt_shape",       1); // CRT shape overlay on or off
+    video.vignette      = cfg.get_int("video.vignette",       30); // amount to dim edges (1=1%)
+    video.noise         = cfg.get_int("video.noise",           5); // amount of random noise to add (1=1%)
+    video.warpX         = cfg.get_int("video.warpX",           3); // amount of warp to add along X axis (1=1%)
+    video.warpY         = cfg.get_int("video.warpY",           4); // amount of warp to add along Y axis (1=1%)
+    video.desaturate    = cfg.get_int("video.desaturate",      5); // amount to desaturate the entire image (raises black level) (1=1%)
+    video.desaturate_edges = cfg.get_int("video.desaturate_edges", 4); // amount further desaturate towards edges (1=1%)
     video.brightboost   = cfg.get_int("video.brightboost",     0); // relative output brightness (1=1%)
-    video.blargg        = cfg.get_int("video.blargg",          0); // Blargg filtering mode, 0=off
-    video.saturation    = cfg.get_int("video.saturation",      0); // Blargg filter saturation, -1 to +1
+    video.blargg        = cfg.get_int("video.blargg",          1); // Blargg filtering mode, 0=off
+    video.saturation    = cfg.get_int("video.saturation",     30); // Blargg filter saturation, -1 to +1
     video.contrast      = cfg.get_int("video.contrast",        0); // Blargg filter contrast, -1 to +1
     video.brightness    = cfg.get_int("video.brightness",      0); // Blargg filter brightness, -1 to +1
     video.sharpness     = cfg.get_int("video.sharpness",       0); // Blargg edge bluring
     video.resolution    = cfg.get_int("video.resolution",      0); // Blargg resolution, -2 to 0
     video.gamma         = cfg.get_int("video.gamma",           0); // Blargg gamma, -3 to +3
-    video.hue           = cfg.get_int("video.hue",             0); // Blargg hue, -10 to +10 => -0.1 to +0.1
+    video.hue           = cfg.get_int("video.hue",            -2); // Blargg hue, -10 to +10 => -0.1 to +0.1
 
     // ------------------------------------------------------------------------
     // Sound Settings
@@ -273,10 +280,10 @@ void Config::load()
     // ------------------------------------------------------------------------
     // Controls
     // ------------------------------------------------------------------------
-    controls.gear          = cfg.get_int("controls.gear",               0);
+    controls.gear          = cfg.get_int("controls.gear",               2);
     controls.steer_speed   = cfg.get_int("controls.steerspeed",         3);
     controls.pedal_speed   = cfg.get_int("controls.pedalspeed",         4);
-    controls.rumble        = cfg.get_float("controls.rumble",           1.0f);
+    controls.rumble        = cfg.get_float("controls.rumble",           1.25f);
     controls.keyconfig[0]  = cfg.get_int("controls.keyconfig.up",       1073741906);
     controls.keyconfig[1]  = cfg.get_int("controls.keyconfig.down",     1073741905);
     controls.keyconfig[2]  = cfg.get_int("controls.keyconfig.left",     1073741904);
@@ -315,7 +322,7 @@ void Config::load()
     controls.asettings[0]  = cfg.get_int("controls.analog.wheel.zone",  75);
     controls.asettings[1]  = cfg.get_int("controls.analog.wheel.dead",  0);
 
-    controls.haptic        = cfg.get_int("controls.analog.haptic.<xmlattr>.enabled",    0);
+    controls.haptic        = cfg.get_int("controls.analog.haptic.<xmlattr>.enabled",    1);
     controls.max_force     = cfg.get_int("controls.analog.haptic.max_force",            9000);
     controls.min_force     = cfg.get_int("controls.analog.haptic.min_force",            8500);
     controls.force_duration= cfg.get_int("controls.analog.haptic.force_duration",       20);
@@ -368,6 +375,11 @@ void Config::load()
     ttrial.laps    = cfg.get_int("time_trial.laps",    5);
     ttrial.traffic = cfg.get_int("time_trial.traffic", 3);
     cont_traffic   = cfg.get_int("continuous.traffic", 3);
+
+    if (!file_found) {
+        // create a config file with the defaults
+        save();
+    }
 }
 
 bool Config::save()
@@ -455,6 +467,14 @@ bool Config::save()
     cfg.put_int("controls.analog.axis.wheel", controls.axis[0]);
     cfg.put_int("controls.analog.axis.accel", controls.axis[1]);
     cfg.put_int("controls.analog.axis.brake", controls.axis[2]);
+    cfg.put_int("controls.analog.axis.accel.<xmlattr>.invert", controls.invert[1]);
+    cfg.put_int("controls.analog.axis.brake.<xmlattr>.invert", controls.invert[2]);
+    cfg.put_int("controls.analog.wheel.zone", controls.asettings[0]);
+    cfg.put_int("controls.analog.wheel.dead", controls.asettings[1]);
+    cfg.put_int("controls.analog.haptic.<xmlattr>.enabled", controls.haptic);
+    cfg.put_int("controls.analog.haptic.max_force", controls.max_force);
+    cfg.put_int("controls.analog.haptic.min_force", controls.min_force);
+    cfg.put_int("controls.analog.haptic.force_duration", controls.force_duration);
 
     cfg.put_int("engine.freeplay",        (int) engine.freeplay);
     cfg.put_int("engine.time",            engine.freeze_timer ? 4 : engine.dip_time);
@@ -481,7 +501,7 @@ bool Config::save()
     cont_traffic   = cfg.get_int("continuous.traffic", 3);
 
     // Write out to the current directory (even if we loaded from res/)
-    if (!write_xml(data.cfg_file, cfg)) {
+    if (!xml_parser::write_xml(data.cfg_file, cfg)) {
         std::cerr << "Could not save settings to " << data.cfg_file << std::endl;
         return false;
     }
