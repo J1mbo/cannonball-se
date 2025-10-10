@@ -92,7 +92,7 @@ run_step "Install dependencies" sudo apt install -y \
 
 # 7. Prepare and build CannonBall
 run_step "Prepare build directories" mkdir -p build roms
-run_step "Configure Project with CMake" cmake -S cmake -B build
+run_step "Configure Project with CMake" cmake -S . -B build
 run_step "Compile" cmake --build build --parallel $NUMTHREADS
 #cd build && cmake ../cmake && make -j"$NUMTHREADS"'
 run_step "Create default config file" bash -c 'cp res/config.xml .'
