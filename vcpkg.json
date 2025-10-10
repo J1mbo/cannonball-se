@@ -1,0 +1,10 @@
+{
+  "name": "cannonball-se",
+  "version-string": "1.2.0",
+  "dependencies": [
+    "sdl2",
+    "tinyxml2",
+    "mpg123",
+    "angle"
+  ]
+}

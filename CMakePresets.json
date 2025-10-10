@@ -1,0 +1,30 @@
+{
+  "version": 6,
+  "vendor": {
+    "microsoft.com/VisualStudioSettings/CMake/1.0": {
+      "configurePreset": "windows-release",
+      "buildPreset": "windows-release"
+    }
+  },
+  "configurePresets": [
+    {
+      "name": "windows-release",
+      "displayName": "Windows x64 (Release)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_FEATURE_FLAGS": "manifests,registries,binarycaching"
+      }
+    },
+    {
+      "name": "windows-debug",
+      "inherits": "windows-release",
+      "displayName": "Windows x64 (Debug)"
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-release", "configurePreset": "windows-release", "configuration": "Release" },
+    { "name": "windows-debug",   "configurePreset": "windows-debug",   "configuration": "Debug" }
+  ]
+}
