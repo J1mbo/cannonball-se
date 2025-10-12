@@ -32,6 +32,9 @@
 //#include "frontend/config.hpp" // fps
 #include "engine/audio/osoundint.hpp"
 
+// MP3 loader references ostats to avoid sample generation on CPU-intensive start line
+#include "engine/ostats.hpp"
+
 #ifdef COMPILE_SOUND_CODE
 
 
@@ -547,68 +550,100 @@ void Audio::thread_load_wav(std::string filename)
     }
 
     // 3) Stream-decode and append into the shared buffer as data arrives
-    std::vector<unsigned char> buf(16384); // bytes
+    std::vector<unsigned char> buf(16384); // bytes - about 90ms assuming 44.1kHz, 16-bit stereo
     size_t i_samples = 0;
     bool stopping = false;
 
+    // wait time in-game is based around decoding one block per frame at 30fps, since the Pi Zero/1 will be CPU bound
+    auto wait_time            = std::chrono::duration<double>(1.0 / 30);
+    // wait time on music selector is less, we can afford to decode more there
+    auto wait_time_init_music = std::chrono::duration<double>(1.0 / 120);
+    uint32_t buffer_min = (FREQ * CHANNELS) >> 3; // 125ms worth of data
+
     while (true) {
-        size_t done = 0;
-        const int r = api.read(h, buf.data(), buf.size(), &done);
-        if (done > 0) {
-            const size_t samples = done / sizeof(int16_t);
+        auto nextframe = std::chrono::steady_clock::now() +
+                         ((outrun.game_state == GS_INIT_MUSIC) ?
+                             wait_time_init_music
+                           : wait_time);
+        {
             std::lock_guard<std::mutex> lock(wav_mutex);
             stopping = wavfile.stopping;
-            if (!stopping) {
-                size_t room = (wavfile.total_length > wavfile.loaded_length)
-                              ? (wavfile.total_length - wavfile.loaded_length)
-                              : 0;
-                size_t to_copy = std::min(samples, room);
-                std::memcpy(wavfile.data + wavfile.loaded_length, buf.data(), to_copy * sizeof(int16_t));
-                wavfile.loaded_length += to_copy;
-                i_samples += to_copy;
-                if (!wavfile.streaming && wavfile.loaded_length >= threshold) {
-                    wavfile.streaming = true; // okay to start playback now
+        }
+        if (stopping) break;
+
+        // check to see if we're just moving away from the start line
+        if (!(
+              ((outrun.game_state == GS_START2) ||
+               (outrun.game_state == GS_START3) ||
+               (outrun.game_state == GS_INGAME))    &&                  // in game,
+              (ostats.cur_stage  == 0)              &&                  // first stage,
+              (ostats.stage_times[0][0] == 0)       &&                  // less than 0 minutes and...
+              (ostats.stage_times[0][1]  < 2)       &&                  // ...2 seconds past go,
+              (wavfile.streaming)                   &&                  // playing an mp3/wav, and
+              ((wavfile.loaded_length - wavfile.pos) > buffer_min)))    // we have > 125ms of audio on-hand, then:
+        {
+            // Generate next sample block
+            size_t done = 0;
+            const int r = api.read(h, buf.data(), buf.size(), &done);
+            if (done > 0) {
+                const size_t samples = done / sizeof(int16_t);
+                std::lock_guard<std::mutex> lock(wav_mutex);
+                if (!stopping) {
+                    size_t room = (wavfile.total_length > wavfile.loaded_length)
+                                  ? (wavfile.total_length - wavfile.loaded_length)
+                                  : 0;
+                    size_t to_copy = std::min(samples, room);
+                    std::memcpy(wavfile.data + wavfile.loaded_length, buf.data(), to_copy * sizeof(int16_t));
+                    wavfile.loaded_length += to_copy;
+                    i_samples += to_copy;
+                    if (!wavfile.streaming && wavfile.loaded_length >= threshold) {
+                        wavfile.streaming = true; // okay to start playback now
+                    }
                 }
             }
-        }
 
-        if (stopping || r == api.done) break;
-        if (r == api.err) {
-            std::cerr << (is_wav ? "wav123_read" : "mpg123_read") << " failed\n";
-            break;
+            if (r == api.done) break;
+            if (r == api.err) {
+                std::cerr << (is_wav ? "wav123_read" : "mpg123_read") << " failed\n";
+                break;
+            }
         }
 
         // throttle CPU load of decoding; insert a brief sleep (if we're not trying to
         // if we're not loading the first 2 seconds)
         if (wavfile.streaming) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            auto this_wait_time = nextframe - std::chrono::steady_clock::now();
+            if (this_wait_time < std::chrono::milliseconds(5))
+                this_wait_time = std::chrono::milliseconds(5);
+            if (this_wait_time > std::chrono::milliseconds(30))
+                this_wait_time = std::chrono::milliseconds(30);
+            std::this_thread::sleep_for(this_wait_time);
         }
-    }
-    // 4) adjust the length to avoid quiet part of track end (abrupt cutoff will be masked by fade)
-    long lowerthreshold = (long(6144) * WAV_THRESHOLD_TABLE[config.sound.wave_volume]) >> 13;
-    uint32_t i = i_samples;
-    while (i>0) { if (wavfile.data[--i] > lowerthreshold) break; }
-    if (i>0) i_samples = i; // chop off any quiet bit at the end
-
-    // 5) Log fully loaded
-    if (stopping) {
-        std::cout << "Audio file load cancelled." << std::endl;
-    } else {
-        std::cout << "Audio file " << filename << " loaded (" << wavfile.total_length << " samples)." << std::endl;
-    }
-
-    // 6) Mark load complete; set fade position (for cross-fade on repeat)
-    {
-        std::lock_guard<std::mutex> lock(wav_mutex);
-        wavfile.total_length  = i_samples; // trim to what we actually filled
-        wavfile.loaded_length = wavfile.total_length;
-        wavfile.fully_loaded  = true;
-        wavfile.fade_pos      = (wavfile.total_length > FADE_LEN)
-                                ? (wavfile.total_length - FADE_LEN) : 0;
     }
 
     api.close(h);
     api.del(h);
+
+    if (!stopping) {
+        // 4) adjust the length to avoid quiet part of track end (abrupt cutoff will be masked by fade)
+        long lowerthreshold = (long(6144) * WAV_THRESHOLD_TABLE[config.sound.wave_volume]) >> 13;
+        uint32_t i = i_samples;
+        while (i>0) { if (wavfile.data[--i] > lowerthreshold) break; }
+        if (i>0) i_samples = i; // chop off any quiet bit at the end
+        // 5) Log fully loaded
+        std::cout << "Audio file " << filename << " loaded (" << wavfile.total_length << " samples)." << std::endl;
+        // 6) Mark load complete; set fade position (for cross-fade on repeat)
+        {
+            std::lock_guard<std::mutex> lock(wav_mutex);
+            wavfile.total_length  = i_samples; // trim to what we actually filled
+            wavfile.loaded_length = wavfile.total_length;
+            wavfile.fully_loaded  = true;
+            wavfile.fade_pos      =   (wavfile.total_length > FADE_LEN)
+                                    ? (wavfile.total_length - FADE_LEN) : 0;
+        }
+    } else {
+        std::cout << "Audio file load cancelled." << std::endl;
+    }
 }
 
 
