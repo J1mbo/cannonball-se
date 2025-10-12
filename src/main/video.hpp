@@ -84,6 +84,7 @@ private:
     // SDL Renderer
     RenderBase* renderer;
 
+    const int alignment = 64;
 	alignas(64) uint8_t palette[S16_PALETTE_ENTRIES * 2]; // 2 Bytes Per Palette Entry
     void refresh_palette(uint32_t);
 

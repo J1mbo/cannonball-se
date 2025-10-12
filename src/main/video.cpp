@@ -60,18 +60,14 @@ int Video::init(Roms* roms, video_settings_t* settings)
     if (!set_video_mode(settings))
         return false;
 
-//std::cout << "\nVideo::init: Hires: " << settings->hires << " s16_width: " << config.s16_width << " s16_height: " << config.s16_height << std::endl;
-    // Internal pixel array. The size of this is always constant
-    // JJP - moved to disable - if (pixels) delete[] pixels;
-
-    //pixels = new(std::align_val_t(64)) uint16_t[config.s16_width * config.s16_height];
-    constexpr std::size_t alignment = 64;
-    std::size_t size = config.s16_width * config.s16_height * sizeof(uint16_t);
+    // Internal pixel arrays.
+    // JJP - add 128 bytes to each video buffer so that we can then avoid testing for x>0 in the sprite rendering loop
+    std::size_t size = ((config.s16_width * config.s16_height) + alignment) * sizeof(uint16_t);
     // Initialise two buffers. This is used to allow the renderer to read from one buffer while the main thread writes to the other.
     pixel_buffers[0] = static_cast<uint16_t*>(::operator new(size, std::align_val_t(alignment)));
     pixel_buffers[1] = static_cast<uint16_t*>(::operator new(size, std::align_val_t(alignment)));
     current_pixel_buffer = 0;
-    pixels = pixel_buffers[current_pixel_buffer];
+    pixels = pixel_buffers[current_pixel_buffer] + alignment;
     // Initialize both buffers to all zeros using std::memset
     std::memset(pixel_buffers[0], 0, size);
     std::memset(pixel_buffers[1], 0, size);
@@ -98,7 +94,7 @@ void Video::swap_buffers()
 {
 //std::cout << std::hex << "Video::swap_buffers: pixel_buffers[0/1]: " << pixel_buffers[0] << "/" << pixel_buffers[1] << std::dec << "\n";
     current_pixel_buffer ^= 1;
-    pixels = pixel_buffers[current_pixel_buffer];
+    pixels = pixel_buffers[current_pixel_buffer] + alignment;
     renderer->swap_buffers();
 }
 
@@ -107,8 +103,6 @@ void Video::disable()
     renderer->disable();
     if (pixels)
     {
-        //delete[] pixels;
-        constexpr std::size_t alignment = 64;
         if (pixel_buffers[0]) { ::operator delete(pixel_buffers[0], std::align_val_t(alignment)); pixel_buffers[0] = nullptr; }
         if (pixel_buffers[1]) { ::operator delete(pixel_buffers[1], std::align_val_t(alignment)); pixel_buffers[1] = nullptr; }
         pixels = nullptr;
@@ -210,7 +204,8 @@ void Video::prepare_frame()
 void Video::render_frame(int fastpass)
 {
     // draw the frame from the pixel buffer not in use for writing
-    renderer->draw_frame(pixel_buffers[current_pixel_buffer ^ 1], fastpass);
+    uint16_t* renderer_pixels = pixel_buffers[current_pixel_buffer ^ 1] + alignment;
+    renderer->draw_frame(renderer_pixels, fastpass);
 }
 
 void Video::present_frame()

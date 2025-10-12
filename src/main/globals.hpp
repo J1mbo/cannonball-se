@@ -81,3 +81,11 @@ enum
 #define ALIGN64
 #pragma message("WARNING: ALIGN64 not defined for this compiler.")
 #endif
+
+// Portable restrict
+#ifdef _MSC_VER          // MSVC
+#  define RESTRICT __restrict
+#else                     // GCC / Clang
+#  define RESTRICT __restrict__
+#endif
+
