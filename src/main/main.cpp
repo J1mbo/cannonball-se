@@ -457,14 +457,21 @@ static void main_loop() {
     config.set_fps(config.video.fps);
     double targetFPS   = static_cast<double>(configured_fps);
 
-    // Determine whether vsync is enabled (for future use).
-    bool vsync = false;// (config.video.vsync == 1) && video.supports_vsync();
+    // Track whether vsync is enabled
+    bool vsync = false;
     // Determine if we can rely on vsync (for 60fps mode)
     SDL_DisplayMode displayMode;
     if (SDL_GetCurrentDisplayMode(0, &displayMode) == 0) {
         // Can retrieve monitor refresh rate
-        vsync = (displayMode.refresh_rate == configured_fps) && SDL_GL_GetSwapInterval();
-        std::cout << "Display Refresh Rate: " << displayMode.refresh_rate << " vsync: " << vsync << std::endl;
+        vsync = (displayMode.refresh_rate == configured_fps) && SDL_GL_GetSwapInterval() && (config.video.vsync == 1);
+        std::cout << "INFO: ";
+        if (config.video.vsync != 1)
+            std::cout << "VSync is disabled by setting in config.xml. ";
+        std::cout << "Display reports refresh rate is " << displayMode.refresh_rate << "Hz.";
+        if ((config.video.vsync == 1) && (displayMode.refresh_rate == 60) && (cannonball::fps_lock != 30))
+            std::cout << " VSync will be used for 60fps mode.\n";
+        else
+            std::cout << "\n";
     }
 
     // Determine if we'll be using threaded or sequential rendering
@@ -684,8 +691,13 @@ static void main_loop() {
                 SDL_DisplayMode displayMode;
                 if (SDL_GetCurrentDisplayMode(0, &displayMode) == 0) {
                     // Can retrieve monitor refresh rate
-                    vsync = (displayMode.refresh_rate == configured_fps) && SDL_GL_GetSwapInterval();
-                    std::cout << "vsync: " << vsync << std::endl;
+                    vsync = (displayMode.refresh_rate == configured_fps) && SDL_GL_GetSwapInterval() && (config.video.vsync == 1);
+                    std::cout << "INFO: ";
+                    std::cout << "Display reports refresh rate is " << displayMode.refresh_rate << "Hz.";
+                    if (vsync)
+                        std::cout << " VSync enabled.\n";
+                    else
+                        std::cout << " VSync disabled.\n";
                 }
             }
         }

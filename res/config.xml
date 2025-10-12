@@ -18,7 +18,7 @@
 	<!-- The following settings can be fully configured in-game -->
 	<widescreen>0</widescreen>
 	<fps_counter>0</fps_counter>
-	<vsync>1</vsync>
+	<vsync>0</vsync>
 	<x_offset>0</x_offset>
 	<y_offset>0</y_offset>
 	<shader_mode>2</shader_mode>
