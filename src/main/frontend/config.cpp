@@ -213,7 +213,6 @@ void Config::load()
     video.widescreen    = cfg.get_int("video.widescreen",      0); // Enable Widescreen Mode
     video.hires_next    =
     video.hires         = cfg.get_int("video.hires",           1); // Hi-Resolution Mode
-    video.s16accuracy   = cfg.get_int("video.s16accuracy",     1); // Reproduce S16 arcade hardware glowy edges (1=accurate, 0=fast)
     video.vsync         = cfg.get_int("video.vsync",           1); // Use V-Sync where available (e.g. Open GL)
     video.x_offset      = cfg.get_int("video.x_offset",        0); // Offset from calculated image X position
     video.y_offset      = cfg.get_int("video.y_offset",        0); // Offset from calculated image Y position
@@ -397,7 +396,6 @@ bool Config::save()
     cfg.put_int("video.widescreen",         video.widescreen);    // Widescreen Mode (1)
     cfg.put_int("video.vsync",              video.vsync);         // V-Sync (1)
     cfg.put_int("video.hires",              video.hires);         // Game engine hires mode (1=enabled)
-    cfg.put_int("video.s16accuracy",        video.s16accuracy);   // Reproduce S16 arcade hardware glowy edges (1=accurate, 0=fast)
     cfg.put_int("video.x_offset",           video.x_offset);      // X offset
     cfg.put_int("video.y_offset",           video.y_offset);      // Y offset
     // JJP Additional configuration for CRT emulation

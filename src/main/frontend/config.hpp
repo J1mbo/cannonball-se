@@ -87,12 +87,6 @@ struct video_settings_t
     int vsync;
     int shadow;
 
-    // s16accuracy - 1 = accurate S16 glowy edges, 0 = approximation (faster)
-    // this is used in hwsprites.cpp to short-cut sprite rendering for limited systems e.g. Pi2.
-    const static int S16_FAST     = 0;
-    const static int S16_ACCURATE = 1;
-    int s16accuracy;
-
     // JJP - User configurable X and Y position
     // range is -100 to +100, being pixel offsets from calculated image position
     int x_offset;
@@ -229,11 +223,6 @@ public:
     const static int CABINET_MOVING  = 0;
     const static int CABINET_UPRIGHT = 1;
     const static int CABINET_MINI    = 2;
-
-    /* S16 emulation accuracy modes. These affect the reproduction of glowy highlights in shadow */
-    const static int S16_FAST        = 0; // no glowy edges
-    const static int S16_APPROX      = 1; // some glowy edges - trees on start line look correct
-    const static int S16_ACCURATE    = 2; // glowy edges match arcade cabinet
 
     // Internal screen width and height
     uint16_t s16_width, s16_height;

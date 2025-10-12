@@ -21,7 +21,6 @@
 	<vsync>1</vsync>
 	<x_offset>0</x_offset>
 	<y_offset>0</y_offset>
-	<s16accuracy>1</s16accuracy>
 	<shader_mode>2</shader_mode>
 	<shadow_mask>2</shadow_mask>
 	<maskDim>75</maskDim>

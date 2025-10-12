@@ -181,7 +181,6 @@ void Menu::populate_for_pc()
     menu_video.push_back(ENTRY_BACK);
 
     // JJP - the following settings configure the CRT shader
-    menu_crt_shader1.push_back(ENTRY_CRT_S16_EMU);
     menu_crt_shader1.push_back(ENTRY_CRT_SHADER_MODE);
     menu_crt_shader1.push_back(ENTRY_CRT_SHAPE_SETTINGS);
     menu_crt_shader1.push_back(ENTRY_MASK_SETTINGS);
@@ -790,16 +789,7 @@ void Menu::tick_menu()
         // JJP - CRT shader settings (page 1)
         else if (menu_selected == &menu_crt_shader1)
         {
-            if (SELECTED(ENTRY_CRT_S16_EMU))
-            {
-                // s16accuracy. 0 = fast, 1 = accurate
-                // affects glowy edges around sprites in shadow
-                if (config.video.s16accuracy == video_settings_t::S16_FAST)
-                    config.video.s16accuracy = video_settings_t::S16_ACCURATE;
-                else
-                    config.video.s16accuracy = video_settings_t::S16_FAST;
-            }
-            else if (SELECTED(ENTRY_CRT_SHADER_MODE))
+            if (SELECTED(ENTRY_CRT_SHADER_MODE))
             {
                 switch (++config.video.shader_mode) {
                     case video_settings_t::SHADER_OFF:
@@ -1348,14 +1338,7 @@ void Menu::refresh_menu()
         else if (menu_selected == &menu_crt_shader1)
         {
             // Screen feedback for selected options
-            if (SELECTED(ENTRY_CRT_S16_EMU))
-            {
-                if (config.video.s16accuracy == video_settings_t::S16_FAST)
-                    set_menu_text(ENTRY_CRT_S16_EMU, "FAST");
-                else
-                    set_menu_text(ENTRY_CRT_S16_EMU, "ACCURATE");
-            }
-            else if (SELECTED(ENTRY_CRT_SHADER_MODE))
+            if (SELECTED(ENTRY_CRT_SHADER_MODE))
             {
                 if (config.video.shader_mode == video_settings_t::SHADER_OFF)
                     set_menu_text(ENTRY_CRT_SHADER_MODE, "NONE");
@@ -1710,7 +1693,6 @@ void Menu::start_game(int mode, int settings)
         config.video.scale          = 1;
         config.video.widescreen     = 0;
         config.video.hires_next     = 1;
-        config.video.s16accuracy    = video_settings_t::S16_ACCURATE;
         config.video.shader_mode    = video_settings_t::SHADER_FULL;
         config.video.shadow_mask    = video_settings_t::SHADOW_MASK_SHADER;
         config.video.maskDim        = 75;
@@ -1756,7 +1738,6 @@ void Menu::start_game(int mode, int settings)
         config.video.scale          = 1;
         config.video.widescreen     = 0;
         config.video.hires_next     = 0;
-        config.video.s16accuracy    = video_settings_t::S16_ACCURATE;
         config.video.shader_mode    = video_settings_t::SHADER_OFF;
         config.video.shadow_mask    = video_settings_t::SHADOW_MASK_OFF;
         config.video.maskDim        = 100;

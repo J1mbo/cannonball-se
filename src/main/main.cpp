@@ -464,7 +464,7 @@ static void main_loop() {
     if (SDL_GetCurrentDisplayMode(0, &displayMode) == 0) {
         // Can retrieve monitor refresh rate
         vsync = (displayMode.refresh_rate == configured_fps) && SDL_GL_GetSwapInterval();
-        std::cout << "vsync: " << vsync << std::endl;
+        std::cout << "Display Refresh Rate: " << displayMode.refresh_rate << " vsync: " << vsync << std::endl;
     }
 
     // Determine if we'll be using threaded or sequential rendering
@@ -804,7 +804,7 @@ int main(int argc, char* argv[]) {
                 config.video.blargg        =  0;        // disable Blargg NTSC filter
                 config.video.shader_mode   =  2;        // full glsl shader (VideoCore IV can handle it easily at 30fps)
                 config.video.shadow_mask   =  2;        // glsl shader based overlay (looks better)
-                config.video.s16accuracy   =  0;        // fast mode; no S16 glowing edges
+                config.video.crt_shape     =  1;        // enable shape overlay
                 config.sound.rate          =  22050;    // 22kHz audio rate
                 config.sound.callback_rate =  1;        // 16ms sound callbacks
                 if (cannonball::fps_lock == 0) cannonball::fps_lock = 30; // lock to 30fps unless user has overriden

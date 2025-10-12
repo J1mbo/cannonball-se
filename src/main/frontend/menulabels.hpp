@@ -64,7 +64,6 @@ const static char* ENTRY_CRT_SHADER1        = "VIDEO EMULATION... "; // JJP - Su
 const static char* ENTRY_BLARGG_FILTER      = "BLARGG CRT FILTER... "; // JJP - Submenu for the Blargg CRT filter settings
 
 // JJP - CRT Shader Menu
-const static char* ENTRY_CRT_S16_EMU        = "S16 EMULATION ";
 const static char* ENTRY_CRT_SHADER_MODE    = "SHADER MODE ";
 const static char* ENTRY_CRT_SHAPE_SETTINGS = "CRT SHAPE... ";
 const static char* ENTRY_MASK_SETTINGS      = "MASK SETTINGS...";
