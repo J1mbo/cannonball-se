@@ -553,14 +553,14 @@ static void main_loop() {
         frameCountForSleep += (configured_fps == 30);
 
         // If we're behind schedule and not forcing a render, drop this frame
-        // always render every 4th frame at least, and the 1st second worth of frames
-        bool forceRender = (frameCounter < configured_fps ? 1 : (frameCounter & 3) == 3);
+        // always render every 4th frame at least
+        bool forceRender = ((frameCounter & 3) == 3);
         if (!forceRender && now > nextFrameTime) {
             // Update game logic for missed frame
             tick();
             audio.tick();
             ++droppedFrames;
-            nextFrameTime += frameDuration;
+            nextFrameTime = (now + frameDuration); // reset time next frame is due
             // Skip heavy work this frame; return to top of while loop
             continue;
         }
@@ -603,7 +603,6 @@ static void main_loop() {
 
         // Check to see if anything happened needing a video restart
         if (config.videoRestartRequired) {
-//            menu->restart_video();
             video.disable();
             config.video.hires = config.video.hires_next;
             video.init(&roms, &config.video);
@@ -625,13 +624,7 @@ static void main_loop() {
         }
 
         // Update the next frame time.
-        // First 1 second of play doesn't skip, as this messes up the intro on slower machines
-        if (frameCounter < configured_fps) {
-            now = std::chrono::steady_clock::now();
-            nextFrameTime = now+frameDuration;
-        } else {
-            nextFrameTime += frameDuration;
-        }
+        nextFrameTime += frameDuration;
 
         // Record FPS info on console (every 2 seconds) and FPS on-screen if enabled
         auto elapsed = std::chrono::steady_clock::now() - fpsTimer;
