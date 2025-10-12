@@ -56,7 +56,8 @@
 	<fix_samples>1</fix_samples>
 	<playback_speed>125</playback_speed>
 	<!-- Sample Rate:
-	    The arcade ran at 31250. This build supports that, except if musing custom music via mp3, then 44100 must be used. -->
+	     The arcade ran at 31,250Hz (or possibly 15,625Hz). This build supports that, except if using custom music via mp3,
+	     then 22050 or 44100 must be used. -->
 	<rate>44100</rate>
 	<!-- A list of SDL audio devices will be shown on screen when cannonball is started. Devices often list more than one
          device, e.g. HDMI Audio and any USB sound device. Enter the number under playback_device corresponding to the device
