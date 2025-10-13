@@ -1,5 +1,16 @@
 CannonBall-SE Change Log
 
+== v1.3 ==
+
+1. S16 glowing sprite edges are now always enabled.
+2. Improved MP3 loader to reduce frame-rate impact on Pi Zero and Pi 1.
+3. Single-core mode now sets increased video noise.
+4. vsync setting in config.xml is now respected by auto 30/60fps mode.
+5. Bug Fixes:
+5.1 Numeric characters in customer music track names (e.g. "Freedom 99") now display correctly on radio screen in 32-bit builds.
+5.2 Skidding effect is now applied consistently throughout the game and across level transitions.
+5.3 Resolved potential video initialisation failure in Windows builds.
+
 == v1.2 ==
 
 1. Added Windows support. Can now be compiled with Visual Studio 2022 (see docs/Compiling-On-Windows.txt)

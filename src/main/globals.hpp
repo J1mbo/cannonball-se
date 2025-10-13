@@ -2,7 +2,7 @@
 
 #include "stdint.hpp"
 
-#define CANNONBALL_SE_VERSION "1.2"
+#define CANNONBALL_SE_VERSION "1.3"
 
 // ------------------------------------------------------------------------------------------------
 // Compiler Settings
