@@ -677,7 +677,7 @@ void OHud::blit_text_big(const uint8_t Y, const char* text, bool do_notes)
     // Blit each tile
     for (uint16_t i = 0; i < length; i++)
     {
-        char c = *text++;
+        uint16_t c = static_cast<uint16_t>(*text++); // JJP - fix display on 32-bit targets
         // Convert lowercase characters to uppercase
         if (c >= 'a' && c <= 'z')
             c -= 0x20;
@@ -724,7 +724,7 @@ void OHud::blit_text_new(uint16_t x, uint16_t y, const char* text, uint16_t pal)
 
     for (uint16_t i = 0; i < length; i++)
     {
-        char c = *text++;
+        uint16_t c = static_cast<uint16_t>(*text++); // JJP - fix display on 32-bit targets
 
         // Convert lowercase characters to uppercase
         if (c >= 'a' && c <= 'z')
