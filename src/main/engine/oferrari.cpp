@@ -1579,29 +1579,19 @@ void OFerrari::do_sound_score_slip()
     osoundint.engine_data[sound::ENGINE_PITCH_L] = engine_pitch & 0xFF;
 
     // Curved Road
+    // JJP - revised code to provide consistent cornering slip detection
+    cornering = 0;
     if (oinitengine.road_type != OInitEngine::ROAD_STRAIGHT)
     {
         int16_t steering = oinputs.steering_adjust;
         if (steering < 0) steering = -steering;
 
+        int16_t deltaX = oinitengine.car_x_pos - oinitengine.car_x_old;
+
         // Hard turn
-        if (steering >= 0x70)
-        {
-            // Move Left
-            if (oinitengine.car_x_pos > oinitengine.car_x_old)
-                cornering = (oinitengine.road_type == OInitEngine::ROAD_LEFT) ? 0 : -1;
-            // Straight
-            else if (oinitengine.car_x_pos == oinitengine.car_x_old)
-                cornering = 0;
-            // Move Right
-            else
-                cornering = (oinitengine.road_type == OInitEngine::ROAD_RIGHT) ? 0 : -1;
-        }
-        else
-            cornering = 0;
+        if ((steering >= 0x70) && (deltaX != 0))
+            cornering = -1;
     }
-    else
-        cornering = 0;
 
     // update_score:
     car_x_diff = oinitengine.car_x_pos - oinitengine.car_x_old;
