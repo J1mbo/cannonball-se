@@ -1,4 +1,5 @@
 /***************************************************************************
+
     Ferrari Rendering & Handling Code.
        
     Much of the handling code is very messy. As such, the translated code 
@@ -633,9 +634,11 @@ void OFerrari::set_ferrari_x()
     // Check Road Curve And Adjust X Value Accordingly
     // This effectively makes it harder to steer into sharp corners
     int16_t road_curve = oinitengine.road_curve;
+    cornering = 0;
     if (road_curve)
     {
         road_curve -= 0x40;
+        int16_t steering_unadjusted = abs(steering);
         if (road_curve < 0)
         {
             int16_t diff_from_max = (MAX_SPEED >> 17) - (oinitengine.car_increment >> 16);
@@ -645,6 +648,16 @@ void OFerrari::set_ferrari_x()
                 int32_t result = (int32_t) steering * (0x24C0 - curve);
                 steering = result / 0x24C0;
             }
+        }
+        if (config.engine.fix_bugs) {
+            // JJP - also now handles tyre slip when fix_bugs is enabled. Original code is
+            // in do_sound_score_slip()
+            int16_t steering_adjusted = abs(steering);
+            // Check for a hard steering input
+            if (steering_unadjusted >= 0x70)
+                // Adjust tyre slip sensitivity by changing the threshold between 0x0 and 0xf
+                if ((steering_unadjusted - steering_adjusted) > 0x2)
+                    cornering = -1;
         }
     }
 
@@ -1559,6 +1572,7 @@ int32_t OFerrari::tick_smoke()
     return r;
 }
 
+
 // Calculate car score and sound. Strange combination, but there you go!
 //
 // Source: 0xBD78
@@ -1579,18 +1593,33 @@ void OFerrari::do_sound_score_slip()
     osoundint.engine_data[sound::ENGINE_PITCH_L] = engine_pitch & 0xFF;
 
     // Curved Road
-    // JJP - revised code to provide consistent cornering slip detection
-    cornering = 0;
-    if (oinitengine.road_type != OInitEngine::ROAD_STRAIGHT)
-    {
-        int16_t steering = oinputs.steering_adjust;
-        if (steering < 0) steering = -steering;
+    if (!config.engine.fix_bugs) {
+        // JJP - original wheel slip detection code. Buggy on level transitions.
+        // When fix_bugs is enabled, the slip detection works on the cornering strength
+        // instead in set_ferrari_x().
+        if (oinitengine.road_type != OInitEngine::ROAD_STRAIGHT)
+        {
+            int16_t steering = oinputs.steering_adjust;
+            if (steering < 0) steering = -steering;
 
-        int16_t deltaX = oinitengine.car_x_pos - oinitengine.car_x_old;
-
-        // Hard turn
-        if ((steering >= 0x70) && (deltaX != 0))
-            cornering = -1;
+            // Hard turn
+            if (steering >= 0x70)
+            {
+                // Move Left
+                if (oinitengine.car_x_pos > oinitengine.car_x_old)
+                    cornering = (oinitengine.road_type == OInitEngine::ROAD_LEFT) ? 0 : -1;
+                // Straight
+                else if (oinitengine.car_x_pos == oinitengine.car_x_old)
+                    cornering = 0;
+                // Move Right
+                else
+                    cornering = (oinitengine.road_type == OInitEngine::ROAD_RIGHT) ? 0 : -1;
+            }
+            else
+                cornering = 0;
+        }
+        else
+            cornering = 0;
     }
 
     // update_score:
