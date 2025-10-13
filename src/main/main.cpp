@@ -810,6 +810,7 @@ int main(int argc, char* argv[]) {
                 config.video.shader_mode   =  2;        // full glsl shader (VideoCore IV can handle it easily at 30fps)
                 config.video.shadow_mask   =  2;        // glsl shader based overlay (looks better)
                 config.video.crt_shape     =  1;        // enable shape overlay
+                config.video.noise         =  10;       // as Blargg filter is disabled, add more analogue noise
                 config.sound.rate          =  22050;    // 22kHz audio rate
                 config.sound.callback_rate =  1;        // 16ms sound callbacks
                 if (cannonball::fps_lock == 0) cannonball::fps_lock = 30; // lock to 30fps unless user has overriden
