@@ -304,8 +304,7 @@ void hwsprites::render(const uint8_t priority)
         for (y = top; y != ytarget; y += ydelta)
         {
             // skip drawing if not within the cliprect
-            // JJP - un-necessary test in Outrun
-//            if (y >= 0 && y < scr_height)
+            if (y >= 0 && y < scr_height)
             {
                 uint32_t  curAddr = addr;
                 int32_t   xacc    = 0;
