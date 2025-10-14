@@ -1,29 +1,55 @@
 # CannonBall‑SE
 
-*A performance tuned and cabinet-focused fork of Chris White’s CannonBall OutRun engine with enhanced graphics and cabinet‑friendly enhancements.*
+*A fork of Chris White's incredible Outrun engine, CannonBall, with enhancements.*
+Designed with home-made cabinets in mind, gives Outrun enthusiasts an improved experience on LCD screens
+with minimal hardware requirements - anything from a RaspberryPi Zero will work!
+
+> **Note:** Windows executable available for download [in Releases](https://github.com/J1mbo/cannonball-se/releases/tag/v1.3)
 
 ---
 
 ## Overview
 
-CannonBall‑SE is a fork of the cross‑platform OutRun engine, focused on an authentic arcade‑cab experience.
+CannonBall‑SE trys to create what feels like an authentic arcade‑cab experience on modern hardware.
+The game graphics seem more natural thanks to processing with a fully configurable 2-stage video filter
+providing effects including NTSC filter, screen curvature, shadow‑mask effect, a hint of analogue noise,
+vignette and desaturation.
 
-* Graphics seem more natural thanks to the video filter, subtle screen curvature, shadow‑mask effects, attention to accurate colour reproduction, subtle noise and desaturation, and automatic 30/60fps selection.
-* The re-written audio module tightens up stability, ensures accurate playback speed, and also supports MP3/WAV custom music.
-* Gameplay is refined with various game bug fixes, additional rumble, performance improvements and stability fixes.
-* The hardware watchdog is used (if available) to ensure reliable continuous operation.
-* Play count and "machine hours" are tracked.
+Additionally:
 
-> **Note:** Can be used on all Raspberry Pi systems including the Pi Zero, as well as on Windows 11 and Ubuntu.
+- Gameplay bug fixes:
+  - Random cars no longer appear near checkpoints momentarily
+  - Wheel slip when cornering works consistently through stage transitions
+  - Plus: all the fixes available in Chris White's original
+
+- Gameplay enhancements:
+  - Rumble is generated when skidding
+  - Auto frame-rate control ensures game always runs at full speed
+  - Multi-threaded engine - works at 60fps on a Pi3 or Zero2W in hi-res mode
+
+- Re-written audio module:
+  - Tightens up system stability, especially on low-spec RaspberryPi systems
+  - Eliminates stutters
+  - Provides arcade-accurate playback speed
+  - Supports MP3 as well as WAV custom music (with playback volume control).
+
+- Tracks 'machine hours' and games played.
+
+- Hooks system watchdog on RaspberryPi boards for reliable continuous operation (e.g. in cabinets)
+
+- Performance improvements and stability fixes.
+
 
 ---
 
 ## Supported Platforms
 
-* **All Raspberry Pi Boards** running Raspberry Pi OS.
+* **All RaspberryPi Boards** running RaspberryPi OS.
 * **x86/x64 PCs** (Intel/AMD) running Ubuntu or Windows 11.
 
-For Linux, a desktop is not required - use the command-line version of the OS.
+For Linux, a desktop is not required - use the command-line version of the OS. Compiling is fully automated
+on both platforms.
+
 
 ---
 
@@ -35,7 +61,9 @@ CannonBall‑SE requires a copy of the original **OutRun revision B** ROM set.
 
 ## Quick Start Guide (Linux)
 
-Use the included script 'install.sh' to install prerequisites, build the project, and set device permissions automatically. On a Pi4 or Intel machine, this will only take a few minutes.
+Getting going on RaspberryPi systems or Ubuntu is super-easy - just run the included script `install.sh`. It will install
+prerequisites, build the project, and set device permissions automatically. On a Pi4 or Intel machine, this will only take
+a few minutes (the process takes 40+ minutes on a Pi Zero or Pi 1, but requires no human input).
 
 ```bash
 # 1) Fetch sources
@@ -56,14 +84,16 @@ build/cannonball-se
 # SDL_VIDEODRIVER=wayland build/cannonball-se
 ```
 
-The script installs system packages, compiles the game (optimised for the system it's building on) with CMake into `./build/`, and applies permissions so it can access `/dev/watchdog` and `/dev/hidraw` for rumble.
+The script installs system packages, compiles the game (optimised for the system it's building on) with CMake
+into `./build/`, and applies permissions so it can access `/dev/watchdog` and `/dev/hidraw` for rumble.
 
 ---
 
 ## Quick Start Guide (Windows)
 
-CannonBall-SE can be compiled with Visual Studio Community Edition, and the process is fully automated. Please see
-`docs/Compiling-On-Windows.txt`.
+A Windows executable is available [in Releases](https://github.com/J1mbo/cannonball-se/releases/tag/v1.3).
+CannonBall-SE can also be compiled easily with Visual Studio Community Edition as the process is fully
+automated. Please see `docs/Compiling-On-Windows.txt`.
 
 ---
 
@@ -116,15 +146,15 @@ Indexes **01–03** replace the built‑in tracks (01 = *Magical Sound Showe
 * **Pi Zero-2W** is the cheapest way to full experience with 1280x1024 screens.
 * **Pi 3 Model A** is the most compact board with onboard analogue audio.
 
-| Board        | 30 fps                                                                                                   | 60 fps                                                                                                                                                                                    | Notes                                                                                                                     |
-|--------------|---------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
-| 2014 Pi B+   | Requires:<br>1. CPU @ 1 GHz<br>2. GPU @ 400 MHz<br>3. Core @ 350 MHz<br>4. Sound 22 kHz / 16 ms callbacks<br>5. Original game resolution | Not supported                                                                                                                                                                            | Game settings are automatically applied at startup. Board clocks must be set in /boot/firmware/config.txt. |
-| Pi Zero (W)  | As per 2014 Pi B+.<br>CPU clock is 1 GHz by default.                                                     | Not supported                                                                                                                                                                            | As above. |
-| Pi 2 (v1.1)  | Supported at stock clocks                                                                               | Supported in hi-res mode with:<br>1. GPU @ 450 MHz<br>2. Fast shader<br>3. Overlay mask<br>Boards that can be overclocked to 1.1 GHz CPU + 500 MHz GPU run full shader close to 60 fps. | 32-bit ARMv7 CPU.                                                                                                         |
-| Pi 2 (v1.2)  | Supported at stock clocks                                                                               | Supported with CPU @ 1 GHz with Fast shader + overlay mask.<br>Set GPU to 400 MHz to use Full shader + shader mask.                                                                      | 64-bit ARMv8 CPU (as Pi 3). When using USB audio device, set USB to full-speed. HDMI or analogue audio preferred.          |
-| Pi 3 (all)   | Supported at stock clocks                                                                               | Supported at stock clocks with Fast shader + overlay mask.<br>Set GPU to 400 MHz to use Full shader + shader mask.                                                                       | When using USB audio device, set USB to full-speed. HDMI or analogue audio preferred.                                     |
-| Pi Zero 2 W  | Supported at stock clocks                                                                               | As per Pi 2 (v1.2)                                                                                                                                                                       | When using USB audio device, set USB to full-speed. HDMI audio preferred.                                                 |
-| Pi 4 & 5     | Supported at stock clocks                                                                               | Supported at stock clocks                                                                                                                                                                |                                                                                                                           |
+| Board        | 30 fps                                                | 60 fps                                                                                                                                                                                    | Notes                                                                                                                     |
+|--------------|-------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| 2014 Pi B+   | Requires: CPU @ 1GHz, GPU @ 400MHz, Core @ 350MHz.    | Not supported                                                                                                                                                                            | Game settings are automatically applied at startup. Board clocks must be set in /boot/firmware/config.txt. |
+| Pi Zero (W)  | As per 2014 Pi B+.<br>CPU clock is 1GHz by default.   | Not supported                                                                                                                                                                            | As above. |
+| Pi 2 (v1.1)  | Supported at stock clocks                             | Supported in hi-res mode with GPU @ 450MHz & Fast shader. Boards overclocked to 1.1 GHz CPU & 500MHz GPU can run full shader close to 60 fps. | 32-bit ARMv7 CPU.                                                                                                         |
+| Pi 2 (v1.2)  | Supported at stock clocks                             | Supported with CPU @ 1 GHz with Fast shader. Set GPU to 400 MHz to use Full shader.                                                                      | 64-bit ARMv8 CPU (as Pi 3). When using USB audio device, set USB to full-speed. HDMI or analogue audio preferred.          |
+| Pi 3 (all)   | Supported at stock clocks                             | Supported at stock clocks with Fast shader. Set GPU to 400MHz to use Full shader.                                                                       | When using USB audio device, set USB to full-speed. HDMI or analogue audio preferred.                                     |
+| Pi Zero 2 W  | Supported at stock clocks                             | As per Pi 2 (v1.2)                                                                                                                                                                       | When using USB audio device, set USB to full-speed. HDMI audio preferred.                                                 |
+| Pi 4 & 5     | Supported at stock clocks                             | Supported at stock clocks                                                                                                                                                                |                                                                                                                           |
 
 For those running on Windows, just about any PC capable of running Windows 11 should work fine.
 
@@ -139,7 +169,7 @@ For those running on Windows, just about any PC capable of running Windows 11 sh
 
 ## Watchdog (Linux only)
 
-On hardware with a watchdog (all Raspberry Pi boards), the game integrates with it so the OS will auto‑reboot on hang (e.g., aggressive overclocks).
+On hardware with a watchdog (all RaspberryPi boards), the game integrates with it so the OS will auto‑reboot on hang (e.g., aggressive overclocks).
 
 ---
 
