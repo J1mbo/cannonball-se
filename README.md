@@ -6,6 +6,8 @@ with minimal hardware requirements - anything from a RaspberryPi Zero will work!
 
 > **Note:** Windows executable available for download [in Releases](https://github.com/J1mbo/cannonball-se/releases/tag/v1.3)
 
+![CannonBall-SE Start Line](screenshots/CannononBall-SE-Startline.jpg)
+
 ---
 
 ## Overview
