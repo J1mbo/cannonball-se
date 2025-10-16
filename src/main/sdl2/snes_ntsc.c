@@ -112,33 +112,35 @@ void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup)
     if (setup->artifacts <= -1 && setup->fringing <= -1)
         merge_fields = 1;
 
-    #ifdef _OPENMP
-    #pragma omp parallel
+#ifdef _OPENMP
+#pragma omp parallel
     {
-        int thread_count = omp_get_num_threads();
-        for (int n = 0; n < thread_count; n++) {
-            unsigned int block_size = snes_ntsc_palette_size / omp_get_num_threads(); // amount processed by each thread
-            unsigned int start = n * block_size;
-            unsigned int end = (n == omp_get_num_threads() - 1) ? snes_ntsc_palette_size : (n + 1) * block_size;
-            unsigned int entry;
-            for (entry = start; entry < end; entry++) {
-                unsigned int red_index = (entry >> 10 & 0x1F) + ((entry >> 15) * 32);
-                unsigned int green_index = (entry >> 5 & 0x1F) + ((entry >> 15) * 32);
-                unsigned int blue_index = (entry >> 0 & 0x1F) + ((entry >> 15) * 32);
-                unsigned int ir = S16_rgbVals[red_index];
-                unsigned int ig = S16_rgbVals[green_index];
-                unsigned int ib = S16_rgbVals[blue_index];
-                float rr = impl.to_float[ir];
-                float gg = impl.to_float[ig];
-                float bb = impl.to_float[ib];
-                float y, i, q = RGB_TO_YIQ(rr, gg, bb, y, i);
-                int r, g, b = YIQ_TO_RGB(y, i, q, impl.to_rgb, int, r, g);
-                snes_ntsc_rgb_t rgb = PACK_RGB(r, g, b);
-                snes_ntsc_rgb_t* out = ntsc->table[entry];
-                gen_kernel(&impl, y, i, q, out);
-                if (merge_fields) merge_kernel_fields(out);
-                correct_errors(rgb, out);
-            }
+        init_t impl_local = impl; // or use firstprivate(impl)
+        int merge_fields_local = merge_fields;
+        int entry;
+
+#pragma omp for schedule(static)
+        for (entry = 0; entry < snes_ntsc_palette_size; ++entry) {
+            unsigned int red_index = (entry >> 10 & 0x1F) + ((entry >> 15) * 32);
+            unsigned int green_index = (entry >> 5 & 0x1F) + ((entry >> 15) * 32);
+            unsigned int blue_index = (entry >> 0 & 0x1F) + ((entry >> 15) * 32);
+
+            unsigned int ir = S16_rgbVals[red_index];
+            unsigned int ig = S16_rgbVals[green_index];
+            unsigned int ib = S16_rgbVals[blue_index];
+
+            float rr = impl_local.to_float[ir];
+            float gg = impl_local.to_float[ig];
+            float bb = impl_local.to_float[ib];
+
+            float y, i, q = RGB_TO_YIQ(rr, gg, bb, y, i);
+            int r, g, b = YIQ_TO_RGB(y, i, q, impl_local.to_rgb, int, r, g);
+            snes_ntsc_rgb_t rgb = PACK_RGB(r, g, b);
+
+            snes_ntsc_rgb_t* out = ntsc->table[entry];
+            gen_kernel(&impl_local, y, i, q, out);
+            if (merge_fields_local) merge_kernel_fields(out);
+            correct_errors(rgb, out);
         }
     }
     #else
