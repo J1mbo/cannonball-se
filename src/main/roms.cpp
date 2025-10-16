@@ -9,6 +9,7 @@
 #include <cstring>
 #include "stdint.hpp"
 #include "roms.hpp"
+#include <iostream>
 
 Roms roms;
 
@@ -125,8 +126,14 @@ int Roms::load_pcm_rom(bool fixed_rom)
         status = LOAD(pcm, ("opr-10188.71f", 0x50000, 0x08000, 0x37598616, RomLoader::NORMAL, false));
         if (status == 1)
             status = LOAD(pcm, ("opr-10188.71f", 0x50000, 0x08000, 0xC2DE09B2, RomLoader::NORMAL, VERBOSE));
+
+        // JJP - soft fail if we don't have the ROM with the fixed samples
+        if (status == 1) {
+            std::cerr << "WARNING: config.fix_samples is set, but patched ROM not found. RevB ROM will be used." << std::endl;
+            fixed_rom = false; // fall through to standard ROM load
+        }
     }
-    else
+    if (!fixed_rom)
     {
         status = LOAD(pcm, ("opr-10188.71", 0x50000, 0x08000, 0xbad30ad9, RomLoader::NORMAL, VERBOSE));
     }
