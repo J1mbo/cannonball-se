@@ -391,7 +391,7 @@ bool RenderSurface::init_sdl(int video_mode)
         GameSurfacePixels = static_cast<uint16_t*>(GameSurface[current_game_surface]->pixels);
     }
 
-    glb::set_swap_interval(1);  // vsync on
+    glb::set_swap_interval(config.video.vsync);
     //glb::auto_configure_pixel_formats_from_surfaces(GameSurface[0], overlaySurface);
 
     Uint32 black_color = SDL_MapRGBA(GameSurface[0]->format, 0, 0, 0, 0);
