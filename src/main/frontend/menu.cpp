@@ -889,8 +889,8 @@ void Menu::tick_menu()
                     display_message("SIZE REQUIRES FULL SHADER");
                 else {
                     config.video.mask_size += 1;
-                    if (config.video.mask_size > 3)
-                        config.video.mask_size = 1;
+                    if (config.video.mask_size > 6)
+                        config.video.mask_size = 3;
                 }
             }
             else if (SELECTED(ENTRY_SCANLINES))

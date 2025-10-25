@@ -687,7 +687,7 @@ long RenderSurface::get_video_config() {
                             config.video.vignette       +
                             config.video.desaturate     +
                             config.video.shadow_mask    +
-                            config.video.maskDim        +
+                            (config.video.maskDim*2)    +
                             config.video.maskBoost      +
                             config.video.mask_size      +
                             dst_rect.w + dst_rect.h );
@@ -773,7 +773,10 @@ bool RenderSurface::finalize_frame()
             glb::set_uniform("desaturateEdges", float(config.video.desaturate_edges) / 100.0f);
             glb::set_uniform("baseOff",         (config.video.shadow_mask==2 ? (config.video.maskDim/100.0f)   : 1.0f));
             glb::set_uniform("baseOn",          (config.video.shadow_mask==2 ? (config.video.maskBoost/100.0f) : 1.0f));
-            glb::set_uniform("invMaskPos",      (config.video.mask_size==0)  ? 1.0f : 1.0f/config.video.mask_size);
+            int this_mask_size = std::min(3, config.video.mask_size);
+            glb::set_uniform("invMaskPitch",    (1.0f /    float(this_mask_size)) );
+            glb::set_uniform("inv2MaskPitch",   (1.0f / (2*float(this_mask_size))) );
+            glb::set_uniform("inv2Height",      (1.0f / (2*float((this_mask_size-2)))) );
 
             glb::set_uniform2("OutputSize",     float(dst_rect.w), float(dst_rect.h));
             glb::clear(/*rgba*/ 0.f, 0.f, 0.f, 1.f);
@@ -858,6 +861,7 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
 
         // Now call the blargg code, to do the work of translating S16 output to RGB
         if (config.video.hires) {
+for (int i=0; i<5; i++) {
             // hi-res
             #if SNES_NTSC_HAVE_SIMD
                 // Only compiled when the fast function exists
@@ -867,6 +871,7 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
                 snes_ntsc_blit_hires(ntsc, bpix, long(src_width), phase, src_width,
                                      block_height, tpix, output_pitch, Ashifted);
             #endif
+}
         }
         else {
             // standard res processing

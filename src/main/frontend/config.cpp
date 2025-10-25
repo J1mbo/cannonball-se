@@ -219,7 +219,7 @@ void Config::load()
     // JJP Additional configuration for CRT emulation
     video.shader_mode   = cfg.get_int("video.shader_mode",     2); // shader type: 0 = off (actually pass-through), 1 = fast, 2 = full
     video.shadow_mask   = cfg.get_int("video.shadow_mask",     2); // shadow mask type: 0 = off, 1 = overlay based (fast), 2 = shader based (looks better)
-    video.mask_size     = cfg.get_int("video.mask_size",       1); // shadow mask size (1=normal, 2 for high DPI displays)
+    video.mask_size     = cfg.get_int("video.mask_size",       3); // shadow mask size (3=normal, 4/5/6 for high DPI displays)
     video.maskDim       = cfg.get_int("video.maskDim",        75); // shadow mask type dim multiplier (75=75%)
     video.maskBoost     = cfg.get_int("video.maskBoost",     135); // shadow mask type boost multiplier (135=135%)
     video.scanlines     = cfg.get_int("video.scanlines",       0); // scanlines (0=off, 3=max)
@@ -401,6 +401,7 @@ bool Config::save()
     // JJP Additional configuration for CRT emulation
     cfg.put_int("video.shader_mode",        video.shader_mode);   // Shader type (Off/Fast/Full) (2)
     cfg.put_int("video.shadow_mask",        video.shadow_mask);   // Shadow mask type (Off/Overlay/Shader) (2)
+    cfg.put_int("video.mask_size",          video.mask_size);     // Shadow mask size (3)
     cfg.put_int("video.maskDim",            video.maskDim);       // Shadow mask Dim value (0)
     cfg.put_int("video.maskBoost",          video.maskBoost);     // Shadow mask Boost value (0)
     cfg.put_int("video.scanlines",          video.scanlines);     // Scanlines (0)

@@ -10,7 +10,6 @@ precision highp float;
 /* Pi Zero 2W can run this at 60fps under Raspbian command-line installation    */
 /* based on: 1280x1024@60fps with vSync, and clocks:                            */
 /*                                                                              */
-/* arm_freq=1100                                                                */
 /* core_freq=450                                                                */
 /* gpu_freq=450                                                                 */
 /*                                                                              */
@@ -42,8 +41,19 @@ uniform float desaturate;
 uniform float desaturateEdges;
 uniform float baseOff;         // shadow mask dim value, e.g. 0.75f
 uniform float baseOn;          // shadow mask boost value, usually 1/baseOff e.g. 1.333f
-uniform float invMaskPos;      // mask size, 1/1 = normal (1280x1024 screens), 1/2 = high DPI screens
-uniform vec2 u_Time; // set both elements to FrameCount / 60.0
+
+/* Shadow mask
+ * maskPitch is between 3 and 6. Setting invMaskPitch saves division in the mask.
+ * Use 3 for 1280x1024 screens, 4+ provide wider spacing e.g. high DPI screens
+ * Hence, invMaskPitch is 1/3, 1/4, 1/5, or 1/6.
+ * inv2MaskPitch is 1/(2*maskPitch) - i.e., 1/6 when invMaskPitch is 1/3.
+ * inv2Height is 1/2,1/4,1/6,1/8... - i.e., the pattern height. Odd values won't work correctly.
+ */
+uniform float invMaskPitch;
+uniform float inv2MaskPitch;
+uniform float inv2Height;
+
+uniform vec2 u_Time;           // set both elements to FrameCount / 60.0
 
 
 // -------------------------------------------------------------------
@@ -111,28 +121,31 @@ vec3 addNoise(vec3 colour, vec2 uv, float intensity) {
 
 vec3 fastmask()
 {
-    vec2 mpos = floor(maskpos * invMaskPos);
-    //vec2 mpos = floor(maskpos);
-    float tmpvar_1 = fract(mpos.x / 3.0);
-    float tmpvar_2 = fract(mpos.x / 6.0);
-    float tmpvar_3 = fract(mpos.y / 2.0);
+    vec2 mpos = floor(maskpos);
+    float tmpvar_1 = fract( mpos.x * invMaskPitch );
+    float tmpvar_2 = fract( mpos.x * inv2MaskPitch );
+    float tmpvar_3 = fract( mpos.y * inv2Height );
     
-    // Step 1: choose base value without an if statement.
-    // float base = mix(0.7498125, 1.333, step(0.001, tmpvar_1));
+    // Select base value without an if statement.
     float base = mix(baseOff, baseOn, step(0.001, tmpvar_1));
     
-    // Step 2: choose the multiplier conditionally.
-    float condA = step(0.001, tmpvar_1);
-    float condBranchA = 1.0 - step(0.5, tmpvar_2);
-    float condBranchB = step(0.5, tmpvar_2);
-    float branchSelector = step(tmpvar_3, 0.001);
-    float maskCondition = branchSelector * condBranchA + (1.0 - branchSelector) * condBranchB;
-    float multiplier = mix(1.0, baseOff, condA * maskCondition);
-    
+    // Horizontal spacing
+    float condA       =       step(0.001, tmpvar_1);
+    float condBranchB =       step(0.5,   tmpvar_2);
+
+    // Veritcal spacing
+    // vCond0 is 1 when tmpvar_3 is approx 0
+    float vCond0      = 1.0 - step(0.001, tmpvar_3);
+    // vCondHalf is 1 when tmpvar_3 is approx 0.5
+    float vCondHalf   = 1.0 - step(0.001, abs(tmpvar_3 - 0.5));
+
+    // Determine the output value
+    float extraMask   = (1.0 - condBranchB) * vCond0 + condBranchB * vCondHalf;
+    float multiplier  = mix(1.0, baseOff, condA * extraMask);    
     float maskVal = base * multiplier;
+
     return vec3(maskVal);
 }
-
 
 
 // ------------------------------------------------------------------------
