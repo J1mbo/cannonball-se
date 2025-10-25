@@ -34,6 +34,8 @@
 #include <errno.h>
 #endif
 
+#include "frontend/config.hpp"
+
 Input input;
 
 Input::Input(void)
@@ -334,6 +336,81 @@ void Input::handle_key(const int key, const bool is_pressed)
 
         case SDLK_F5:
             keys[MENU] = is_pressed;
+            break;
+
+        case SDLK_F8:
+            // JJP - switches between all video processing off and Pi3 defaults (full shader etc)
+            // Note - doesn't alter widescreen of hires setting
+            if (!is_pressed) break;
+            if (config.videoRestartRequired) break;
+            if (config.video.blargg!=0) {
+                // filter is currently enabled - so reset everything
+                config.video.hires_next     = config.video.hires;
+                config.video.shader_mode    = video_settings_t::SHADER_OFF;
+                config.video.shadow_mask    = video_settings_t::SHADOW_MASK_OFF;
+                config.video.maskDim        = 100;
+                config.video.maskBoost      = 100;
+                config.video.scanlines      = 0;
+                config.video.crt_shape      = 0;
+                config.video.vignette       = 0;
+                config.video.noise          = 0;
+                config.video.warpX          = 0;
+                config.video.warpY          = 0;
+                config.video.desaturate     = 0;
+                config.video.desaturate_edges = 0;
+                config.video.brightboost    = 0;
+                config.video.blargg         = video_settings_t::BLARGG_DISABLE;
+                config.video.saturation     = 0;
+                config.video.contrast       = 0;
+                config.video.brightness     = 0;
+                config.video.sharpness      = 0;
+                config.video.resolution     = 0;
+                config.video.gamma          = 0;
+                config.video.hue            = 0;
+            } else {
+                // filter is not currently enable - so enable everything
+                config.video.hires_next     = config.video.hires;
+                config.video.shader_mode    = video_settings_t::SHADER_FULL;
+                config.video.shadow_mask    = video_settings_t::SHADOW_MASK_SHADER;
+                config.video.maskDim        = 75;
+                config.video.maskBoost      = 125;
+                config.video.scanlines      = 0;
+                config.video.crt_shape      = 1;
+                config.video.vignette       = 30;
+                config.video.noise          = 6;
+                config.video.warpX          = 2;
+                config.video.warpY          = 3;
+                config.video.desaturate     = 5;
+                config.video.desaturate_edges = 4;
+                config.video.brightboost    = 1;
+                config.video.blargg         = video_settings_t::BLARGG_COMPOSITE;
+                config.video.saturation     = 30;
+                config.video.contrast       = 0;
+                config.video.brightness     = 0;
+                config.video.sharpness      = 0;
+                config.video.resolution     = 0;
+                config.video.gamma          = 0;
+                config.video.hue            = -2;
+            }
+            // flag to restart the video subsystem
+            config.videoRestartRequired = true;
+            break;
+        case SDLK_F9:
+            // JJP - enables/disables the mask if it's enabled
+            if (!is_pressed) break;
+            if (config.video.shadow_mask==2) {
+                static int manual_off = false;
+                if (manual_off) {
+                    // set to default values
+                    config.video.maskDim        = 70;
+                    config.video.maskBoost      = 130;
+                } else {
+                    // set both values to 100 which effectively disables it
+                    config.video.maskDim        = 100;
+                    config.video.maskBoost      = 100;
+                }
+                manual_off = !manual_off; // toggle state
+            }
             break;
     }
 }
