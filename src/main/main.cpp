@@ -179,6 +179,7 @@ bool    cannonball::singlecore_mode     = false;
 // 4 (seconds), and is doubled every time a switch back to 30fps happens
 long    cannonball::fps_eval_period     = 4;
 int     cannonball::game_threads        = omp_get_max_threads();
+bool    cannonball::perftest            = false;
 
 // ------------------------------------------------------------------------------------------------
 // Main Variables and Pointers
@@ -612,7 +613,10 @@ static void main_loop() {
             nextFrameTime = std::chrono::steady_clock::now();
         }
         // If we're ahead of schedule, sleep until it's time.
-        if (!vsync) {
+        if (perftest) {
+            // we're trying to run the engine as fast as possible, simply update the next frame time
+            nextFrameTime = std::chrono::steady_clock::now();
+        } else if (!vsync) {
             if (now < nextFrameTime) {
                 auto sleepDuration = nextFrameTime - now;
                 // Only record sleep if we're at 30 FPS.
@@ -756,6 +760,10 @@ static bool parse_command_line(int argc, char* argv[]) {
             cannonball::singlecore_mode = true;
             std::cout << "Using single-core mode.\n";
         }
+        else if (strcmp(argv[i], "-perftest") == 0) {
+            cannonball::perftest = true;
+            std::cout << "Running in performance test mode.\n";
+        }
         else if (   (strcmp(argv[i], "-help") == 0)  ||
                     (strcmp(argv[i], "--help") == 0) ||
                     (strcmp(argv[i], "-h") == 0)     ||
@@ -770,7 +778,8 @@ static bool parse_command_line(int argc, char* argv[]) {
                          "-60                  : Lock to 60fps\n" <<
                          "-t x                 : Number of game threads (1-4)\n" <<
                          "-x                   : Disable single-core RaspberryPi board detection\n" <<
-                         "-1                   : Use single-core mode\n\n" <<
+                         "-1                   : Use single-core mode\n" <<
+                         "-perftest            : Assess max frame rate possible on this platform\n\n" <<
                          "CannonBall-SE man page is in the res folder. Open it with 'man -l docs/cannonball-se.6'" << std::endl;
             _Exit(0);
         }

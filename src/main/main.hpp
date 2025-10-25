@@ -38,4 +38,5 @@ namespace cannonball
     extern bool singlecore_mode;
     extern long fps_eval_period;
     extern int  game_threads;
+    extern bool perftest;
 }
