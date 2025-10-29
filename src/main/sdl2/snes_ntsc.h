@@ -195,12 +195,26 @@ extern "C" {
 
 // this version ONLY does the maths on each pixel. Clamp and RGB_OUT are skipped,
 // since this can be done in parallel across all outputs later
-#define SNES_NTSC_HIRES_OUT_SIMD( x ) (\
+#define SNES_NTSC_HIRES_OUT_SIMD_( x ) (\
 		kernel0  [ x       ] + kernel2  [(x+5)%7+14] + kernel4  [(x+3)%7+28] +\
 		kernelx0 [(x+7)%7+7] + kernelx2 [(x+5)%7+21] + kernelx4 [(x+3)%7+35] +\
 		kernel1  [(x+6)%7  ] + kernel3  [(x+4)%7+14] + kernel5  [(x+2)%7+28] +\
 		kernelx1 [(x+6)%7+7] + kernelx3 [(x+4)%7+21] + kernelx5 [(x+2)%7+35]\
 )
+
+// this version attempts to encourage instruction level parrallelism on ARMv7
+// to help hide the load latency by use three intermediatories.
+#define SNES_NTSC_HIRES_OUT_SIMD(x)                                               \
+([&]() noexcept -> uint32_t {                                                     \
+    uint32_t a0 = 0, a1 = 0, a2 = 0;                                              \
+    a0 += kernel0 [ (x)              ] + kernelx0 [ ((x)+7)%7 +  7 ];             \
+    a1 += kernel2 [ ((x)+5)%7 + 14   ] + kernelx2 [ ((x)+5)%7 + 21 ];             \
+    a2 += kernel4 [ ((x)+3)%7 + 28   ] + kernelx4 [ ((x)+3)%7 + 35 ];             \
+    a0 += kernel1 [ ((x)+6)%7        ] + kernelx1 [ ((x)+6)%7 +  7 ];             \
+    a1 += kernel3 [ ((x)+4)%7 + 14   ] + kernelx3 [ ((x)+4)%7 + 21 ];             \
+    a2 += kernel5 [ ((x)+2)%7 + 28   ] + kernelx5 [ ((x)+2)%7 + 35 ];             \
+    return a0 + a1 + a2;                                                          \
+}())
 
 /* private */
 #include <stdint.h>

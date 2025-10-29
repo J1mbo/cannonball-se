@@ -143,7 +143,7 @@ set(src_sdl
     "${main_cpp_base}/sdl2/timer.cpp"
     "${main_cpp_base}/sdl2/input.cpp"
     "${main_cpp_base}/sdl2/renderbase.cpp"
-    "${main_cpp_base}/sdl2/snes_ntsc.c"
+    "${main_cpp_base}/sdl2/snes_ntsc.cpp"
     )
 
 set(src_render
