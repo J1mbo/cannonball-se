@@ -1,4 +1,4 @@
-precision highp float;
+precision mediump float;
 
 /* ---------------------------------------------------------------------------- */
 /*                                                                              */
@@ -30,13 +30,18 @@ uniform float warpY;
 uniform vec2  invExpand;       // (1/expandX, 1/expandY)
 uniform float brightboost;
 uniform float noiseIntensity;
+uniform vec2 u_Time;           // set both elements to FrameCount / 60.0
+
+/* The following are unused in this shader and are here to provide compatibility with the full shader environment */
 uniform float vignette;
-uniform float desaturate;
-uniform float desaturateEdges;
-uniform float baseOff;         // shadow mask dim value, e.g. 0.75f
-uniform float baseOn;          // shadow mask boost value, usually 1/baseOff e.g. 1.333f
-uniform float invMaskPos;      // mask size, 1/1 = normal (1280x1024 screens), 1/2 = high DPI screens
-uniform vec2 u_Time; // set both elements to FrameCount / 60.0
+uniform float desat_inv0;
+uniform float desat_inv1;
+uniform float baseOff;
+uniform float baseOn;
+uniform float invMaskPitch;
+uniform float inv2MaskPitch;
+uniform float inv2Height;
+
 
 
 // -------------------------------------------------------------------
@@ -72,6 +77,7 @@ vec2 Warp(vec2 pos)
 // Fast approximate sine function.
 // This function wraps the input to [-pi, pi] and approximates sin(x)
 // using a simple linear/quadratic combination.
+/*
 float fastSin(float x) {
     const float pi = 3.14159265;
     // Wrap x to the range [-pi, pi]
@@ -79,6 +85,23 @@ float fastSin(float x) {
     // Approximation: sin(x) ? 1.27323954*x - 0.405284735*x*abs(x)
     return 1.27323954 * x - 0.405284735 * x * abs(x);
 }
+*/
+
+float fastSin(float x) {
+    // Wrap x to [-pi, pi] using fract (cheaper than mod on VC4)
+    // INV_TAU = 1/(2*pi), TAU = 2*pi
+    const float INV_TAU = 0.15915494;  // 1/(2π)
+    const float TAU     = 6.2831853;   // 2π
+    const float PI      = 3.1415927;
+
+    // Bring phase down to [0,1) then scale to [-pi,pi]
+    x = fract(x * INV_TAU) * TAU - PI;
+
+    // Same 2-term parabolic sine approximation you used
+    // sin(x) ≈ 1.27323954*x - 0.405284735*x*abs(x)
+    return 1.27323954 * x - 0.405284735 * x * abs(x);
+}
+
 
 // Generate a pseudo-random value in the range [0,1) based on a 2D coordinate,
 // using the fastSin function instead of the standard sin() for better performance.
@@ -96,83 +119,6 @@ vec3 addNoise(vec3 colour, vec2 uv, float intensity) {
     colour += noise * intensity;
     return colour;
 }
-
-
-// ------------------------------------------------------------------------
-// CRT ShadowMask function. Creates an effect similar to an arcade monitor.
-// ------------------------------------------------------------------------
-
-vec3 fastmask()
-{
-    vec2 mpos = floor(maskpos * invMaskPos);
-    //vec2 mpos = floor(maskpos);
-    float tmpvar_1 = fract(mpos.x / 3.0);
-    float tmpvar_2 = fract(mpos.x / 6.0);
-    float tmpvar_3 = fract(mpos.y / 2.0);
-    
-    // Step 1: choose base value without an if statement.
-    // float base = mix(0.7498125, 1.333, step(0.001, tmpvar_1));
-    float base = mix(baseOff, baseOn, step(0.001, tmpvar_1));
-    
-    // Step 2: choose the multiplier conditionally.
-    float condA = step(0.001, tmpvar_1);
-    float condBranchA = 1.0 - step(0.5, tmpvar_2);
-    float condBranchB = step(0.5, tmpvar_2);
-    float branchSelector = step(tmpvar_3, 0.001);
-    float maskCondition = branchSelector * condBranchA + (1.0 - branchSelector) * condBranchB;
-    float multiplier = mix(1.0, baseOff, condA * maskCondition);
-    
-    float maskVal = base * multiplier;
-    return vec3(maskVal);
-}
-
-
-
-// ------------------------------------------------------------------------
-// DesaturateAndVignette. This calculates the distance from the centre of
-// the image and brings up the black-point and down the overall luminance
-// according to the configured desaturateEdges and vignette values.
-// An overall desaturation is also applied.
-// ------------------------------------------------------------------------
-vec3 DesaturateAndVignette(vec2 pos, vec3 colour)
-{
-    // Compute a uniform base offset.
-    float baseOffset = desaturate;
-
-    // Compute an additional offset based on distance from the center.
-    // First, compute a 2D vector from the center (0.5, 0.5) to the current uv.
-    vec2 centeredUV = pos - vec2(0.5);
-
-    // Compute the squared distance (avoiding sqrt for efficiency).
-    float distSq = dot(centeredUV, centeredUV);
-
-    // The maximum squared distance in a unit square centered at (0.5, 0.5)
-    // is 0.5 (at the corners, where centeredUV = (0.5, 0.5)).
-    // Normalize so that 0 is at the center and 1 at the corners.
-    float normDist = distSq * 2.0;
-    
-    // The additional offset increases linearly with the normalized distance.
-    float edgeOffset = normDist * desaturateEdges;
-    
-    // Total offset is the sum of the base and edge-dependent offsets.
-    float totalOffset = baseOffset + edgeOffset;
-    
-    // Raise the black level but leave white unchanged - Moves black from 0 to
-    // totalOffset/(1+totalOffset)
-    //
-    // the following is equivalent to but potentially 1 div instead of 3:
-    // vec3 pCol = (colour + vec3(totalOffset)) / (1.0 + totalOffset);
-
-    float invDenom   = 1.0 / (1.0 + totalOffset);
-    vec3  pCol       = (colour + vec3(totalOffset)) * invDenom;    
-    
-    // Apply vignette using the same distance calculation
-    float dimVal = normDist * vignette;
-    pCol *= (1.0-dimVal);
-
-    return pCol;
-}
-
 
 
 // -------------------------------------------------------------------

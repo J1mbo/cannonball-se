@@ -686,6 +686,7 @@ long RenderSurface::get_video_config() {
                             config.video.noise          +
                             config.video.vignette       +
                             config.video.desaturate     +
+                            config.video.desaturate_edges +
                             config.video.shadow_mask    +
                             (config.video.maskDim*2)    +
                             config.video.maskBoost      +
@@ -769,11 +770,17 @@ bool RenderSurface::finalize_frame()
             float vignette = (config.video.shadow_mask < 2) ? 0.0f : float(config.video.vignette) / 100.0f;
             glb::set_uniform("vignette",        vignette);
 
-            glb::set_uniform("desaturate",      float(config.video.desaturate) / 100.0f);
-            glb::set_uniform("desaturateEdges", float(config.video.desaturate_edges) / 100.0f);
+//            glb::set_uniform("desaturate",      float(config.video.desaturate) / 100.0f);
+//            glb::set_uniform("desaturateEdges", float(config.video.desaturate_edges) / 100.0f);
+
+            float desat_val = (config.video.desaturate) / 100.0f;
+            glb::set_uniform("desat_inv0",      (1.0f / (1.0f + desat_val)));
+            desat_val += (config.video.desaturate_edges) / 100.0f;
+            glb::set_uniform("desat_inv1",      (1.0f / (1.0f + desat_val)));
+
             glb::set_uniform("baseOff",         (config.video.shadow_mask==2 ? (config.video.maskDim/100.0f)   : 1.0f));
             glb::set_uniform("baseOn",          (config.video.shadow_mask==2 ? (config.video.maskBoost/100.0f) : 1.0f));
-            int this_mask_size = std::min(3, config.video.mask_size);
+            int this_mask_size = std::max(3, config.video.mask_size);
             glb::set_uniform("invMaskPitch",    (1.0f /    float(this_mask_size)) );
             glb::set_uniform("inv2MaskPitch",   (1.0f / (2*float(this_mask_size))) );
             glb::set_uniform("inv2Height",      (1.0f / (2*float((this_mask_size-2)))) );
@@ -799,6 +806,7 @@ bool RenderSurface::finalize_frame()
     glb::draw( /*useOffscreen=*/(offscreen_rendering==1),
                /*drawOverlay=*/((config.video.crt_shape != 0)||(config.video.shadow_mask==1)) );
 
+    // ultimately calls SDL_GL_SwapWindow
     glb::present();
 
     // notify disable() that we're done
@@ -808,7 +816,6 @@ bool RenderSurface::finalize_frame()
 
     return true;
 }
-
 
 
 void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, int section)
@@ -861,7 +868,6 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
 
         // Now call the blargg code, to do the work of translating S16 output to RGB
         if (config.video.hires) {
-for (int i=0; i<5; i++) {
             // hi-res
             #if SNES_NTSC_HAVE_SIMD
                 // Only compiled when the fast function exists
@@ -871,7 +877,6 @@ for (int i=0; i<5; i++) {
                 snes_ntsc_blit_hires(ntsc, bpix, long(src_width), phase, src_width,
                                      block_height, tpix, output_pitch, Ashifted);
             #endif
-}
         }
         else {
             // standard res processing

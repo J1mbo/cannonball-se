@@ -1,4 +1,4 @@
-precision highp float;
+precision mediump float;
 
 /* ---------------------------------------------------------------------------- */
 /*                                                                              */
@@ -37,10 +37,12 @@ uniform vec2  invExpand;       // (1/expandX, 1/expandY)
 uniform float brightboost;
 uniform float noiseIntensity;
 uniform float vignette;
-uniform float desaturate;
-uniform float desaturateEdges;
-uniform float baseOff;         // shadow mask dim value, e.g. 0.75f
-uniform float baseOn;          // shadow mask boost value, usually 1/baseOff e.g. 1.333f
+
+uniform float desat_inv0;       // set to 1.0 / (1.0 + desaturate)
+uniform float desat_inv1;       // set to 1.0 / (1.0 + desaturate + desaturateEdges)
+
+uniform float baseOff;          // shadow mask dim value, e.g. 0.75f
+uniform float baseOn;           // shadow mask boost value, usually 1/baseOff e.g. 1.333f
 
 /* Shadow mask
  * maskPitch is between 3 and 6. Setting invMaskPitch saves division in the mask.
@@ -85,8 +87,9 @@ vec2 Warp(vec2 pos)
 // Random noise generator. Creates the illusion of analogue signal processing.
 // -------------------------------------------------------------------
 
-
 // Fast approximate sine function.
+
+/*
 // This function wraps the input to [-pi, pi] and approximates sin(x)
 // using a simple linear/quadratic combination.
 float fastSin(float x) {
@@ -96,6 +99,23 @@ float fastSin(float x) {
     // Approximation: sin(x) ? 1.27323954*x - 0.405284735*x*abs(x)
     return 1.27323954 * x - 0.405284735 * x * abs(x);
 }
+*/
+
+float fastSin(float x) {
+    // Wrap x to [-pi, pi] using fract (cheaper than mod on VC4)
+    // INV_TAU = 1/(2*pi), TAU = 2*pi
+    const float INV_TAU = 0.15915494;  // 1/(2π)
+    const float TAU     = 6.2831853;   // 2π
+    const float PI      = 3.1415927;
+
+    // Bring phase down to [0,1) then scale to [-pi,pi]
+    x = fract(x * INV_TAU) * TAU - PI;
+
+    // Same 2-term parabolic sine approximation you used
+    // sin(x) ≈ 1.27323954*x - 0.405284735*x*abs(x)
+    return 1.27323954 * x - 0.405284735 * x * abs(x);
+}
+
 
 // Generate a pseudo-random value in the range [0,1) based on a 2D coordinate,
 // using the fastSin function instead of the standard sin() for better performance.
@@ -121,23 +141,23 @@ vec3 addNoise(vec3 colour, vec2 uv, float intensity) {
 
 vec3 fastmask()
 {
-    vec2 mpos = floor(maskpos);
-    float tmpvar_1 = fract( mpos.x * invMaskPitch );
-    float tmpvar_2 = fract( mpos.x * inv2MaskPitch );
-    float tmpvar_3 = fract( mpos.y * inv2Height );
+    highp vec2 mpos = floor(maskpos);
+    highp float tmpvar_1 = fract( mpos.x * invMaskPitch );
+    highp float tmpvar_2 = fract( mpos.x * inv2MaskPitch );
+    highp float tmpvar_3 = fract( mpos.y * inv2Height );
     
     // Select base value without an if statement.
-    float base = mix(baseOff, baseOn, step(0.001, tmpvar_1));
+    float base = mix(baseOff, baseOn, step(0.02, tmpvar_1));
     
     // Horizontal spacing
-    float condA       =       step(0.001, tmpvar_1);
-    float condBranchB =       step(0.5,   tmpvar_2);
+    float condA       = step(0.02, tmpvar_1);
+    float condBranchB = step(0.5,  tmpvar_2);
 
     // Veritcal spacing
     // vCond0 is 1 when tmpvar_3 is approx 0
-    float vCond0      = 1.0 - step(0.001, tmpvar_3);
+    float vCond0      = 1.0 - step(0.02, tmpvar_3);
     // vCondHalf is 1 when tmpvar_3 is approx 0.5
-    float vCondHalf   = 1.0 - step(0.001, abs(tmpvar_3 - 0.5));
+    float vCondHalf   = 1.0 - step(0.02, abs(tmpvar_3 - 0.5));
 
     // Determine the output value
     float extraMask   = (1.0 - condBranchB) * vCond0 + condBranchB * vCondHalf;
@@ -154,6 +174,25 @@ vec3 fastmask()
 // according to the configured desaturateEdges and vignette values.
 // An overall desaturation is also applied.
 // ------------------------------------------------------------------------
+
+vec3 DesaturateAndVignette(vec2 pos, vec3 colour)
+{
+    // n in [0,1] from center to corners, without a temp vec2
+    float n = (dot(pos, pos) - (pos.x + pos.y) + 0.5) * 2.0;
+
+    // Desaturate - approximate reciprocal with mix
+    float invApprox = mix(desat_inv0, desat_inv1, n);
+
+    // (colour + offset)*inv  ==  mix(1.0, colour, inv)
+    vec3 pCol = mix(vec3(1.0), colour, invApprox);
+
+    // Apply vignette (darken edges)
+    pCol *= (1.0 - n * vignette);
+
+    return pCol;
+}
+
+/*
 vec3 DesaturateAndVignette(vec2 pos, vec3 colour)
 {
     // Compute a uniform base offset.
@@ -192,7 +231,7 @@ vec3 DesaturateAndVignette(vec2 pos, vec3 colour)
 
     return pCol;
 }
-
+*/
 
 
 // -------------------------------------------------------------------
