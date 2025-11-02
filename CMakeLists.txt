@@ -64,6 +64,9 @@ option(PROFILE_WITH_PERF       "Tweak flags for Linux perf (symbols + frame poin
 option(PROFILE_WITH_GPROF      "Build with -pg for gprof" OFF)
 option(PROFILE_WITH_CALLGRIND  "Reduce inlining for cleaner callgrind graphs" OFF)
 
+# --- Pixel accuracy mode ---
+option(PIXEL_ACCURACY "Enable pixel-accurate sprite rendering" ON)
+
 # --- Option for MP3 playback ---
 option(WITH_MP3 "Enable MP3 playback via mpg123" ON)
 
@@ -272,6 +275,11 @@ if(MSVC)
     )
 endif()
 
+if(PIXEL_ACCURACY)
+    target_compile_definitions(cannonball-se PRIVATE PIXEL_ACCURACY=1)
+else()
+    target_compile_definitions(cannonball-se PRIVATE PIXEL_ACCURACY=0)
+endif()
 
 # --- Dependencies: SDL2 (robust handling), TinyXML2, EGL/GLESv2 -------------------
 

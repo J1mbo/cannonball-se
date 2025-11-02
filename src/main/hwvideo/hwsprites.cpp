@@ -11,7 +11,8 @@
     All rights reserved.
 ***************************************************************************/
 
-/* This version is tuned for CannonBall-SE, modifications Copyright (c) 2025, James Pearce */
+/* This version is tuned for CannonBall-SE, modifications Copyright (c) 2025, James Pearce
+   Approx. 20% speed-up on Pi2 */
 
 /*******************************************************************************************
 *  Out Run/X-Board-style sprites
@@ -177,11 +178,77 @@ void hwsprites::swap()
 
  2. Any write to the last pixel of the row before will be masked by the CRT shape overlay.
 
- This makes it fast enough that we no longer need to offer rendering without it -
- even the Pi 1 and Zero are stable at 30 fps (in arcade-res).
+ This makes it fast enough that even the Pi 1 and Zero are stable at 30 fps (in arcade-res).
 */
 
-#define draw_pixels() do {                                          \
+// PIXEL_ACCURACY enables the S16-style sprite edge glow in shadows
+// Defaults to ON, but can be set to off with CMake with "cmake -DPIXEL_ACCURACY=OFF"
+#ifndef PIXEL_ACCURACY
+#define PIXEL_ACCURACY 1
+#endif
+
+#if PIXEL_ACCURACY==1
+    #define DRAW() do {             \
+        pDst[x-1] &= 0xfff;         \
+        pDst[x]    = (pix | color); \
+    } while (0)
+#else
+    #define DRAW() do {             \
+        pDst[x]    = (pix | color); \
+    } while (0)
+#endif
+
+#define IF_IS_DRAWABLE() if (((unsigned)(pix - 1) < 14u) && ((unsigned)(x - x1) < span))
+
+#define draw_pixels_forward() do {                                  \
+    while (xacc < 0x200) {                                          \
+        IF_IS_DRAWABLE() {                                          \
+            if (pix == 0xA)                                         \
+                pDst[x] |= S16_PALETTE_ENTRIES;                     \
+            else DRAW();                                            \
+        }                                                           \
+        x += 1; xacc += hzoom;                                      \
+    }                                                               \
+    xacc -= 0x200;                                                  \
+} while (0)
+
+#define draw_pixels_backward() do {                                 \
+    while (xacc < 0x200) {                                          \
+        IF_IS_DRAWABLE() {                                          \
+            if (pix == 0xA)                                         \
+                pDst[x] |= S16_PALETTE_ENTRIES;                     \
+            else DRAW();                                            \
+        }                                                           \
+        x -= 1; xacc += hzoom;                                      \
+    }                                                               \
+    xacc -= 0x200;                                                  \
+} while (0)
+
+// No-shadow varients
+
+#define draw_pixels_forward_ns() do {                               \
+    while (xacc < 0x200) {                                          \
+        IF_IS_DRAWABLE() {                                          \
+              DRAW();                                               \
+        }                                                           \
+        x += 1; xacc += hzoom;                                      \
+    }                                                               \
+    xacc -= 0x200;                                                  \
+} while (0)
+
+#define draw_pixels_backward_ns() do {                              \
+    while (xacc < 0x200) {                                          \
+        IF_IS_DRAWABLE() {                                          \
+              DRAW();                                               \
+        }                                                           \
+        x -= 1; xacc += hzoom;                                      \
+    }                                                               \
+    xacc -= 0x200;                                                  \
+} while (0)
+
+
+// Reference full-function macro (not used)
+#define draw_pixels_() do {                                         \
     while (xacc < 0x200) {                                          \
         if (pix != 0 && pix != 15 && x >= x1 && x < x2) {           \
             if (shadow && pix == 0xA)                               \
@@ -196,34 +263,8 @@ void hwsprites::swap()
     xacc -= 0x200;                                                  \
 } while (0)
 
-/* JJP - the following macros are currently not used. The provide slightly faster sprite rendering */
 
-#define draw_pixels_no_glow() do {                                  \
-    while (xacc < 0x200) {                                          \
-        if (pix != 0 && pix != 15 && x >= x1 && x < x2) {           \
-            if (shadow && pix == 0xA)                               \
-                pDst[x] |= S16_PALETTE_ENTRIES;                     \
-            else                                                    \
-                pDst[x] = (pix | color);                            \
-        }                                                           \
-        x += xdelta; xacc += hzoom;                                 \
-    }                                                               \
-    xacc -= 0x200;                                                  \
-} while (0)
-
-#define draw_pixels_no_shadows() do {                               \
-    while (xacc < 0x200) {                                          \
-        if (pix != 0 && pix != 15 && x >= x1 && x < x2) {           \
-            pDst[x] = (pix | color);                                \
-        }                                                           \
-        x += xdelta; xacc += hzoom;                                 \
-    }                                                               \
-    xacc -= 0x200;                                                  \
-} while (0)
-
-
-
-void hwsprites::render(const uint8_t priority)
+void hwsprites::render(uint16_t* pixels, const uint8_t priority)
 {
     const uint32_t numbanks  = SPRITES_LENGTH / 0x10000;
     const int scr_width      = config.s16_width;
@@ -256,7 +297,7 @@ void hwsprites::render(const uint8_t priority)
         int32_t  height   =  (ramBuff[data+5] >> 8) + 1;
         int32_t  xpos     =   ramBuff[data+6]; // moved from original structure to accomodate widescreen
 
-        int32_t  x, y, ytarget, yacc = 0, pix;
+        int32_t  y, ytarget, yacc = 0;
 
         // adjust X coordinate
         // note: the threshhold below is a guess. If it is too high, rachero will draw garbage
@@ -300,63 +341,271 @@ void hwsprites::render(const uint8_t priority)
         // 7. ~55% are skipped by the test "if (pix != 0 && pix != 15 && x >= x1 && x < x2)"
         // 7.1 ~50% are skipped by the first test (pix != 0)
 
-        uint16_t* RESTRICT pDst = video.pixels + top*scr_width;
-        for (y = top; y != ytarget; y += ydelta)
-        {
-            // skip drawing if not within the cliprect
-            if (y >= 0 && y < scr_height)
-            {
-                uint32_t  curAddr = addr;
-                int32_t   xacc    = 0;
+        uint16_t* RESTRICT pDst = pixels + top*scr_width;
+        const unsigned span = (unsigned)(x2 - x1);
 
+        if (shadow) {
+            if (flip == 0) {
                 // non-flipped case - approx. 75%
-                if (flip == 0)
-                {
-                    for (x = xpos; (xdelta > 0 && x < scr_width) || (xdelta < 0 && x >= 0); )
-                    {
-                        uint32_t pixels = spritedata[curAddr++];
-                        // draw eight pixels
-                        pix = (pixels >> 28) & 0xf; draw_pixels();
-                        pix = (pixels >> 24) & 0xf; draw_pixels();
-                        pix = (pixels >> 20) & 0xf; draw_pixels();
-                        pix = (pixels >> 16) & 0xf; draw_pixels();
-                        pix = (pixels >> 12) & 0xf; draw_pixels();
-                        pix = (pixels >>  8) & 0xf; draw_pixels();
-                        pix = (pixels >>  4) & 0xf; draw_pixels();
-                        pix = (pixels >>  0) & 0xf; draw_pixels();
+                if (xdelta > 0) {
+                    for (y = top; y != ytarget; y += ydelta) {
+                        // skip drawing if not within the cliprect
+                        if (y >= 0 && y < scr_height) {
+                            uint32_t  curAddr = addr;
+                            int32_t   xacc    = 0;
+                            for (int32_t x = xpos; x < scr_width; ) {
+                                uint32_t pixels = spritedata[curAddr++];
+                                uint32_t pix;
+                                // draw eight pixels
+                                pix = (pixels >> 28);       draw_pixels_forward();
+                                pix = (pixels >> 24) & 0xf; draw_pixels_forward();
+                                pix = (pixels >> 20) & 0xf; draw_pixels_forward();
+                                pix = (pixels >> 16) & 0xf; draw_pixels_forward();
+                                pix = (pixels >> 12) & 0xf; draw_pixels_forward();
+                                pix = (pixels >>  8) & 0xf; draw_pixels_forward();
+                                pix = (pixels >>  4) & 0xf; draw_pixels_forward();
+                                pix = (pixels >>  0) & 0xf; draw_pixels_forward();
 
-                        // stop if the second-to-last pixel in the group was 0xf
-                        if ((pixels & 0x000000f0) == 0x000000f0)
-                            break;
+                                // stop if the second-to-last pixel in the group was 0xf
+                                if ((pixels & 0x000000f0) == 0x000000f0)
+                                    break;
+                            }
+                        }
+                        // accumulate zoom factors; if we carry into the high bit, skip an extra row
+                        yacc += vzoom;
+                        addr += pitch * (yacc >> 9);
+                        yacc &= 0x1ff;
+                        pDst += scr_width;
+                    }
+                } else {
+                    for (y = top; y != ytarget; y += ydelta) {
+                        // skip drawing if not within the cliprect
+                        if (y >= 0 && y < scr_height) {
+                            uint32_t  curAddr = addr;
+                            int32_t   xacc    = 0;
+                            for (int32_t x = xpos; x >= 0; )
+                            {
+                                uint32_t pixels = spritedata[curAddr++];
+                                uint32_t pix;
+                                // draw eight pixels
+                                pix = (pixels >> 28);       draw_pixels_backward();
+                                pix = (pixels >> 24) & 0xf; draw_pixels_backward();
+                                pix = (pixels >> 20) & 0xf; draw_pixels_backward();
+                                pix = (pixels >> 16) & 0xf; draw_pixels_backward();
+                                pix = (pixels >> 12) & 0xf; draw_pixels_backward();
+                                pix = (pixels >>  8) & 0xf; draw_pixels_backward();
+                                pix = (pixels >>  4) & 0xf; draw_pixels_backward();
+                                pix = (pixels >>  0) & 0xf; draw_pixels_backward();
+
+                                // stop if the second-to-last pixel in the group was 0xf
+                                if ((pixels & 0x000000f0) == 0x000000f0)
+                                    break;
+                            }
+                        }
+                        // accumulate zoom factors; if we carry into the high bit, skip an extra row
+                        yacc += vzoom;
+                        addr += pitch * (yacc >> 9);
+                        yacc &= 0x1ff;
+                        pDst += scr_width;
                     }
                 }
-                // flipped case - approx. 25%
-                else
-                {
-                    for (x = xpos; (xdelta > 0 && x < scr_width) || (xdelta < 0 && x >= 0); )
-                    {
-                        uint32_t pixels = spritedata[curAddr--];
-                        // draw eight pixels
-                        pix = (pixels >>  0) & 0xf; draw_pixels();
-                        pix = (pixels >>  4) & 0xf; draw_pixels();
-                        pix = (pixels >>  8) & 0xf; draw_pixels();
-                        pix = (pixels >> 12) & 0xf; draw_pixels();
-                        pix = (pixels >> 16) & 0xf; draw_pixels();
-                        pix = (pixels >> 20) & 0xf; draw_pixels();
-                        pix = (pixels >> 24) & 0xf; draw_pixels();
-                        pix = (pixels >> 28) & 0xf; draw_pixels();
+            } else {
+                // flipped case
+                if (xdelta > 0) {
+                    for (y = top; y != ytarget; y += ydelta) {
+                        // skip drawing if not within the cliprect
+                        if (y >= 0 && y < scr_height) {
+                            uint32_t  curAddr = addr;
+                            int32_t   xacc    = 0;
+                            for (int32_t x = xpos; x < scr_width; ) {
+                                uint32_t pixels = spritedata[curAddr--];
+                                uint32_t pix;
+                                // draw eight pixels
+                                pix = (pixels >>  0) & 0xf; draw_pixels_forward();
+                                pix = (pixels >>  4) & 0xf; draw_pixels_forward();
+                                pix = (pixels >>  8) & 0xf; draw_pixels_forward();
+                                pix = (pixels >> 12) & 0xf; draw_pixels_forward();
+                                pix = (pixels >> 16) & 0xf; draw_pixels_forward();
+                                pix = (pixels >> 20) & 0xf; draw_pixels_forward();
+                                pix = (pixels >> 24) & 0xf; draw_pixels_forward();
+                                pix = (pixels >> 28) & 0xf; draw_pixels_forward();
 
-                        // stop if the second-to-last pixel in the group was 0xf
-                        if ((pixels & 0x0f000000) == 0x0f000000)
-                            break;
+                                // stop if the second-to-last pixel in the group was 0xf
+                                if ((pixels & 0x0f000000) == 0x0f000000)
+                                    break;
+                            }
+                        }
+                        // accumulate zoom factors; if we carry into the high bit, skip an extra row
+                        yacc += vzoom;
+                        addr += pitch * (yacc >> 9);
+                        yacc &= 0x1ff;
+                        pDst += scr_width;
+                    }
+                } else {
+                    for (y = top; y != ytarget; y += ydelta) {
+                        // skip drawing if not within the cliprect
+                        if (y >= 0 && y < scr_height) {
+                            uint32_t  curAddr = addr;
+                            int32_t   xacc    = 0;
+                            for (int32_t x = xpos; x >= 0; )
+                            {
+                                uint32_t pixels = spritedata[curAddr--];
+                                uint32_t pix;
+                                // draw eight pixels
+                                pix = (pixels >>  0) & 0xf; draw_pixels_backward();
+                                pix = (pixels >>  4) & 0xf; draw_pixels_backward();
+                                pix = (pixels >>  8) & 0xf; draw_pixels_backward();
+                                pix = (pixels >> 12) & 0xf; draw_pixels_backward();
+                                pix = (pixels >> 16) & 0xf; draw_pixels_backward();
+                                pix = (pixels >> 20) & 0xf; draw_pixels_backward();
+                                pix = (pixels >> 24) & 0xf; draw_pixels_backward();
+                                pix = (pixels >> 28) & 0xf; draw_pixels_backward();
+
+                                // stop if the second-to-last pixel in the group was 0xf
+                                if ((pixels & 0x0f000000) == 0x0f000000)
+                                    break;
+                            }
+                        }
+                        // accumulate zoom factors; if we carry into the high bit, skip an extra row
+                        yacc += vzoom;
+                        addr += pitch * (yacc >> 9);
+                        yacc &= 0x1ff;
+                        pDst += scr_width;
                     }
                 }
             }
-            // accumulate zoom factors; if we carry into the high bit, skip an extra row
-            yacc += vzoom;
-            addr += pitch * (yacc >> 9);
-            yacc &= 0x1ff;
-            pDst += scr_width;
+        } else {
+            // no shadows in sprite, actually <10% but keeping this path seperate means we never need
+            // to test for shadow in the inner loops.
+            if (flip == 0) {
+                // non-flipped case
+                if (xdelta > 0) {
+                    for (y = top; y != ytarget; y += ydelta) {
+                        // skip drawing if not within the cliprect
+                        if (y >= 0 && y < scr_height) {
+                            uint32_t  curAddr = addr;
+                            int32_t   xacc    = 0;
+                            for (int32_t x = xpos; x < scr_width; ) {
+                                uint32_t pixels = spritedata[curAddr++];
+                                uint32_t pix;
+                                // draw eight pixels
+                                pix = (pixels >> 28);       draw_pixels_forward_ns();
+                                pix = (pixels >> 24) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >> 20) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >> 16) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >> 12) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >>  8) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >>  4) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >>  0) & 0xf; draw_pixels_forward_ns();
+
+                                // stop if the second-to-last pixel in the group was 0xf
+                                if ((pixels & 0x000000f0) == 0x000000f0)
+                                    break;
+                            }
+                        }
+                        // accumulate zoom factors; if we carry into the high bit, skip an extra row
+                        yacc += vzoom;
+                        addr += pitch * (yacc >> 9);
+                        yacc &= 0x1ff;
+                        pDst += scr_width;
+                    }
+                } else {
+                    for (y = top; y != ytarget; y += ydelta) {
+                        // skip drawing if not within the cliprect
+                        if (y >= 0 && y < scr_height) {
+                            uint32_t  curAddr = addr;
+                            int32_t   xacc    = 0;
+                            for (int32_t x = xpos; x >= 0; )
+                            {
+                                uint32_t pixels = spritedata[curAddr++];
+                                uint32_t pix;
+                                // draw eight pixels
+                                pix = (pixels >> 28);       draw_pixels_backward_ns();
+                                pix = (pixels >> 24) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >> 20) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >> 16) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >> 12) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >>  8) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >>  4) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >>  0) & 0xf; draw_pixels_backward_ns();
+
+                                // stop if the second-to-last pixel in the group was 0xf
+                                if ((pixels & 0x000000f0) == 0x000000f0)
+                                    break;
+                            }
+                        }
+                        // accumulate zoom factors; if we carry into the high bit, skip an extra row
+                        yacc += vzoom;
+                        addr += pitch * (yacc >> 9);
+                        yacc &= 0x1ff;
+                        pDst += scr_width;
+                    }
+                }
+            } else {
+                // flipped case
+                if (xdelta > 0) {
+                    for (y = top; y != ytarget; y += ydelta) {
+                        // skip drawing if not within the cliprect
+                        if (y >= 0 && y < scr_height) {
+                            uint32_t  curAddr = addr;
+                            int32_t   xacc    = 0;
+                            for (int32_t x = xpos; x < scr_width; ) {
+                                uint32_t pixels = spritedata[curAddr--];
+                                uint32_t pix;
+                                // draw eight pixels
+                                pix = (pixels >>  0) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >>  4) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >>  8) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >> 12) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >> 16) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >> 20) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >> 24) & 0xf; draw_pixels_forward_ns();
+                                pix = (pixels >> 28) & 0xf; draw_pixels_forward_ns();
+
+                                // stop if the second-to-last pixel in the group was 0xf
+                                if ((pixels & 0x0f000000) == 0x0f000000)
+                                    break;
+                            }
+                        }
+                        // accumulate zoom factors; if we carry into the high bit, skip an extra row
+                        yacc += vzoom;
+                        addr += pitch * (yacc >> 9);
+                        yacc &= 0x1ff;
+                        pDst += scr_width;
+                    }
+                } else {
+                    for (y = top; y != ytarget; y += ydelta) {
+                        // skip drawing if not within the cliprect
+                        if (y >= 0 && y < scr_height) {
+                            uint32_t  curAddr = addr;
+                            int32_t   xacc    = 0;
+                            for (int32_t x = xpos; x >= 0; )
+                            {
+                                uint32_t pixels = spritedata[curAddr--];
+                                uint32_t pix;
+                                // draw eight pixels
+                                pix = (pixels >>  0) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >>  4) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >>  8) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >> 12) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >> 16) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >> 20) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >> 24) & 0xf; draw_pixels_backward_ns();
+                                pix = (pixels >> 28) & 0xf; draw_pixels_backward_ns();
+
+                                // stop if the second-to-last pixel in the group was 0xf
+                                if ((pixels & 0x0f000000) == 0x0f000000)
+                                    break;
+                            }
+                        }
+                        // accumulate zoom factors; if we carry into the high bit, skip an extra row
+                        yacc += vzoom;
+                        addr += pitch * (yacc >> 9);
+                        yacc &= 0x1ff;
+                        pDst += scr_width;
+                    }
+                }
+            }
         }
     }
 }

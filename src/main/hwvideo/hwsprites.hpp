@@ -15,7 +15,7 @@ public:
     void swap();
     uint8_t read(const uint16_t adr);
     void write(const uint16_t adr, const uint16_t data);
-    void render(const uint8_t);
+    void render(uint16_t* pixels, const uint8_t);
 
 private:
     // Clip values.

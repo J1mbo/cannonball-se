@@ -196,9 +196,10 @@ void Video::prepare_frame()
 
         if (!config.engine.fix_bugs || oroad.horizon_base != ORoad::HORIZON_OFF)
             (hwroad.*hwroad.render_foreground)(pixels);
-        sprite_layer->render(8);
+
+        sprite_layer->render(pixels, 8);
         tile_layer->render_text_layer(pixels, 1);
-     }
+    }
 }
 
 void Video::render_frame(int fastpass)
