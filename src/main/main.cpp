@@ -499,18 +499,18 @@ static void main_loop() {
         std::cout << "Using " << threads << " threads (" << render_threads << " renderer threads)" << std::endl;
         if (prepare_threads) {
             // prepare_thread produces the S16 output - road, sky, sprites etc
+            // Note - this thread also launches the sound callback, so don't pin this thread to one core.
             t0 = std::thread(prepare_thread);
         }
         // render_threads process with S16 output with Blargg filter, if enabled,
         // or convert the S16 palette-based output to RGB otherwise
         t1 = std::thread(render_thread,render_threads,0);
+        // pin_thread_to_core(t1,2);
         if (render_threads == 2) {
             t2 = std::thread(render_thread,render_threads,1);
+            // pin_thread_to_core(t2,3);
         }
     }
-
-//    pin_thread_to_core(t0,1);
-//    pin_thread_to_core(t1,2);
 
     SDL_Delay(500); // let system stabalise
 
@@ -572,16 +572,19 @@ static void main_loop() {
         totalRenderedFramesForCheck++;  // For performance evaluation
 
         if (using_threading) {
-            // Singal threads have work to do
+            // Set NTSC filter to work on the last complete frame immediately
+            renderReady0.release();
+            if (render_threads==2) renderReady1.release();
+
+            // Set sprite gen to work if we're threading that too
             if (prepare_threads) {
-                prepareReady.release();
+                prepareReady.release(); // sprites for last frame
             } else {
+                // tick game logic
                 tick();
                 audio.tick();
                 video.prepare_frame();
             }
-            renderReady0.release();
-            if (render_threads==2) renderReady1.release();
 
             // Run the GPU-bound work on the main thread (SDL limitation)
             video.present_frame();
