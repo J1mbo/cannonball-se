@@ -117,6 +117,15 @@ private:
     bool                      fastpassPostFxDone = false; // lets the first waiter proceed
 
     // keep track of UI settings changes
-    int last_blargg_config = 0;
-    long last_config = 0;
+    int  last_blargg_config    = 0;
+    long last_config           = 0;
+    int  last_vignette         = 0;
+    int  last_crt_shape_config = 0;
+
+    // and module status
+    bool initialised        = false;
+
+    // LUTs for init_overlay()
+    std::vector<float> dx1, dx2, dx3, dx4, dx5;
+    std::vector<float> dy1, dy2, dy3, dy4, dy5;
 };

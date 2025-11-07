@@ -2,19 +2,24 @@ precision mediump float;
 
 /* ---------------------------------------------------------------------------- */
 /*                                                                              */
-/* Super-lightweight Pixel shader for Cannonball, by James Pearce,              */
-/* Copyright (c) 2025                                                           */
+/* Super-Lightweight Pixel shader for Cannonball, by James Pearce,              */
+/* Copyright (c) 2025.                                                          */
 /*                                                                              */
 /* Provides processing to provide a game image that looks broadly like it's on  */
-/* on real CRT, when combined with Blargg filtering (which is done CPU side)    */
-/* and a suitable overlay providing edges, shadow mask, and vignette.           */
+/* on real CRT, when combined with Blargg filtering, which is done CPU side.    */
 /*                                                                              */
-/* Specifically, provides curvature, noise, and brightness boost.               */
+/* Provided for Pi2 (v1.1) and supports 60fps in hires mode based on:           */
+/* 1280x1024@60fps with vSync, and clocks:                                      */
 /*                                                                              */
-/* Note - mediump is sufficient for this shader, and may provide a performance  */
-/*        advantage on some mobile GPUs.                                        */
+/* cpu_freq=1050                                                                */
+/* gpu_freq=450                                                                 */
+/*                                                                              */
+/* Specifically, provides curvature, shadow mask, and brightness boost.         */
+/* Full shader also provides noise, vignette and desaturation.                  */
+/* Vignette is provided with this shader via the overlay.                       */
 /*                                                                              */
 /* ---------------------------------------------------------------------------- */
+
 
 /* Inputs from Vertex Shader */
 uniform sampler2D Texture;
@@ -27,21 +32,29 @@ varying vec2 maskpos;
 /* User configurable settings than can be adjusted in the UI */
 uniform float warpX;
 uniform float warpY;
-uniform vec2  invExpand;       // (1/expandX, 1/expandY)
+uniform vec2  invExpand;        // (1/expandX, 1/expandY)
 uniform float brightboost;
-uniform float noiseIntensity;
-uniform vec2 u_Time;           // set both elements to FrameCount / 60.0
+uniform float noiseIntensity;   // not available in this shader
+uniform float vignette;         // not available in this shader
 
-/* The following are unused in this shader and are here to provide compatibility with the full shader environment */
-uniform float vignette;
-uniform float desat_inv0;
-uniform float desat_inv1;
-uniform float baseOff;
-uniform float baseOn;
+uniform float desat_inv0;       // set to 1.0 / (1.0 + desaturate)
+uniform float desat_inv1;       // set to 1.0 / (1.0 + desaturate + desaturateEdges)
+
+uniform float baseOff;          // shadow mask dim value, e.g. 0.75f
+uniform float baseOn;           // shadow mask boost value, usually 1/baseOff e.g. 1.333f
+
+/* Shadow mask
+ * maskPitch is between 3 and 6. Setting invMaskPitch saves division in the mask.
+ * Use 3 for 1280x1024 screens, 4+ provide wider spacing e.g. high DPI screens
+ * Hence, invMaskPitch is 1/3, 1/4, 1/5, or 1/6.
+ * inv2MaskPitch is 1/(2*maskPitch) - i.e., 1/6 when invMaskPitch is 1/3.
+ * inv2Height is 1/2,1/4,1/6,1/8... - i.e., the pattern height. Odd values won't work correctly.
+ */
 uniform float invMaskPitch;
 uniform float inv2MaskPitch;
 uniform float inv2Height;
 
+uniform vec2 u_Time;           // set both elements to FrameCount / 60.0
 
 
 // -------------------------------------------------------------------
@@ -69,55 +82,28 @@ vec2 Warp(vec2 pos)
 }
 
 
-// -------------------------------------------------------------------
-// Random noise generator. Creates the illusion of analogue signal processing.
-// -------------------------------------------------------------------
+// ------------------------------------------------------------------------
+// CRT ShadowMask function. Creates an effect similar to an arcade monitor.
+// ------------------------------------------------------------------------
 
+mediump vec3 fastmask()
+{
+    mediump vec2 mpos = floor(maskpos);
 
-// Fast approximate sine function.
-// This function wraps the input to [-pi, pi] and approximates sin(x)
-// using a simple linear/quadratic combination.
-/*
-float fastSin(float x) {
-    const float pi = 3.14159265;
-    // Wrap x to the range [-pi, pi]
-    x = mod(x + pi, 2.0 * pi) - pi;
-    // Approximation: sin(x) ? 1.27323954*x - 0.405284735*x*abs(x)
-    return 1.27323954 * x - 0.405284735 * x * abs(x);
-}
-*/
+    // Compute both x fracts together to limit temporaries
+    mediump vec2 mx = fract(mpos.xx * vec2(invMaskPitch, inv2MaskPitch));
+    mediump float my = fract(mpos.y * inv2Height);
 
-float fastSin(float x) {
-    // Wrap x to [-pi, pi] using fract (cheaper than mod on VC4)
-    // INV_TAU = 1/(2*pi), TAU = 2*pi
-    const float INV_TAU = 0.15915494;  // 1/(2π)
-    const float TAU     = 6.2831853;   // 2π
-    const float PI      = 3.1415927;
+    mediump float condA = step(0.02, mx.x);
+    mediump float condB = step(0.5,  mx.y);
 
-    // Bring phase down to [0,1) then scale to [-pi,pi]
-    x = fract(x * INV_TAU) * TAU - PI;
+    // Vertical windows matching the original
+    mediump float v0    = 1.0 - step(0.02, my);                 // near 0
+    mediump float vhalf = 1.0 - step(0.02, abs(my - 0.5));      // near 0.5
+    mediump float extraMask = mix(v0, vhalf, condB);
 
-    // Same 2-term parabolic sine approximation you used
-    // sin(x) ≈ 1.27323954*x - 0.405284735*x*abs(x)
-    return 1.27323954 * x - 0.405284735 * x * abs(x);
-}
-
-
-// Generate a pseudo-random value in the range [0,1) based on a 2D coordinate,
-// using the fastSin function instead of the standard sin() for better performance.
-float fastRand(vec2 co) {
-    // Compute a dot product and pass it through fastSin.
-    return fract(fastSin(dot(co + u_Time, vec2(12.9898, 78.233))) * 43758.5453);
-}
-
-// Adds noise to the input colour.
-// 'uv' is typically the texture coordinate, and 'intensity' scales the noise.
-vec3 addNoise(vec3 colour, vec2 uv, float intensity) {
-    // Generate noise centered around 0
-    float noise = fastRand(uv) - 0.5;
-    // Add the noise scaled by the intensity to the RGB channels.
-    colour += noise * intensity;
-    return colour;
+    mediump float base = mix(baseOff, baseOn, condA * (1.0 - extraMask));
+    return vec3(base);
 }
 
 
@@ -133,10 +119,11 @@ void main()
 
     // Sample texture colour and calculate luminance
     vec3 pCol = texture2D(Texture, warpedUV).rgb;
+
     float lum = (pCol.r + pCol.g + pCol.b) * 0.33333 * 0.9;
 
-    // Add noise
-    pCol = addNoise(pCol, warpedUV, noiseIntensity);
+    // Apply mask effect
+    pCol *= mix(fastmask(), vec3(1.0), lum);
 
     // Apply brighening
     pCol *= brightboost;

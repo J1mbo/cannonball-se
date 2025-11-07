@@ -27,11 +27,15 @@
 #include <cstdint>
 #include <omp.h>
 #include <math.h>
+#include <cmath>   // std::sqrtf, std::fabs, std::roundf, std::lroundf, etc.
 #include <SDL_opengles2.h>
+#include <array>   // for std::array
 
 #define VERTEX_SHADER        "res/Cannonball-Shader-Vertex.glsl"
-#define FRAGMENT_SHADER      "res/Cannonball-Shader-Fragment.glsl"       // light shader - curvature/noise/shadow mask/vignette
-#define FRAGMENT_SHADER_FAST "res/Cannonball-Shader-Fragment-Fast.glsl"  // extra light shader - curvature/noise only
+// light shader - curvature/noise/shadow-mask/vignette/brightness-boost
+#define FRAGMENT_SHADER      "res/Cannonball-Shader-Fragment.glsl"
+// extra light shader - curvature/shadow-mask/brightness-boost only
+#define FRAGMENT_SHADER_FAST "res/Cannonball-Shader-Fragment-Fast.glsl"
 
 #ifndef CB_PIXEL_ALIGNMENT
 #define CB_PIXEL_ALIGNMENT 64
@@ -94,6 +98,7 @@ bool RenderSurface::init(int source_width, int source_height,
     // signal to workers we're running (e.g. after a video restart)
     shutting_down.store(false, std::memory_order_release);
 
+    initialised = true;
     return true;
 }
 
@@ -133,6 +138,8 @@ void RenderSurface::disable()
     // Release any additional buffers.
     destroy_buffers();
     free(ntsc);
+
+    initialised = false;
 }
 
 
@@ -411,9 +418,9 @@ bool RenderSurface::init_sdl(int video_mode)
 // approach.
 //-----------------------------------------------------------------
 
-int find_circle_intersection(double x1, double y1, double r1,
-    double x2, double y2, double r2,
-    double* ix, double* iy) {
+int find_circle_intersection_(float x1, float y1, float r1,
+    float x2, float y2, float r2,
+    float* ix, float* iy) {
     // returns the top-left intersection between two circles
     // whose centres are Xn,Yn and having radii Rn
     // Distance between the centers
@@ -441,10 +448,10 @@ int find_circle_intersection(double x1, double y1, double r1,
     double offset_y = h * (x2 - x1) / d;
 
     // Intersection points
-    double ix1 = px + offset_x;
-    double iy1 = py - offset_y;
-    double ix2 = px - offset_x;
-    double iy2 = py + offset_y;
+    float ix1 = px + offset_x;
+    float iy1 = py - offset_y;
+    float ix2 = px - offset_x;
+    float iy2 = py + offset_y;
 
     // Return smallest values
     if (ix1 < ix2) {
@@ -459,6 +466,66 @@ int find_circle_intersection(double x1, double y1, double r1,
 }
 
 
+int find_circle_intersection(float x1, float y1, float r1,
+                             float x2, float y2, float r2,
+                             float* ix, float* iy)
+{
+    // Return the "top-left" intersection in screen coords (min x, then min y).
+    // All intermediate math in double for stability at 0–50k scale.
+    constexpr double EPS = 1e-6;
+
+    const double dx = double(x2) - double(x1);
+    const double dy = double(y2) - double(y1);
+    const double d2 = dx*dx + dy*dy;
+    const double d  = std::sqrt(d2);
+
+    // No intersection: separate, contained, or (near) coincident centers.
+    if (d > double(r1) + double(r2) + EPS ||
+        d + std::fabs(double(r1) - double(r2)) < EPS)   // contained or coincident
+    {
+        *ix = 0.0f; *iy = 0.0f;
+        return 0;
+    }
+
+    // Distance from c1 to the chord midpoint
+    const double r1d = double(r1);
+    const double r2d = double(r2);
+    const double a   = (r1d*r1d - r2d*r2d + d2) / (2.0 * d);
+
+    // Height from midpoint to each intersection; clamp to avoid sqrt(-0).
+    double h2 = r1d*r1d - a*a;
+    if (h2 < 0.0) h2 = 0.0;
+    const double h = std::sqrt(h2);
+
+    // Point along the center line
+    const double ux = dx / d;
+    const double uy = dy / d;
+    const double px = double(x1) + a * ux;
+    const double py = double(y1) + a * uy;
+
+    // Offsets perpendicular to center line
+    const double offx =  h * (-uy);
+    const double offy =  h * ( ux);
+
+    // Two intersections
+    const double xA = px + offx, yA = py + offy;
+    const double xB = px - offx, yB = py - offy;
+
+    // Choose "top-left": smaller x; if ~equal, smaller y.
+    double rx, ry;
+    if (xA < xB - EPS || (std::fabs(xA - xB) <= EPS && yA < yB)) {
+        rx = xA; ry = yA;
+    } else {
+        rx = xB; ry = yB;
+    }
+
+    *ix = float(rx);
+    *iy = float(ry);
+    return 1;
+}
+
+
+
 void RenderSurface::init_overlay()
 {
     // This function builds out the mask as an ALPHA8 blend mask (FF=transparent, 0=black).
@@ -468,35 +535,46 @@ void RenderSurface::init_overlay()
 
     // Check if overlay is disabled. This sets the overlay in the shader to a 1:1 white
     // which reduces RAM bandwidth required e.g. for Pi2.
-    if (!config.video.crt_shape && !config.video.shadow_mask) {
+    if (!config.video.crt_shape && !config.video.vignette) {
         glb::clear_overlay_texture();
         return;
     }
+
+    // get settings
+    int crt_shape_config = config.video.crt_shape +
+                           config.video.warpX +
+                           config.video.warpY;
 
     // create buffer. Fill is 0xFF (clear)
 	int pixels = dst_rect.w * dst_rect.h;
     std::vector<uint8_t> a8(pixels, 0xFF);
 
-    if (config.video.crt_shape) {
+    if (1) {
         // vignette and shape
-        uint32_t vignette_target = int((double(config.video.vignette) * 255.0 / 100.0));
-        double midx = double(dst_rect.w >> 1);
-        double midy = double(dst_rect.h >> 1);
-        double dia = sqrt(((midx * midx) + (midy * midy)));
-        double outer = dia * 1.00;
-        double inner = dia * 0.30;
-        double total_black = 0.0;
+        const uint32_t vignette_target = int((float(config.video.vignette) * 255.0 / 100.0));
+        const float midx = float(dst_rect.w >> 1);
+        const float midy = float(dst_rect.h >> 1);
+        const float dia = sqrt(((midx * midx) + (midy * midy)));
+        const float outer = dia * 1.00;
+        const float outer2 = outer * outer;
+        const float inner = dia * 0.30;
+        const float inner2 = inner * inner;
+        const float outer_less_inner2 = ((outer - inner) * (outer - inner));
+        const float total_black = 0.0;
 
         // Blacked-out corners and top/bottom fade and curved edges
-        double corner_radius = 0.02 * dia;    // this is the radius of the rounded corner
-        double edge_radius = 0.01 * dia;      // this amount will be faded to black, creating a smooth edge to the curve
-        double crt_curve_radius_x = dia * 12;
-        double crt_curve_radius_y = dia * 12;
-        double corner_x = 0;
-        double corner_y = 0;
+        const float corner_radius = 0.02 * dia;    // this is the radius of the rounded corner
+        const float edge_radius = 0.01 * dia;      // this amount will be faded to black, creating a smooth edge to the curve
+        const float edge_radius2 = edge_radius * edge_radius;
+        const float crt_curve_radius_x = dia * 12.0 * float(16-config.video.warpX) / 16.0;
+        const float crt_curve_radius_x2 = crt_curve_radius_x * crt_curve_radius_x;
+        const float crt_curve_radius_y = dia * 18.0 * float(18-config.video.warpY) / 18.0;
+        const float crt_curve_radius_y2 = crt_curve_radius_y * crt_curve_radius_y;
+        float corner_x = 0;
+        float corner_y = 0;
 
         // calculate intersection of CRT curves at top left
-        double x_intersection, y_intersection;
+        float x_intersection, y_intersection;
         find_circle_intersection(crt_curve_radius_x, midy, crt_curve_radius_x,
             midx, crt_curve_radius_y, crt_curve_radius_y, &x_intersection, &y_intersection);
 
@@ -508,6 +586,28 @@ void RenderSurface::init_overlay()
         int x_intersect = int(x_intersection);
         int y_intersect = int(y_intersection);
 
+        if (!initialised || (last_crt_shape_config != crt_shape_config)) {
+            // build LUTs
+            int span_w = (dst_rect.w >> 1) + 1;
+            int span_h = (dst_rect.h >> 1) + 1;
+            dx1.resize(span_w+1); dx2.resize(span_w+1); dx3.resize(span_w+1); dx4.resize(span_w+1); dx5.resize(span_w+1);
+            dy1.resize(span_h+1); dy2.resize(span_h+1); dy3.resize(span_h+1); dy4.resize(span_h+1); dy5.resize(span_h+1);
+
+            for (int idx = 0; idx <= span_w; idx++) {
+                dx1[idx] = (midx - float(idx)) * (midx - float(idx));
+                dx2[idx] = (crt_curve_radius_x - float(idx)) * (crt_curve_radius_x - float(idx));
+                dx4[idx] = ((x_intersect + edge_radius) - float(idx)) * ((x_intersect + edge_radius) - float(idx));
+                dx5[idx] = (corner_x - float(idx)) * (corner_x - float(idx));
+            }
+
+            for (int idx = 0; idx <= span_h; idx++) {
+                dy1[idx] = (midy - float(idx)) * (midy - float(idx));
+                dy2[idx] = (crt_curve_radius_y - float(idx)) * (crt_curve_radius_y - float(idx));
+                dy4[idx] = ((y_intersect + edge_radius) - float(idx)) * (y_intersect + edge_radius - float(idx));
+                dy5[idx] = (corner_y - float(idx)) * (corner_y - float(idx));
+            }
+        }
+
         // calculate the mask values
 #pragma omp parallel for
         for (int y = 0; y <= (dst_rect.h >> 1); y++) {
@@ -517,6 +617,7 @@ void RenderSurface::init_overlay()
             uint8_t* scnlp4 = scnlp3 + dst_rect.w - 1;
             int y_pos = (y < midy) ? y : dst_rect.h - y;
             uint32_t shadeval, maskval;
+
             for (int x = 0; x <= (dst_rect.w >> 1); x++) {
                 // mask is symetrical so we only need to calculate half
 
@@ -529,23 +630,30 @@ void RenderSurface::init_overlay()
                 // d2 - the center of the CRT curve on x axis (crt_curve_radius_x, midy)
                 // d3 - the center of the CRT curve on y axis (midx, crt_curve_radius_y)
                 // d4 - the intersection of the CRT curves at the top left (x_intersect, y_intersect)
-                // d5 -( the corner ra)dius centre (corner_x, corner_y)
-                double d1 = sqrt(((midx - double(x_pos)) * (midx - double(x_pos))) + ((midy - double(y_pos)) * (midy - double(y_pos))));
-                double d2 = sqrt(((crt_curve_radius_x - double(x_pos)) * (crt_curve_radius_x - double(x_pos))) + ((midy - double(y_pos)) * (midy - double(y_pos))));
-                double d3 = sqrt(((midx - double(x_pos)) * (midx - double(x_pos))) + ((crt_curve_radius_y - double(y_pos)) * (crt_curve_radius_y - double(y_pos))));
-                double d4 = sqrt((((x_intersect + edge_radius) - double(x_pos)) * ((x_intersect + edge_radius) - double(x_pos))) + (((y_intersect + edge_radius) - double(y_pos)) * (y_intersect + edge_radius - double(y_pos))));
-                double d5 = sqrt(((corner_x - double(x_pos)) * (corner_x - double(x_pos))) + ((corner_y - double(y_pos)) * (corner_y - double(y_pos))));
+                // d5 - the corner radius centre (corner_x, corner_y)
+
+                // These are calculated as:
+                // float d1 = sqrt(((midx - float(x_pos)) * (midx - float(x_pos))) + ((midy - float(y_pos)) * (midy - float(y_pos))));
+                // float d2 = sqrt(((crt_curve_radius_x - float(x_pos)) * (crt_curve_radius_x - float(x_pos))) + ((midy - float(y_pos)) * (midy - float(y_pos))));
+                // float d3 = sqrt(((midx - float(x_pos)) * (midx - float(x_pos))) + ((crt_curve_radius_y - float(y_pos)) * (crt_curve_radius_y - float(y_pos))));
+                // float d4 = sqrt((((x_intersect + edge_radius) - float(x_pos)) * ((x_intersect + edge_radius) - float(x_pos))) + (((y_intersect + edge_radius) - float(y_pos)) * (y_intersect + edge_radius - float(y_pos))));
+                // float d5 = sqrt(((corner_x - float(x_pos)) * (corner_x - float(x_pos))) + ((corner_y - float(y_pos)) * (corner_y - float(y_pos))));
+                //
+                // sqrt is very expensive on ARMv6/v7 hence we minimise the number of calls we need to made.
 
                 // first apply overall vignette effect based on distance from centre (d1)
-                if (d1 >= outer) {
+                float d1sq = dx1[x_pos] + dy1[y_pos];
+                if (d1sq >= outer2) {
                     // black out beyond this region
                     shadeval = int(total_black);
+                    continue; // early-out
                 }
-                else if ((d1 >= inner) && (config.video.shadow_mask < 2)) {
+                else if ((d1sq >= inner2) && (config.video.shader_mode < 2)) {
                     // vignette handled in GPU shader for all masks except 0 (off) and 1 (overlay based, code below)
                     // intermediate value; increase intensity with square of distance to avoid visible edge
+                    float d1 = std::sqrt(d1sq);
                     shadeval = 255 - uint32_t(round(((vignette_target) * ((d1 - inner) * (d1 - inner)) /
-                        ((outer - inner) * (outer - inner)))));
+                        outer_less_inner2)));
                 }
                 else shadeval = 0xff; // no dimming
 
@@ -555,10 +663,12 @@ void RenderSurface::init_overlay()
                     if ((x_pos <= corner_x) &&
                         (y_pos <= corner_y)) {
                         // apply curve over existing vignette
+                        float d5 = std::sqrt(dx5[x_pos] + dy5[y_pos]);
                         shadeval = (shadeval *
                             (d5 >= (edge_radius + corner_radius) ? int(total_black) :
-                                (d5 > corner_radius ? (uint32_t(round((255 * fabs(edge_radius - (d5 - corner_radius))) / edge_radius)))
-                                    : 255))) >> 8;
+                                (d5 > corner_radius ?
+                                        (uint32_t(round((255 * fabs(edge_radius - (d5 - corner_radius))) / edge_radius)))
+                                        : 255))) >> 8;
                         value_set = 1;
                     }
                 }
@@ -567,7 +677,9 @@ void RenderSurface::init_overlay()
                     // did not intersect with both curves (i.e. was too small)
                     if ((x_pos <= (int(x_intersect + edge_radius))) &&
                         (y_pos <= (int(y_intersect + edge_radius)))) {
-                        if (d4 < edge_radius) {
+                        float d4sq = dx4[x_pos] + dy4[y_pos];
+                        if (d4sq < edge_radius2) {
+                            float d4 = std::sqrt(d4sq);
                             shadeval = (shadeval *
                                 (uint32_t(round((255 * fabs(edge_radius - d4)) / edge_radius)))
                                 ) >> 8; // apply curve over existing vignette
@@ -585,36 +697,44 @@ void RenderSurface::init_overlay()
                     // first use d2 (x axis) as this will be larger
                     if (x_pos <= (x_intersect + edge_radius)) {
                         // somewhere on curve on left edge
-                        if (d2 >= crt_curve_radius_x) {
+                        //float d2 = sqrt(dx2[x_pos] + dy1[y_pos]);
+                        float d2sq = dx2[x_pos] + dy1[y_pos];
+                        if (d2sq >= crt_curve_radius_x2) {
                             // black out beyond this region
                             shadeval = int(total_black);
                         }
-                        else if ((crt_curve_radius_x - d2) < edge_radius) {
-                            // apply the curve, x255 then >> 8 saves on floating-point division
-                            shadeval = (shadeval *
-                                (uint32_t(round((255 * fabs(crt_curve_radius_x - d2)) / edge_radius)))
-                                ) >> 8; // apply curve over existing vignette
+                        else {
+                            float d2 = std::sqrt(d2sq);
+                            if ((crt_curve_radius_x - d2) < edge_radius) {
+                                // apply the curve, x255 then >> 8 saves on floating-point division
+                                shadeval = (shadeval *
+                                    (uint32_t(round((255 * fabs(crt_curve_radius_x - d2)) / edge_radius)))
+                                    ) >> 8; // apply curve over existing vignette
+                            }
                         } // else unaffected
                     }
                     else {
                         // next use d3 (y-axis curve)
                         if (y_pos <= (y_intersect + edge_radius)) {
                             // somewhere on curve on top edge
-                            if ((d3 >= crt_curve_radius_y)) {
+                            float d3sq = dx1[x_pos] + dy2[y_pos];
+                            if ((d3sq >= crt_curve_radius_y2)) {
                                 // black out beyond this region
                                 shadeval = int(total_black);
                             }
-                            else if ((crt_curve_radius_y - d3) < edge_radius) {
+                            else {
+                                float d3 = std::sqrt(d3sq);
+                                if ((crt_curve_radius_y - d3) < edge_radius) {
                                 // apply the curve
                                 shadeval = (shadeval *
                                     (uint32_t(round((255 * fabs(crt_curve_radius_y - d3)) / edge_radius)))
                                     ) >> 8; // apply curve over existing vignette
+                                }
                             }
                         }
                     }
                 }
                 // store the calculated mask value in the texture
-                //maskval = shadeval;
                 *(scnlp1++) = shadeval; // top-left
                 *(scnlp2--) = shadeval; // top-right
                 *(scnlp3++) = shadeval; // bottom-left
@@ -623,6 +743,7 @@ void RenderSurface::init_overlay()
         }
     }
 
+/*  Mask is now handled on the shader
     // Overlay with CRT Mask, suitable for resource constrained targets as combines mask, vignette and shape in single
     // pass. However, the quality of the mask and vignette effects are reduced.
     // The entire image is processed in this loop
@@ -660,18 +781,21 @@ void RenderSurface::init_overlay()
             }
         }
     }
+    */
 
     // Upload overlay pixels to GPU overlay texture
     glb::set_overlay_pixel_format_a8();
     glb::reallocate_overlay_storage();
 
-    glb::update_overlay_texture(
-        /*overlaySurfacePixels*/ a8.data(),
-        /*pitchBytes*/ dst_rect.w,// * 4,
-        /*w*/ dst_rect.w,
-        /*h*/ dst_rect.h
-    );
+    glb::update_overlay_texture( a8.data(),dst_rect.w,dst_rect.w,dst_rect.h );
+    //                           overlaySurfacePixels,pitchBytes*4, w, h
+
+    // save current settings
+    last_vignette         = config.video.vignette;
+    last_crt_shape_config = crt_shape_config;
 }
+
+
 
 long RenderSurface::get_video_config() {
     return                ( config.video.hires          +
@@ -740,28 +864,27 @@ bool RenderSurface::finalize_frame()
     static long last_config = 0;
     static int  ticks = 3;
     // check for any settings changes
-//    if (config.video.shader_mode != 0)
     if (1)
     {
         long this_config = get_video_config();
         if ((this_config!=last_config) && ticks) {
             // Send updated config to the shader
-            glb::set_uniform("warpX",           float(config.video.warpX) / 100.0f);
+            glb::set_uniform("warpX",           float(config.video.warpX) / 200.0f);
             glb::set_uniform("warpY",           float(config.video.warpY) / 100.0f);
 
             float invExpandX;
             if (config.video.hires==0) {
                 // add 3% width to the source as the non-SIMD blargg filter leaves a black bar on the right
-                invExpandX = 1 / (1 + (float(config.video.warpX+3) / 200.0f));
+                invExpandX = 1 / 1.03;
             } else {
                 #if SNES_NTSC_HAVE_SIMD
-                    invExpandX = 1 / (1 + (float(config.video.warpX) / 200.0f));
+                    invExpandX = 1 / 1.01;
                 #else
                     // add 3% width to the source as the non-SIMD blargg filter leaves a black bar on the right
-                    invExpandX = 1 / (1 + (float(config.video.warpX+3) / 200.0f));
+                    invExpandX = 1 / 1.03;
                 #endif
             }
-            float invExpandY = 1 / (1 + (float(config.video.warpY) / 300.0f));
+            float invExpandY = 1.0;
             glb::set_uniform2("invExpand",      invExpandX, invExpandY);
 
             glb::set_uniform("brightboost",     1 + (float(config.video.brightboost) / 100.0f));
@@ -769,9 +892,6 @@ bool RenderSurface::finalize_frame()
 
             float vignette = (config.video.shadow_mask < 2) ? 0.0f : float(config.video.vignette) / 100.0f;
             glb::set_uniform("vignette",        vignette);
-
-//            glb::set_uniform("desaturate",      float(config.video.desaturate) / 100.0f);
-//            glb::set_uniform("desaturateEdges", float(config.video.desaturate_edges) / 100.0f);
 
             float desat_val = (config.video.desaturate) / 100.0f;
             glb::set_uniform("desat_inv0",      (1.0f / (1.0f + desat_val)));
@@ -793,6 +913,19 @@ bool RenderSurface::finalize_frame()
             }
         }
         glb::set_uniform2("u_Time",         (float(FrameCounter) / 60.0), 0.0f );
+    }
+
+    int this_crt_shape_config = config.video.crt_shape +
+                                config.video.warpX +
+                                config.video.warpY;
+
+    if ( ((config.video.vignette != last_vignette) && (config.video.shader_mode < 2)) ||
+          (this_crt_shape_config != last_crt_shape_config) ) {
+        // update the overlay if:
+        // 1. We're using it for vignette and the user has changed the setting, or
+        // 2. The CRT shape setting has been changed, or
+        // 3. The warp settings have been changed.
+        init_overlay();
     }
 
     /* == blit the game image. This processes it with the shader into the configured target buffer == */

@@ -7,17 +7,16 @@ precision mediump float;
 /* Provides processing to provide a game image that looks broadly like it's on  */
 /* on real CRT, when combined with Blargg filtering, which is done CPU side.    */
 /*                                                                              */
-/* Pi Zero 2W can run this at 60fps under Raspbian command-line installation    */
-/* based on: 1280x1024@60fps with vSync, and clocks:                            */
+/* Pi Zero 2W and Pi3 can run this at 60fps under Raspbian command-line         */
+/* installation based on: 1280x1024@60fps with vSync, and clocks:               */
 /*                                                                              */
-/* core_freq=450                                                                */
 /* gpu_freq=450                                                                 */
 /*                                                                              */
-/* Specifically, provides curvature, noise, vignette, shadow mask, and          */
-/* brightness boost. -Fast variant provides curvature and noise only.           */
+/* Can also be used on Pi1 at 30fps at stock clocks.                            */
 /*                                                                              */
-/* Note - requires highp for accurate shadow mask. Banding will be seen with    */
-/*        mediump on GPUs that support fp16.                                    */
+/* Specifically, provides curvature, noise, vignette, desaturation, shadow mask,*/
+/* and brightness boost. Use -Fast variant on Pi2, which skips noise,           */
+/* desaturation and vignette (vignette can be done via the overlay though).     */
 /*                                                                              */
 /* ---------------------------------------------------------------------------- */
 
@@ -89,17 +88,9 @@ vec2 Warp(vec2 pos)
 
 // Fast approximate sine function.
 
-/*
+
 // This function wraps the input to [-pi, pi] and approximates sin(x)
 // using a simple linear/quadratic combination.
-float fastSin(float x) {
-    const float pi = 3.14159265;
-    // Wrap x to the range [-pi, pi]
-    x = mod(x + pi, 2.0 * pi) - pi;
-    // Approximation: sin(x) ? 1.27323954*x - 0.405284735*x*abs(x)
-    return 1.27323954 * x - 0.405284735 * x * abs(x);
-}
-*/
 
 float fastSin(float x) {
     // Wrap x to [-pi, pi] using fract (cheaper than mod on VC4)
@@ -139,32 +130,24 @@ vec3 addNoise(vec3 colour, vec2 uv, float intensity) {
 // CRT ShadowMask function. Creates an effect similar to an arcade monitor.
 // ------------------------------------------------------------------------
 
-vec3 fastmask()
+mediump vec3 fastmask()
 {
-    highp vec2 mpos = floor(maskpos);
-    highp float tmpvar_1 = fract( mpos.x * invMaskPitch );
-    highp float tmpvar_2 = fract( mpos.x * inv2MaskPitch );
-    highp float tmpvar_3 = fract( mpos.y * inv2Height );
-    
-    // Select base value without an if statement.
-    float base = mix(baseOff, baseOn, step(0.02, tmpvar_1));
-    
-    // Horizontal spacing
-    float condA       = step(0.02, tmpvar_1);
-    float condBranchB = step(0.5,  tmpvar_2);
+    mediump vec2 mpos = floor(maskpos);
 
-    // Veritcal spacing
-    // vCond0 is 1 when tmpvar_3 is approx 0
-    float vCond0      = 1.0 - step(0.02, tmpvar_3);
-    // vCondHalf is 1 when tmpvar_3 is approx 0.5
-    float vCondHalf   = 1.0 - step(0.02, abs(tmpvar_3 - 0.5));
+    // Compute both x fracts together to limit temporaries
+    mediump vec2 mx = fract(mpos.xx * vec2(invMaskPitch, inv2MaskPitch));
+    mediump float my = fract(mpos.y * inv2Height);
 
-    // Determine the output value
-    float extraMask   = (1.0 - condBranchB) * vCond0 + condBranchB * vCondHalf;
-    float multiplier  = mix(1.0, baseOff, condA * extraMask);    
-    float maskVal = base * multiplier;
+    mediump float condA = step(0.02, mx.x);
+    mediump float condB = step(0.5,  mx.y);
 
-    return vec3(maskVal);
+    // Vertical windows matching the original
+    mediump float v0    = 1.0 - step(0.02, my);                 // near 0
+    mediump float vhalf = 1.0 - step(0.02, abs(my - 0.5));      // near 0.5
+    mediump float extraMask = mix(v0, vhalf, condB);
+
+    mediump float base = mix(baseOff, baseOn, condA * (1.0 - extraMask));
+    return vec3(base);
 }
 
 
@@ -192,46 +175,6 @@ vec3 DesaturateAndVignette(vec2 pos, vec3 colour)
     return pCol;
 }
 
-/*
-vec3 DesaturateAndVignette(vec2 pos, vec3 colour)
-{
-    // Compute a uniform base offset.
-    float baseOffset = desaturate;
-
-    // Compute an additional offset based on distance from the center.
-    // First, compute a 2D vector from the center (0.5, 0.5) to the current uv.
-    vec2 centeredUV = pos - vec2(0.5);
-
-    // Compute the squared distance (avoiding sqrt for efficiency).
-    float distSq = dot(centeredUV, centeredUV);
-
-    // The maximum squared distance in a unit square centered at (0.5, 0.5)
-    // is 0.5 (at the corners, where centeredUV = (0.5, 0.5)).
-    // Normalize so that 0 is at the center and 1 at the corners.
-    float normDist = distSq * 2.0;
-    
-    // The additional offset increases linearly with the normalized distance.
-    float edgeOffset = normDist * desaturateEdges;
-    
-    // Total offset is the sum of the base and edge-dependent offsets.
-    float totalOffset = baseOffset + edgeOffset;
-    
-    // Raise the black level but leave white unchanged - Moves black from 0 to
-    // totalOffset/(1+totalOffset)
-    //
-    // the following is equivalent to but potentially 1 div instead of 3:
-    // vec3 pCol = (colour + vec3(totalOffset)) / (1.0 + totalOffset);
-
-    float invDenom   = 1.0 / (1.0 + totalOffset);
-    vec3  pCol       = (colour + vec3(totalOffset)) * invDenom;    
-    
-    // Apply vignette using the same distance calculation
-    float dimVal = normDist * vignette;
-    pCol *= (1.0-dimVal);
-
-    return pCol;
-}
-*/
 
 
 // -------------------------------------------------------------------
