@@ -6,6 +6,8 @@
 
     Copyright Chris White.
     See license.txt for more details.
+
+    Modifications for CannonBall-SE (c) 2005 James Pearce
 ***************************************************************************/
 
 #include "engine/osprite.hpp"
@@ -15,6 +17,7 @@
 //      Offs  Bits               Usage
 //       +0   e------- --------  Signify end of sprite list
 //       +0   -h-h---- --------  Hide this sprite if either bit is set
+//       +0   --c----- --------  JJP - clip required (partially off-screen)
 //       +0   ----bbb- --------  Sprite bank
 //       +0   -------t tttttttt  Top scanline of sprite + 256
 //       +2   oooooooo oooooooo  Offset within selected sprite bank
@@ -141,4 +144,12 @@ void osprite::hide(void)
 {
     data[0x0] |= 0x4000;
     data[0x0] &= ~0x8000; // denote sprite list not ended
+}
+
+void osprite::set_clip(bool clip)
+{
+    if (clip)
+        data[0x0] |= 0x2000;   // set flag
+    else
+        data[0x0] &= ~0x2000;  // clear flag
 }

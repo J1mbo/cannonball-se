@@ -10,6 +10,8 @@
     
     Copyright Chris White.
     See license.txt for more details.
+
+    Modifications for CannonBall-SE (c) 2005 James Pearce
 ***************************************************************************/
 
 #include "../trackloader.hpp"
@@ -661,19 +663,29 @@ void OSprites::do_sprite(oentry* input)
     int16_t sprite_y1 = output->get_y();
     int16_t sprite_y2 = sprite_y1 + height;
 
-    const uint16_t x1_bounds = 512 + config.s16_x_off;
-    const uint16_t x2_bounds = 192 - config.s16_x_off;
+    const uint16_t x1_bounds = 512 + config.s16_x_off; // right edge
+    const uint16_t x2_bounds = 192 - config.s16_x_off; // left edge
 
     // Hide Sprite if off screen (note bug fix to solve shadow wrapping issue on original game)
     // I think this bug might be permanently fixed with the introduction of widescreen mode
-    // as I had to change the storage size of the x-cordinate. 
+    // as I had to change the storage size of the x-coordinate.
     // Unsetting fix_bugs may no longer revert to the original behaviour.
-    if (sprite_y2 < 256 || sprite_y1 > 479 ||
-        sprite_x2 < x2_bounds || (config.engine.fix_bugs ? sprite_x1 >= x1_bounds : sprite_x1 > x1_bounds))
-    {
+    if (     sprite_y2 < 256            /* fully off the top */
+          || sprite_y1 > 479            /* fully off the bottom */
+          || sprite_x2 < x2_bounds      /* fully off LHS */
+          || (config.engine.fix_bugs ?  /* fully off RHS */
+                  sprite_x1 >= x1_bounds
+                : sprite_x1 > x1_bounds)
+       ) {
         hide_hwsprite(input, output);
         return;
     }
+
+    // JJP - set a clip flag if the sprite is not entirely on-screen. This simplifies the sprite drawing by
+    // eliminating the x-clip.
+    bool fully_inside = (sprite_x1 >= x2_bounds) && (sprite_x2 < x1_bounds);
+    bool clip = !fully_inside;
+    output->set_clip(clip);
 
     // -------------------------------------------------------------------------
     // Set Palette & Sprite Bank Information

@@ -6,6 +6,8 @@
 
     Copyright Chris White.
     See license.txt for more details.
+
+    Modifications for CannonBall-SE (c) 2005 James Pearce
 ***************************************************************************/
 
 #include "stdint.hpp" 
@@ -37,6 +39,7 @@ public:
 	void sub_height(uint8_t);
 	void set_bank(uint8_t);
 	void hide();
+    void set_clip(bool clip);
 
 private:
 
