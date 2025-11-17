@@ -451,8 +451,11 @@ void OTraffic::update_props(oentry* sprite)
         if (outrun.game_state == GS_INGAME)
         {
             // Update score on overtake
-            if (outrun.cannonball_mode != Outrun::MODE_TTRIAL)
+            if (outrun.cannonball_mode != Outrun::MODE_TTRIAL) 
+            {
                 ostats.update_score(0x20000);
+                std::cout << "SIMON OVERTOOK A VEHICLE" << std::endl;
+            } 
             else
             {
                 ohud.draw_score(ohud.translate(3, 2), outils::convert16_dechex(++outrun.ttrial.overtakes), 2);
