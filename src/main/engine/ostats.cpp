@@ -77,6 +77,9 @@ void OStats::do_timers()
 {
     if (outrun.game_state != GS_INGAME) return;
 
+    std::cout << "SIMON: STAGE " << ((int)cur_stage + 1) << std::endl;
+
+
     inc_lap_timer();
 
     if (outrun.cannonball_mode == Outrun::MODE_ORIGINAL || outrun.cannonball_mode == Outrun::MODE_CONT)
@@ -131,6 +134,9 @@ void OStats::convert_speed_score(uint16_t speed)
 
     uint16_t score = CONVERT[(speed >> 4)];
     update_score(score);
+    if (outrun.game_state == GS_INGAME) {
+        std::cout << "SIMON: SPEED " << speed << std::endl;
+    }
 }
 
 // Update In-Game Score. Adds Value To Overall Score.
