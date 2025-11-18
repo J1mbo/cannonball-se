@@ -778,6 +778,10 @@ void OInitEngine::init_split_next_level()
     // Clear sprite palette lookup
     if (ostats.cur_stage)
         osprites.clear_palette_data();
+
+    if (outrun.game_state == GS_INGAME) {
+        std::cout << "SIMON: CHECKPOINT!" << std::endl;
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
