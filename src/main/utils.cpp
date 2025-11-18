@@ -6,6 +6,7 @@
 ***************************************************************************/
 
 #include <sstream>
+#include <chrono>
 #include "utils.hpp"
 
 // Convert value to string
@@ -42,4 +43,12 @@ uint32_t Utils::from_hex_string(std::string s)
     ss >> x;
     // output it as a signed type
     return static_cast<unsigned int>(x);
+}
+
+// Get current Unix timestamp with milliseconds
+int64_t Utils::get_timestamp_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()
+    ).count();
 }

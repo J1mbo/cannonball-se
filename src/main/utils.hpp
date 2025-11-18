@@ -17,6 +17,7 @@ public:
     static std::string to_string(char c);
     static std::string to_hex_string(int i);
     static uint32_t from_hex_string(std::string s);
+    static int64_t get_timestamp_ms();
 
 private:
 };
