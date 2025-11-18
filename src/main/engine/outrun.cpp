@@ -504,6 +504,8 @@ void Outrun::main_switch()
             }
             osoundint.queue_sound(sound::NEW_COMMAND);
             game_state = GS_GAMEOVER;
+            // SIMON: TODO NEED TO CAPTURE LATEST SCORE AND MAYBE ALSO STAGE INFORMATION AT THIS POINT.
+            std::cout << "SIMON: GAME OVER" << std::endl;
             [[fallthrough]];
 
         case GS_GAMEOVER:
