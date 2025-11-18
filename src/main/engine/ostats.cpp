@@ -77,6 +77,7 @@ void OStats::do_timers()
 {
     if (outrun.game_state != GS_INGAME) return;
 
+    // No need to check if we are in the GS_INGAME state as this was covered above.
     std::cout << "SIMON: STAGE " << ((int)cur_stage + 1) << std::endl;
 
 

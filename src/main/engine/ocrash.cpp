@@ -938,8 +938,9 @@ void OCrash::collide_slow()
         addr = outrun.adr.sprite_bump_data1;
 
     crash_type = CRASH_BUMP; // low speed bump
-    // TODO SIMON: Only do this in game state (as opposed to attract state etc)
-    std::cout << "SIMON: CRASH BUMP" << std::endl;
+    if (outrun.game_state == GS_INGAME) {
+        std::cout << "SIMON: CRASH BUMP" << std::endl;
+    }
     oinitengine.car_increment &= 0xFFFF;
 
     // set_collision:
@@ -971,8 +972,9 @@ void OCrash::collide_med()
         addr = outrun.adr.sprite_crash_spin1;
 
     crash_type = CRASH_SPIN;
-    // TODO SIMON: Only do this in game state (as opposed to attract state etc)
-    std::cout << "SIMON: CRASH SPIN" << std::endl;
+    if (outrun.game_state == GS_INGAME) {
+        std::cout << "SIMON: CRASH SPIN" << std::endl;
+    }
 
     // set_collision:
     frame = 0;
@@ -1036,8 +1038,9 @@ void OCrash::collide_fast()
     }
 
     crash_type = CRASH_FLIP; // Flip
-    // TODO SIMON: Only do this in game state (as opposed to attract state etc)
-    std::cout << "SIMON: CRASH FLIP" << std::endl;
+    if (outrun.game_state == GS_INGAME) {
+        std::cout << "SIMON: CRASH FLIP" << std::endl;
+    }
 
     // set_collision:
     frame = 0;

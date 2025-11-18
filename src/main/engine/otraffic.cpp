@@ -454,7 +454,9 @@ void OTraffic::update_props(oentry* sprite)
             if (outrun.cannonball_mode != Outrun::MODE_TTRIAL) 
             {
                 ostats.update_score(0x20000);
-                std::cout << "SIMON OVERTOOK A VEHICLE" << std::endl;
+                if (outrun.game_state == GS_INGAME) {
+                    std::cout << "SIMON OVERTOOK A VEHICLE" << std::endl;
+                }
             } 
             else
             {

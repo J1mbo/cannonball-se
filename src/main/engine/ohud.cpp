@@ -274,7 +274,9 @@ void OHud::draw_score(uint32_t addr, const uint32_t score, uint8_t font)
     }
 
     video.write_text16(&addr, digits[7] + BASE); // Always draw last digit
-    std::cout << "SIMON SCORE: " << (int)digits[0] << (int)digits[1] << (int)digits[2] << (int)digits[3] << (int)digits[4] << (int)digits[5] << (int)digits[6] << (int)digits[7] << std::endl;
+    if (outrun.game_state == GS_INGAME) {
+        std::cout << "SIMON SCORE: " << (int)digits[0] << (int)digits[1] << (int)digits[2] << (int)digits[3] << (int)digits[4] << (int)digits[5] << (int)digits[6] << (int)digits[7] << std::endl;
+    }
     delete[] digits;
 }
 
@@ -730,7 +732,7 @@ void OHud::blit_text_new(uint16_t x, uint16_t y, const char* text, uint16_t pal)
         // Convert lowercase characters to uppercase
         if (c >= 'a' && c <= 'z')
             c -= 0x20;
-        else if (c == '©')
+        else if (c == '�')
             c = 0x10;
         else if (c == '-')
             c = 0x2d;
