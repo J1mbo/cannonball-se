@@ -446,6 +446,8 @@ void Outrun::main_switch()
                 osoundint.queue_sound(sound::STOP_CHEERS);
                 ostats.frame_counter = ostats.frame_reset;
                 game_state++;
+
+                std::cout << "SIMON GAME STARTED" << std::endl;
             }
             break;
 
