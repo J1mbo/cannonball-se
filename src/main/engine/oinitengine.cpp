@@ -29,6 +29,7 @@
 #include "engine/otiles.hpp"
 #include "engine/otraffic.hpp"
 #include "engine/oinitengine.hpp"
+#include "../utils.hpp"
 
 OInitEngine oinitengine;
 
@@ -780,7 +781,7 @@ void OInitEngine::init_split_next_level()
         osprites.clear_palette_data();
 
     if (outrun.game_state == GS_INGAME) {
-        std::cout << "SIMON: CHECKPOINT!" << std::endl;
+        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CHECKPOINT!" << std::endl;
     }
 }
 

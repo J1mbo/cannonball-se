@@ -14,6 +14,7 @@
 #include "engine/outils.hpp"
 #include "engine/ostats.hpp"
 #include "engine/otraffic.hpp"
+#include "../utils.hpp"
 
 OStats ostats;
 
@@ -78,7 +79,7 @@ void OStats::do_timers()
     if (outrun.game_state != GS_INGAME) return;
 
     // No need to check if we are in the GS_INGAME state as this was covered above.
-    std::cout << "SIMON: STAGE " << ((int)cur_stage + 1) << std::endl;
+    std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: STAGE " << ((int)cur_stage + 1) << std::endl;
 
 
     inc_lap_timer();
@@ -136,7 +137,7 @@ void OStats::convert_speed_score(uint16_t speed)
     uint16_t score = CONVERT[(speed >> 4)];
     update_score(score);
     if (outrun.game_state == GS_INGAME) {
-        std::cout << "SIMON: SPEED " << speed << std::endl;
+        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: SPEED " << speed << std::endl;
     }
 }
 
@@ -230,7 +231,7 @@ void OStats::init_next_level()
         // TODO SIMON GET THE LAST LAP TIME IN MS
         if (outrun.game_state == GS_INGAME) {
             // TODO LOOK AT THE CODE IN OHUD FOR HOW TO GET THIS...
-            std::cout << "SIMON: LAST STAGE / LAP TIME TODO HERE." << std::endl;
+            std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: LAST STAGE / LAP TIME TODO HERE." << std::endl;
         }
         
         otraffic.set_max_traffic();

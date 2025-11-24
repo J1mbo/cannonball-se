@@ -22,6 +22,7 @@
 #include "engine/outils.hpp"
 #include "engine/ostats.hpp"
 #include "engine/otraffic.hpp"
+#include "../utils.hpp"
 
 OTraffic otraffic;
 
@@ -455,7 +456,7 @@ void OTraffic::update_props(oentry* sprite)
             {
                 ostats.update_score(0x20000);
                 if (outrun.game_state == GS_INGAME) {
-                    std::cout << "SIMON OVERTOOK A VEHICLE" << std::endl;
+                    std::cout << Utils::get_timestamp_ms() << "SIMON OVERTOOK A VEHICLE" << std::endl;
                 }
             } 
             else

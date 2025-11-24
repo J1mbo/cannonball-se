@@ -16,6 +16,7 @@
 #include "engine/otiles.hpp"
 #include "engine/otraffic.hpp"
 #include "engine/ostats.hpp"
+#include "../utils.hpp"
 
 OMusic omusic;
 
@@ -210,7 +211,7 @@ void OMusic::check_start()
         outrun.game_state = GS_INIT_GAME;
         ologo.disable();
         disable();
-        std::cout << "SIMON: MUSIC IS " << (int)music_selected << std::endl;
+        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: MUSIC IS " << (int)music_selected << std::endl;
     }
 }
 

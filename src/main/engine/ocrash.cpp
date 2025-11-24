@@ -26,6 +26,7 @@
 #include "engine/olevelobjs.hpp"
 #include "engine/outils.hpp"
 #include "engine/ocrash.hpp"
+#include "../utils.hpp"
 
 OCrash ocrash;
 
@@ -939,7 +940,7 @@ void OCrash::collide_slow()
 
     crash_type = CRASH_BUMP; // low speed bump
     if (outrun.game_state == GS_INGAME) {
-        std::cout << "SIMON: CRASH BUMP" << std::endl;
+        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CRASH BUMP" << std::endl;
     }
     oinitengine.car_increment &= 0xFFFF;
 
@@ -973,7 +974,7 @@ void OCrash::collide_med()
 
     crash_type = CRASH_SPIN;
     if (outrun.game_state == GS_INGAME) {
-        std::cout << "SIMON: CRASH SPIN" << std::endl;
+        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CRASH SPIN" << std::endl;
     }
 
     // set_collision:
@@ -1039,7 +1040,7 @@ void OCrash::collide_fast()
 
     crash_type = CRASH_FLIP; // Flip
     if (outrun.game_state == GS_INGAME) {
-        std::cout << "SIMON: CRASH FLIP" << std::endl;
+        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CRASH FLIP" << std::endl;
     }
 
     // set_collision:

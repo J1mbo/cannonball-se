@@ -447,7 +447,7 @@ void Outrun::main_switch()
                 ostats.frame_counter = ostats.frame_reset;
                 game_state++;
 
-                std::cout << "SIMON GAME STARTED" << std::endl;
+                std::cout << Utils::get_timestamp_ms() << ": " << "SIMON GAME STARTED" << std::endl;
             }
             break;
 
@@ -506,8 +506,7 @@ void Outrun::main_switch()
             }
             osoundint.queue_sound(sound::NEW_COMMAND);
             game_state = GS_GAMEOVER;
-            // SIMON: TODO NEED TO CAPTURE LATEST SCORE AND MAYBE ALSO STAGE INFORMATION AT THIS POINT.
-            std::cout << "SIMON: GAME OVER" << std::endl;
+            std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: GAME OVER, STAGE " << (int)(ostats.cur_stage + 1) << ", SCORE " << std::hex << ostats.score << std::dec << std::endl;
             [[fallthrough]];
 
         case GS_GAMEOVER:
