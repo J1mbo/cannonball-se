@@ -663,6 +663,8 @@ void OInitEngine::init_split3()
     ostats.routes[0]++;                                       // Set upcoming stage number to store route info
     ostats.routes[ostats.routes[0]] = ostats.route_info;      // Store route info for course map screen
 
+    std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: " << (route_selected == 0 ? "RIGHT" : "LEFT") << " ROUTE CHOSEN." << std::endl;
+
     if (oroad.road_width >> 16 > 0x300)
         init_split4();
 }
@@ -781,7 +783,7 @@ void OInitEngine::init_split_next_level()
         osprites.clear_palette_data();
 
     if (outrun.game_state == GS_INGAME) {
-        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CHECKPOINT!" << std::endl;
+        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CHECKPOINT, BEGIN STAGE " << ostats.cur_stage + 1 << "!" << std::endl;
     }
 }
 
