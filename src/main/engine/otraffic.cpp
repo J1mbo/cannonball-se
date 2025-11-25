@@ -456,7 +456,8 @@ void OTraffic::update_props(oentry* sprite)
             {
                 ostats.update_score(0x20000);
                 if (outrun.game_state == GS_INGAME) {
-                    std::cout << Utils::get_timestamp_ms() << "SIMON OVERTOOK A VEHICLE" << std::endl;
+                    int sprite_type = sprite->type >> 3;
+                    std::cout << Utils::get_timestamp_ms() << ": SIMON OVERTOOK TYPE " << sprite_type << " VEHICLE" << std::endl;
                 }
             } 
             else
