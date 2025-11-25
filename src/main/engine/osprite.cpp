@@ -47,13 +47,8 @@ osprite::~osprite(void)
 
 void osprite::init()
 {
-    data[0] = 0;
-    data[1] = 0;
-    data[2] = 0;
-    data[3] = 0;
-    data[4] = 0;
-    data[5] = 0;
-    data[6] = 0;
+    for (int i=0; i<16; i++)
+        data[i] = 0;
     scratch = 0;
 }
 
@@ -79,6 +74,11 @@ void osprite::set_pitch(uint8_t p)
     data[0x02] = (data[0x2] & 0x1FF) | ((p & 0xFE) << 8);
 }
 
+void osprite::set_rawh(uint8_t h)
+{
+    data[0x07] = h;
+}
+
 void osprite::inc_x(uint16_t v)
 {
     data[0x6] += v;
@@ -96,7 +96,7 @@ void osprite::set_vzoom(uint16_t z)
 
 void osprite::set_hzoom(uint16_t z)
 {
-    data[0x4] = z;
+//    data[0x4] = z;
 }
 
 void osprite::set_priority(uint8_t p)
@@ -152,4 +152,14 @@ void osprite::set_clip(bool clip)
         data[0x0] |= 0x2000;   // set flag
     else
         data[0x0] &= ~0x2000;  // clear flag
+}
+
+void osprite::set_width(uint16_t width)
+{
+    data[0x4] = width;
+}
+
+void osprite::set_offset(int16_t offset)
+{
+    data[15] = offset;
 }

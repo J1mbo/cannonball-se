@@ -236,6 +236,7 @@ void Menu::populate_for_pc()
     menu_engine.push_back(ENTRY_BACK);
 
     menu_enhancements.push_back(ENTRY_HIRES);
+    menu_enhancements.push_back(ENTRY_SPRITERES);
     menu_enhancements.push_back(ENTRY_TIMER);
     menu_enhancements.push_back(ENTRY_ATTRACT);
     menu_enhancements.push_back(ENTRY_OBJECTS);
@@ -1141,8 +1142,21 @@ void Menu::tick_menu()
                 // we flag to the main program loop that a change has been requested, which
                 // will be done (via video subsystem restart) once all workers for this frame are complete.
                 config.video.hires_next = config.video.hires ^ 1;
+                if (config.video.hires_next == 0)
+                    config.video.hiresprites = 0; // disable hires sprites also
                 //start_game(Outrun::MODE_ORIGINAL);
                 config.videoRestartRequired = true;
+            }
+            else if (SELECTED(ENTRY_SPRITERES)) {
+                if (config.video.hires == 0) {
+                    display_message("Set game engine to hires first");
+                } else {
+                    config.video.hiresprites ^= 1;
+                    if (config.video.hiresprites == 1)
+                        display_message("Enabled. Toggle in game with F7.");
+                    else
+                        display_message("Disabled. Toggle in game with F7.");
+                }
             }
             else if (SELECTED(ENTRY_ATTRACT))           config.engine.new_attract ^= 1;
             else if (SELECTED(ENTRY_OBJECTS))           config.engine.level_objects ^= 1;
@@ -1483,6 +1497,7 @@ void Menu::refresh_menu()
         else if (menu_selected == &menu_enhancements || menu_selected == &menu_s_enhance)
         {
             if (SELECTED(ENTRY_HIRES))              set_menu_text(ENTRY_HIRES, config.video.hires ? "HI-RES" : "ORIGINAL");
+            else if (SELECTED(ENTRY_SPRITERES))     set_menu_text(ENTRY_SPRITERES, config.video.hiresprites ? "HI-RES" : "ORIGINAL");
             else if (SELECTED(ENTRY_PREVIEWSND))    set_menu_text(ENTRY_PREVIEWSND, config.sound.preview ? "ON" : "OFF");
             else if (SELECTED(ENTRY_FIXSAMPLES))    set_menu_text(ENTRY_FIXSAMPLES, config.sound.fix_samples ? "ON" : "OFF");
             else if (SELECTED(ENTRY_ATTRACT))       set_menu_text(ENTRY_ATTRACT, config.engine.new_attract ? "ON" : "OFF");

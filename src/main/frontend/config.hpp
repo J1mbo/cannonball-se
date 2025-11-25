@@ -131,6 +131,7 @@ struct video_settings_t
     int desaturate;
     int desaturate_edges;
     int brightboost;
+    int hiresprites;        // 0 = original; 1 = hires mode
 };
 
 struct sound_settings_t

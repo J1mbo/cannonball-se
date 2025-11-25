@@ -338,6 +338,12 @@ void Input::handle_key(const int key, const bool is_pressed)
             keys[MENU] = is_pressed;
             break;
 
+        case SDLK_F7:
+            // JJP - switches between sprite rendering (original/hi-res)
+            if (!is_pressed) break;
+            config.video.hiresprites ^= 1;
+            break;
+
         case SDLK_F8:
             // JJP - switches between all video processing off and Pi3 defaults (full shader etc)
             // Note - doesn't alter widescreen of hires setting

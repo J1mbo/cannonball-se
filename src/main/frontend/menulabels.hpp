@@ -128,6 +128,7 @@ const static char* ENTRY_SUB_HANDLING       = "CAR SETUP";
 
 // Game Engine: Enhancements Sub-Menu
 const static char* ENTRY_HIRES              = "GAME ENGINE RESOLUTION ";
+const static char* ENTRY_SPRITERES          = "SPRITE RESOLUTION ";
 const static char* ENTRY_ATTRACT            = "NEW ATTRACT ";
 const static char* ENTRY_PROTOTYPE          = "PROTOTYPE STAGE 1 ";
 const static char* ENTRY_OBJECTS            = "OBJECTS ";

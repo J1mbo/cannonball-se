@@ -62,7 +62,8 @@ int Video::init(Roms* roms, video_settings_t* settings)
 
     // Internal pixel arrays.
     // JJP - add 128 bytes to each video buffer so that we can then avoid testing for x>0 in the sprite rendering loop
-    std::size_t size = ((config.s16_width * config.s16_height) + alignment) * sizeof(uint16_t);
+//    std::size_t size = ((config.s16_width * config.s16_height) + alignment) * sizeof(uint16_t);
+    std::size_t size = ((config.s16_width * (config.s16_height+2)) + alignment) * sizeof(uint16_t);
     // Initialise two buffers. This is used to allow the renderer to read from one buffer while the main thread writes to the other.
     pixel_buffers[0] = static_cast<uint16_t*>(::operator new(size, std::align_val_t(alignment)));
     pixel_buffers[1] = static_cast<uint16_t*>(::operator new(size, std::align_val_t(alignment)));

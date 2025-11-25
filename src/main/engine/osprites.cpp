@@ -533,17 +533,12 @@ void OSprites::blit_sprites()
     {
         uint16_t* data = sprite_entries[i].data;
 
-        // Write twelve bytes
-        video.write_sprite16(&dst_addr, data[0]);
-        video.write_sprite16(&dst_addr, data[1]);
-        video.write_sprite16(&dst_addr, data[2]);
-        video.write_sprite16(&dst_addr, data[3]);
-        video.write_sprite16(&dst_addr, data[4]);
-        video.write_sprite16(&dst_addr, data[5]);
-        video.write_sprite16(&dst_addr, data[6]);
+        // Write sprite info
+        for (int i=0; i<16; i++)
+            video.write_sprite16(&dst_addr, data[i]);
 
         // Allign on correct boundary
-        dst_addr += 2;
+//        dst_addr += 2;
     }
 }
 
@@ -595,73 +590,187 @@ void OSprites::do_sprite(oentry* input)
         hide_hwsprite(input, output);
         return;
     }
-
+/*
+// dumps the WH_TABLE contents
+std::cout << "\n";
+for (uint32_t i=0; i<0x8000; ) {
+    std::cout << std::dec << uint16_t(roms.rom0p->read8(WH_TABLE + i++));
+    std::cout << "," << std::dec << uint16_t(roms.rom0p->read8(WH_TABLE + i++)) << "\n";
+}
+std::exit(9);
+*/
     // Sprite Width/Height Settings
     uint16_t width = 0;
     uint16_t height = 0;
 
     // Set real h/v zoom values
-    uint32_t index = (input->zoom * 4);
-    output->set_vzoom(ZOOM_LOOKUP[index]); // note we don't increment src_rom here
-    output->set_hzoom(ZOOM_LOOKUP[index++]);
+    uint32_t index = (input->zoom * 4); // x4 as table is 4-words per line
 
-    // -------------------------------------------------------------------------
-    // Set width & height values using lookup
-    // -------------------------------------------------------------------------
-    uint16_t lookup_mask = ZOOM_LOOKUP[index++]; // Width/Height lookup helper
-    
-    // This is the address of the frame required for the level of zoom we're using
-    // There are 5 unique frames that are typically used for zoomed sprites.
-    // which correspond to different screen sizes
-    uint32_t src_offsets = input->addr + ZOOM_LOOKUP[index];
+    // determine sprite dimensions
+    uint32_t input_index = 0;
+    uint32_t multiplier = 512;
+    int16_t  offset = 0;
+    uint32_t zoom = 0;
+    switch (ZOOM_LOOKUP[index+2]) {
+        case SIZE1: input_index = 127; break;  //  1:1 zoom for largest size
+        case SIZE2: input_index =  62; multiplier = 516; offset =  3; break;  // 1.008:1 (closest we have)
+        case SIZE3: input_index =  30; multiplier = 524; offset = -1; break;  // 1.023:1
+        case SIZE4: input_index =  14; multiplier = 539; offset =  3; break;  // 1.053:1
+        case SIZE5: input_index =   6; multiplier = 579; offset =  4; break;  // 1.130:1
+    }
+    uint16_t lookup_mask = ZOOM_LOOKUP[(input_index*4)+1];
+    uint32_t src_offsets = input->addr + ZOOM_LOOKUP[(input_index*4)+2];
+    lookup_mask += 0x4000; // advance as using lower half of zoom table
+    uint16_t d0 = lookup_mask;
+    d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 1);
+    uint32_t sprite_width = (roms.rom0p->read8(WH_TABLE + d0) * multiplier) >> 9; // width * multiplier / 512
+    d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 3);
+    uint32_t sprite_height = (roms.rom0p->read8(WH_TABLE + d0) * multiplier) >> 9;
 
-    uint16_t d0 = input->draw_props | (input->zoom << 8);
-    uint16_t top_bit = d0 & 0x8000;
-    d0 &= 0x7FFF; // Clear top bit
-    
-    if (top_bit == 0)
-    {
-        if (ZOOM_LOOKUP[index] != SIZE1) // Not largest sized sprite
-        {
-            lookup_mask += 0x4000;
-            d0 = lookup_mask;
+    // now adjust for which type we actually have
+    if (input_index != 127) {
+        if (config.video.hiresprites == 1) {
+            // now adjust for difference in sprite type being used
+            uint32_t original_size = ZOOM_LOOKUP_HIRES[(index*4)+2];
+            sprite_height <<= 1;
+            sprite_width  <<= 1;
         }
-
-        d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 1);
-        width = roms.rom0p->read8(WH_TABLE + d0);
-        d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 3);
-        height = roms.rom0p->read8(WH_TABLE + d0);
     }
-    // loc_9560:
-    else
-    {
-        d0 &= 0x7C00;
-        uint16_t h = d0;
 
-        d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 1);
-        width = roms.rom0p->read8(WH_TABLE + d0);
-        d0 &= 0xFF;
-        width += d0;
-        
-        h |= roms.rom0p->read8(src_offsets + 3);
-        height = roms.rom0p->read8(WH_TABLE + h);
-        h &= 0xFF;
-        height += h;
+    output->set_rawh(sprite_height);
+    output->set_offset(offset);
 
+    // determine output size (game logic)
+    if (config.video.hiresprites == 0) {
+        // original game resolution. Use (patched) original game sprite sizes.
+
+        zoom = ZOOM_LOOKUP[index];
+        output->set_vzoom(zoom);
+        output->set_hzoom(zoom);
+
+        // -------------------------------------------------------------------------
+        // Set width & height values using lookup
+        // -------------------------------------------------------------------------
+        lookup_mask = ZOOM_LOOKUP[index+1]; // Width/Height lookup helper
+
+        // This is the address of the frame required for the level of zoom we're using
+        // There are 5 unique frames that are typically used for zoomed sprites.
+        // which correspond to different screen sizes
+        src_offsets = input->addr + ZOOM_LOOKUP[index+2]; // sprite size e.g. SIZE1
+
+        d0 = input->draw_props | (input->zoom << 8);
+        uint16_t top_bit = d0 & 0x8000; // set if zoom >= 0x80
+        d0 &= 0x7FFF; // Clear top bit
+
+        if (top_bit == 0) // zoom < 0x80
+        {
+            if (ZOOM_LOOKUP[index+2] != SIZE1) // Not largest sized sprite
+            {
+                lookup_mask += 0x4000;
+                d0 = lookup_mask;
+            }
+
+            d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 1);
+            width = roms.rom0p->read8(WH_TABLE + d0);
+            d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 3);
+            height = roms.rom0p->read8(WH_TABLE + d0);
+        }
+        // loc_9560:
+        else
+        {
+            d0 &= 0x7C00;
+            uint16_t h = d0;
+
+            d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 1);
+            width = roms.rom0p->read8(WH_TABLE + d0);
+            d0 &= 0xFF;
+            width += d0;
+
+            h |= roms.rom0p->read8(src_offsets + 3);
+            height = roms.rom0p->read8(WH_TABLE + h);
+            h &= 0xFF;
+            height += h;
+        }
+    } else {
+        // hires path. Use larger sprites to improve image quality.
+        zoom = ZOOM_LOOKUP_HIRES[index];
+        output->set_vzoom(zoom);
+        output->set_hzoom(zoom);
+
+        uint16_t lookup_mask = ZOOM_LOOKUP_HIRES[index+1]; // Width/Height lookup helper
+
+        src_offsets = input->addr + ZOOM_LOOKUP_HIRES[index+2]; // sprite size e.g. SIZE1
+        // original sprite size entry from which rendered size will be determined.
+        // this is different, because we are using "the next size up" sprites to improve hi-res fidelity
+        // index+3 was previously an unused field
+        uint32_t size_offset = input->addr + ZOOM_LOOKUP_HIRES[index+3];
+
+        uint16_t d0 = input->draw_props | (input->zoom << 8);
+        uint16_t top_bit = d0 & 0x8000; // set if zoom >= 0x80
+        d0 &= 0x7FFF; // Clear top bit
+
+        if (top_bit == 0) {
+            // zoom < 0x80
+            if (ZOOM_LOOKUP_HIRES[index+3] != SIZE1) {
+                // Not largest sized sprite
+                lookup_mask += 0x4000;
+                d0 = lookup_mask;
+            }
+
+            d0 = (d0 & 0xFF00) + roms.rom0p->read8(size_offset + 1);
+            width = roms.rom0p->read8(WH_TABLE + d0);
+            d0 = (d0 & 0xFF00) + roms.rom0p->read8(size_offset + 3);
+            height = roms.rom0p->read8(WH_TABLE + d0);
+
+        } else {
+
+            d0 &= 0x7C00;
+            uint16_t h = d0;
+
+            d0 = (d0 & 0xFF00) + roms.rom0p->read8(size_offset + 1);
+            width = roms.rom0p->read8(WH_TABLE + d0);
+            d0 &= 0xFF;
+            width += d0;
+
+            h |= roms.rom0p->read8(size_offset + 3);
+            height = roms.rom0p->read8(WH_TABLE + h);
+            h &= 0xFF;
+            height += h;
+        }
     }
+
+//int32_t sprite_width = (roms.rom0p->read8(src_offsets + 5)) * 8; // pitch, 8 pixels per 32-bit word
+int32_t calc_width   = ceil((0x200 * sprite_width)  / zoom);
+int32_t calc_height  = ceil((0x200 * sprite_height) / zoom);
+{
+if ((calc_width < width) || (calc_height < height)) {
+    std::cout << "\rGame Width/Height: " << width << "/" << height <<
+      "\t\tDetermined: " << sprite_width << "/" << sprite_height <<
+      "\t\tCalculated: " << ((0x200 * sprite_width) / zoom) << "/" << ((0x200 * sprite_height) / zoom) <<
+      "\t\t(zoom: " << std::hex << zoom << std::dec << ")\n";
+    }
+}
     // loc 9582:
-    input->width = width;
-    
+//    input->width = width;
+    input->width = calc_width;
+
+    // JJP - pass width through to sprite renderer
+//    output->set_width(width);
+    output->set_width(calc_width);
+
     // -------------------------------------------------------------------------
     // Set Sprite X & Y Values
     // -------------------------------------------------------------------------
-    set_sprite_xy(input, output, width, height);
-    
+//    set_sprite_xy(input, output, width, height);
+    set_sprite_xy(input, output, calc_width, calc_height);
+
     // Here we need the entire value set by above routine, not just top 0x1FF mask!
-    int16_t sprite_x1 = output->get_x();
-    int16_t sprite_x2 = sprite_x1 + width;
+    int16_t sprite_x1 = output->get_x() + offset;
+//    int16_t sprite_x2 = sprite_x1 + width;
+    int16_t sprite_x2 = sprite_x1 + calc_width + offset;
     int16_t sprite_y1 = output->get_y();
-    int16_t sprite_y2 = sprite_y1 + height;
+//    int16_t sprite_y2 = sprite_y1 + height;
+    int16_t sprite_y2 = sprite_y1 + calc_height;
 
     const uint16_t x1_bounds = 512 + config.s16_x_off; // right edge
     const uint16_t x2_bounds = 192 - config.s16_x_off; // left edge
@@ -701,7 +810,8 @@ void OSprites::do_sprite(oentry* input)
     {
         int16_t y_adj = -(sprite_y1 - 256);
         y_adj *= roms.rom0p->read16(src_offsets + 2); // Width of line data (Unsigned multiply)
-        y_adj /= height; // Unsigned divide
+//        y_adj /= height; // Unsigned divide
+        y_adj /= calc_height; // Unsigned divide
         y_adj *= roms.rom0p->read16(src_offsets + 4); // Length of line data (Unsigned multiply)
         output->inc_offset(y_adj);
         output->data[0x0] = (output->data[0x0] & 0xFF00) | 0x100; // Mask on negative y index
@@ -709,7 +819,8 @@ void OSprites::do_sprite(oentry* input)
     }
     else
     {
-        output->set_height((uint8_t) height);
+//        output->set_height((uint8_t) height);
+        output->set_height((uint8_t) calc_height);
     }
     
     // -------------------------------------------------------------------------
