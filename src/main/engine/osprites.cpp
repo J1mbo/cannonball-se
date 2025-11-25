@@ -739,9 +739,11 @@ std::exit(9);
         }
     }
 
-//int32_t sprite_width = (roms.rom0p->read8(src_offsets + 5)) * 8; // pitch, 8 pixels per 32-bit word
-int32_t calc_width   = ceil((0x200 * sprite_width)  / zoom);
-int32_t calc_height  = ceil((0x200 * sprite_height) / zoom);
+    //int32_t sprite_width = (roms.rom0p->read8(src_offsets + 5)) * 8; // pitch, 8 pixels per 32-bit word
+    int32_t calc_width   = ceil((0x200 * sprite_width)  / zoom);
+    int32_t calc_height  = ceil((0x200 * sprite_height) / zoom);
+
+/*
 {
 if ((calc_width < width) || (calc_height < height)) {
     std::cout << "\rGame Width/Height: " << width << "/" << height <<
@@ -750,6 +752,7 @@ if ((calc_width < width) || (calc_height < height)) {
       "\t\t(zoom: " << std::hex << zoom << std::dec << ")\n";
     }
 }
+*/
     // loc 9582:
 //    input->width = width;
     input->width = calc_width;
