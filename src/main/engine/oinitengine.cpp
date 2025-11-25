@@ -873,8 +873,9 @@ void OInitEngine::bonus5()
 // This state simply checks for the end of bonus mode
 void OInitEngine::bonus6()
 {
-    if (obonus.bonus_control >= OBonus::BONUS_END)
+    if (obonus.bonus_control >= OBonus::BONUS_END) {
         rd_split_state = 0;
+    }
 }
 
 // SetGranularPosition
