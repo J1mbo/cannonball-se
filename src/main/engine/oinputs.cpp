@@ -13,6 +13,7 @@
 #include "engine/ocrash.hpp"
 #include "engine/oinputs.hpp"
 #include "engine/ostats.hpp"
+#include "../utils.hpp"
 
 OInputs oinputs;
 
@@ -256,6 +257,8 @@ uint8_t OInputs::do_credits()
             ostats.credits++;
             // todo: Increment credits total for bookkeeping
             osoundint.queue_sound(sound::COIN_IN);
+            
+            std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: COIN INSERTED, CREDITS: " << (int)ostats.credits << std::endl;
         }
         return 3;
     }
