@@ -103,7 +103,71 @@ Place audio files in `./res/` using the scheme:
 Indexes **01–03** replace the built‑in tracks (01 = *Magical Sound Shower*); **04+** add entries to the radio list. Use **44.1 kHz, 16‑bit stereo** audio files.
 
 ---
+## OpenTelemetry Integration
 
+CannonBall-SE includes built-in OpenTelemetry support for tracking in-game events. Telemetry is **mandatory** and requires configuration.
+
+### Prerequisites
+
+The OpenTelemetry C++ SDK is installed automatically by `install.sh`. Manual installation requires:
+- CMake 3.20+
+- libcurl
+- protobuf-compiler and libprotobuf-dev
+- OpenTelemetry C++ SDK v1.14.2 with OTLP HTTP exporter
+
+### Configuration
+
+Edit `config.xml` and set the OTLP endpoint:
+
+```xml
+<telemetry>
+  <otlp_endpoint>http://localhost:4318/v1/traces</otlp_endpoint>
+</telemetry>
+```
+
+**The game will exit with an error if `otlp_endpoint` is not configured.**
+
+### Telemetry Data Structure
+
+Each gameplay session creates a **game_session** root span with nested **stage_N** child spans:
+
+```
+game_session (root span)
+├── Attributes: game_mode, music_track
+├── stage_1 (child span)
+│   ├── Events: stage_started, route_chosen, crash, vehicle_overtake
+│   └── Attributes: score (updated periodically), time_remaining
+├── stage_2 (child span)
+│   └── ...
+└── stage_N (final stage)
+```
+
+**Coin insert events** are recorded as standalone "orphan" events (not attached to game sessions).
+
+### Running an OTLP Collector
+
+Example Docker Compose setup with Jaeger backend:
+
+```yaml
+version: '3'
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4318:4318"    # OTLP HTTP receiver
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+```
+
+Then configure `config.xml` with:
+```xml
+<otlp_endpoint>http://<jaeger-host>:4318/v1/traces</otlp_endpoint>
+```
+
+View traces at `http://<jaeger-host>:16686`
+
+---
 ## Board Selection & Performance Notes
 
 * **Pi Zero-2W** is the cheapest way to full experience with 1280x1024 screens.
