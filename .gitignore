@@ -1,2 +1,9 @@
 .DS_Store
 .vscode/
+build/
+*.bak
+*.tmp
+*.log
+*.swp
+play_stats.xml
+hiscores.xml
