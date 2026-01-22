@@ -12,6 +12,7 @@
 #include "engine/outils.hpp"
 #include "engine/obonus.hpp"
 #include "../utils.hpp"
+#include "../telemetry.hpp"
 
 OBonus obonus;
 
@@ -140,7 +141,7 @@ void OBonus::decrement_bonus_secs()
     {
         bonus_counter = -1;
         bonus_state = BONUS_TEXT_CLEAR;
-        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: OUTRUN.CPP GAME COMPLETED, STAGE " << (int)(ostats.cur_stage + 1) << ", SCORE " << std::hex << ostats.score << std::dec << std::endl;
+        // Note: Game session is ended later in GS_REINIT after high score entry
     }
     else
         bonus_counter++;

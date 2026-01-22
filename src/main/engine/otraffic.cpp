@@ -23,6 +23,7 @@
 #include "engine/ostats.hpp"
 #include "engine/otraffic.hpp"
 #include "../utils.hpp"
+#include "../telemetry.hpp"
 
 OTraffic otraffic;
 
@@ -457,7 +458,12 @@ void OTraffic::update_props(oentry* sprite)
                 ostats.update_score(0x20000);
                 if (outrun.game_state == GS_INGAME) {
                     int sprite_type = sprite->type >> 3;
-                    std::cout << Utils::get_timestamp_ms() << ": SIMON OVERTOOK TYPE " << sprite_type << " VEHICLE" << std::endl;
+                    TelemetryManager::instance().add_event("vehicle_overtake", {
+                        {"vehicle_type", std::to_string(sprite_type)}
+                    }, {
+                        {"speed_kph", oinitengine.car_increment >> 16},
+                        {"score", static_cast<int64_t>(ostats.score)}
+                    });
                 }
             } 
             else

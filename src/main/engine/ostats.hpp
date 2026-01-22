@@ -28,6 +28,9 @@ public:
     // through the first level.
     int8_t cur_stage;
 
+    // Track last stage for which telemetry was sent (to avoid duplicate stage_started events)
+    int8_t last_stage_sent;
+
     // Score (Outputs Hex values directly)
     uint32_t score;
 

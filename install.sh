@@ -88,26 +88,52 @@ EOF
 
 # 6. Install dependencies
 run_step "Install dependencies" sudo apt install -y \
-  build-essential git cmake libsdl2-dev libglu1-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev
+  build-essential git cmake libsdl2-dev libglu1-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev \
+  libcurl4-openssl-dev protobuf-compiler libprotobuf-dev
 
-# 7. Prepare and build CannonBall
+# 7. Install OpenTelemetry C++ SDK
+run_step "Clone OpenTelemetry C++ SDK" bash -c '
+  cd /tmp
+  rm -rf opentelemetry-cpp
+  git clone --depth 1 --branch v1.14.2 https://github.com/open-telemetry/opentelemetry-cpp.git
+  cd opentelemetry-cpp
+  git submodule update --init --recursive
+'
+run_step "Build OpenTelemetry C++ SDK" bash -c '
+  cd /tmp/opentelemetry-cpp
+  mkdir -p build && cd build
+  cmake -DCMAKE_BUILD_TYPE=Release \
+        -DWITH_OTLP_HTTP=ON \
+        -DBUILD_TESTING=OFF \
+        -DWITH_EXAMPLES=OFF \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        ..
+  make -j'"$NUMTHREADS"'
+'
+run_step "Install OpenTelemetry C++ SDK" bash -c '
+  cd /tmp/opentelemetry-cpp/build
+  sudo make install
+  sudo ldconfig
+'
+
+# 8. Prepare and build CannonBall
 run_step "Prepare build directories" mkdir -p build roms
 run_step "Configure Project with CMake" cmake -S cmake -B build
 run_step "Compile" cmake --build build --parallel $NUMTHREADS
 #cd build && cmake ../cmake && make -j"$NUMTHREADS"'
 run_step "Create default config file" bash -c 'cp res/config.xml .'
 
-# 8. List and select audio device
+# 9. List and select audio device
 env_command="build/cannonball-se -list-audio-devices"
 run_step "List audio devices" bash -c "$env_command"
 read -rp "Enter the number of the audio device to use for CannonBall [0]: " audio_device
 audio_device=${audio_device:-0}
 run_step "Configure audio device" bash -c 'sed -i "s|<playback_device>.*</playback_device>|<playback_device>'"$audio_device"'</playback_device>|" config.xml'
 
-# 9. Final summary
+# 10. Final summary
 print_summary
 
-# 10. Prompt to view the man page
+# 11. Prompt to view the man page
 read -rp "Would you like to view the man page now? [y/N] " view_man
 STEP_ORDER+=("View man page prompt")
 if [[ "$view_man" =~ ^[Yy] ]]; then

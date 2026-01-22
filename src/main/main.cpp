@@ -32,6 +32,7 @@
 #include "engine/outrun.hpp"
 #include "frontend/config.hpp"
 #include "frontend/menu.hpp"
+#include "telemetry.hpp"
 
 #include "engine/oinputs.hpp"
 #include "engine/ooutputs.hpp"
@@ -178,6 +179,7 @@ bool pause_engine;
 
 static void quit_func(int code)
 {
+    TelemetryManager::instance().shutdown();
     audio.stop_audio();
     input.close_joy();
     forcefeedback::close();
@@ -761,6 +763,18 @@ int main(int argc, char* argv[]) {
 
     if (ok) {
         config.load(); // Load config.XML file, also loads custom music files
+
+        // Validate telemetry configuration
+        if (config.telemetry.otlp_endpoint.empty()) {
+            std::cerr << "Error: telemetry.otlp_endpoint is not configured in config.xml" << std::endl;
+            std::cerr << "Please add <telemetry><otlp_endpoint>http://your-collector:4318/v1/traces</otlp_endpoint></telemetry>" << std::endl;
+            quit_func(1);
+            return 1;
+        }
+
+        // Initialize telemetry
+        TelemetryManager::instance().init(config.telemetry.otlp_endpoint, config.telemetry.instance_id, config.telemetry.auth_token, config.telemetry.debug);
+
         ok = roms.load_revb_roms(config.sound.fix_samples);
 
         if (cannonball::singlecore_detect || cannonball::singlecore_mode) {

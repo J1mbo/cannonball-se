@@ -250,6 +250,16 @@ public:
     // Continuous Mode: Traffic Setting
     int cont_traffic;
 
+    // Telemetry Settings
+    struct telemetry_settings_t
+    {
+        std::string otlp_endpoint;
+        std::string instance_id;
+        std::string auth_token;
+        bool debug;
+    };
+    telemetry_settings_t telemetry;
+
     Config(void);
     ~Config(void);
 

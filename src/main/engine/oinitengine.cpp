@@ -28,6 +28,7 @@
 #include "engine/osmoke.hpp"
 #include "engine/otiles.hpp"
 #include "engine/otraffic.hpp"
+#include "../telemetry.hpp"
 #include "engine/oinitengine.hpp"
 #include "../utils.hpp"
 
@@ -663,7 +664,16 @@ void OInitEngine::init_split3()
     ostats.routes[0]++;                                       // Set upcoming stage number to store route info
     ostats.routes[ostats.routes[0]] = ostats.route_info;      // Store route info for course map screen
 
-    std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: " << (route_selected == 0 ? "RIGHT" : "LEFT") << " ROUTE CHOSEN." << std::endl;
+    // Record route selection as telemetry event (only during actual gameplay, not attract mode)
+    if (outrun.game_state == GS_INGAME) {
+        TelemetryManager::instance().add_event("route_chosen", {
+            {"direction", route_selected == 0 ? "right" : "left"}
+        }, {
+            {"stage", ostats.routes[0]},
+            {"speed_kph", car_increment >> 16},
+            {"score", static_cast<int64_t>(ostats.score)}
+        });
+    }
 
     if (oroad.road_width >> 16 > 0x300)
         init_split4();
@@ -783,7 +793,12 @@ void OInitEngine::init_split_next_level()
         osprites.clear_palette_data();
 
     if (outrun.game_state == GS_INGAME) {
-        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CHECKPOINT, BEGIN STAGE " << ostats.cur_stage + 1 << "!" << std::endl;
+        // End previous stage span (cur_stage has already been incremented)
+        // Convert BCD time counter to decimal seconds
+        int time_remaining = TelemetryManager::bcd_to_seconds(ostats.time_counter);
+        TelemetryManager::instance().end_stage_span(time_remaining);
+        // Start new stage span
+        TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1);
     }
 }
 

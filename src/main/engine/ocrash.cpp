@@ -27,6 +27,7 @@
 #include "engine/outils.hpp"
 #include "engine/ocrash.hpp"
 #include "../utils.hpp"
+#include "../telemetry.hpp"
 
 OCrash ocrash;
 
@@ -940,7 +941,9 @@ void OCrash::collide_slow()
 
     crash_type = CRASH_BUMP; // low speed bump
     if (outrun.game_state == GS_INGAME) {
-        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CRASH BUMP" << std::endl;
+        TelemetryManager::instance().add_event("crash", {
+            {"crash_type", "bump"}
+        });
     }
     oinitengine.car_increment &= 0xFFFF;
 
@@ -974,7 +977,9 @@ void OCrash::collide_med()
 
     crash_type = CRASH_SPIN;
     if (outrun.game_state == GS_INGAME) {
-        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CRASH SPIN" << std::endl;
+        TelemetryManager::instance().add_event("crash", {
+            {"crash_type", "spin"}
+        });
     }
 
     // set_collision:
@@ -1040,7 +1045,9 @@ void OCrash::collide_fast()
 
     crash_type = CRASH_FLIP; // Flip
     if (outrun.game_state == GS_INGAME) {
-        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: CRASH FLIP" << std::endl;
+        TelemetryManager::instance().add_event("crash", {
+            {"crash_type", "flip"}
+        });
     }
 
     // set_collision:

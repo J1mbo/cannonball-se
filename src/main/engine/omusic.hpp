@@ -27,6 +27,8 @@ public:
     void check_start();
     void play_music(int index = -1);
     void cycle_music();
+    
+    uint8_t get_music_selected() const { return music_selected; }
 
 private:
     // Modified Widescreen version of the Music Select Tilemap

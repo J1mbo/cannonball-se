@@ -19,6 +19,7 @@
 #include "engine/ohud.hpp"
 #include "engine/ooutputs.hpp"
 #include "engine/ostats.hpp"
+#include "../telemetry.hpp"
 
 OHud ohud;
 
@@ -274,8 +275,14 @@ void OHud::draw_score(uint32_t addr, const uint32_t score, uint8_t font)
     }
 
     video.write_text16(&addr, digits[7] + BASE); // Always draw last digit
+    
     if (outrun.game_state == GS_INGAME) {
-        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON SCORE: " << (int)digits[0] << (int)digits[1] << (int)digits[2] << (int)digits[3] << (int)digits[4] << (int)digits[5] << (int)digits[6] << (int)digits[7] << std::endl;
+        // Update score attribute on active stage span (periodic updates)
+        uint32_t score = 0;
+        for (int i = 0; i < 8; i++) {
+            score = score * 10 + digits[i];
+        }
+        TelemetryManager::instance().update_stage_attribute("score", static_cast<int64_t>(score));
     }
     delete[] digits;
 }

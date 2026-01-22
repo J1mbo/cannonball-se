@@ -368,6 +368,15 @@ void Config::load()
     ttrial.laps    = cfg.get_int("time_trial.laps",    5);
     ttrial.traffic = cfg.get_int("time_trial.traffic", 3);
     cont_traffic   = cfg.get_int("continuous.traffic", 3);
+
+    // ------------------------------------------------------------------------
+    // Telemetry Settings
+    // ------------------------------------------------------------------------
+
+    telemetry.otlp_endpoint = cfg.get_string("telemetry.otlp_endpoint", "");
+    telemetry.instance_id = cfg.get_string("telemetry.instance_id", "");
+    telemetry.auth_token = cfg.get_string("telemetry.auth_token", "");
+    telemetry.debug = cfg.get_int("telemetry.debug", 0) != 0;
 }
 
 bool Config::save()
@@ -474,6 +483,11 @@ bool Config::save()
     cfg.put_int("time_trial.laps",    ttrial.laps);
     cfg.put_int("time_trial.traffic", ttrial.traffic);
     cfg.put_int("continuous.traffic", cont_traffic);
+
+    cfg.put_string("telemetry.otlp_endpoint", telemetry.otlp_endpoint);
+    cfg.put_string("telemetry.instance_id", telemetry.instance_id);
+    cfg.put_string("telemetry.auth_token", telemetry.auth_token);
+    cfg.put_int("telemetry.debug", telemetry.debug ? 1 : 0);
 
     // Sync back from doc (mirrors original behavior)
     ttrial.laps    = cfg.get_int("time_trial.laps",    5);

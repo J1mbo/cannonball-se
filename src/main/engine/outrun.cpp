@@ -29,6 +29,7 @@
 #include "engine/otiles.hpp"
 #include "engine/otraffic.hpp"
 #include "engine/outils.hpp"
+#include "../telemetry.hpp"
 #include <iostream>
 
 Outrun outrun;
@@ -245,6 +246,9 @@ void Outrun::jump_table()
             [[fallthrough]];
 
         case GS_ATTRACT:
+            // Cleanup any active telemetry spans on return to attract mode
+            TelemetryManager::instance().cleanup();
+            [[fallthrough]];
         case GS_BEST1:
             if (tick_frame) check_freeplay_start();
             [[fallthrough]];
@@ -447,7 +451,13 @@ void Outrun::main_switch()
                 ostats.frame_counter = ostats.frame_reset;
                 game_state++;
 
-                std::cout << Utils::get_timestamp_ms() << ": " << "SIMON GAME STARTED" << std::endl;
+                // Start game session telemetry
+                std::string mode = (cannonball_mode == MODE_TTRIAL) ? "time_trial" : 
+                                   (cannonball_mode == MODE_CONT) ? "continuous" : "original";
+                TelemetryManager::instance().start_game_session(mode, omusic.get_music_selected());
+                
+                // Start stage 1 span (cur_stage is 0, displayed as stage 1)
+                TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1);
             }
             break;
 
@@ -466,6 +476,7 @@ void Outrun::main_switch()
             ostats.game_completed |= BIT_0;             // Denote game completed
             obonus.bonus_timer = 3600;                  // Safety Timer Added in Rev. A Roms
             game_state = GS_BONUS;
+
             [[fallthrough]];
 
         case GS_BONUS:
@@ -480,6 +491,8 @@ void Outrun::main_switch()
         // Display Game Over Text
         // ----------------------------------------------------------------------------------------
         case GS_INIT_GAMEOVER:
+            // Note: Game session is ended later in GS_REINIT after high score entry
+            
             if (cannonball_mode != MODE_TTRIAL)
             {
                 oferrari.car_ctrl_active = false; // -1
@@ -506,6 +519,7 @@ void Outrun::main_switch()
             }
             osoundint.queue_sound(sound::NEW_COMMAND);
             game_state = GS_GAMEOVER;
+
             std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: GAME OVER, STAGE " << (int)(ostats.cur_stage + 1) << ", SCORE " << std::hex << ostats.score << std::dec << std::endl;
             [[fallthrough]];
 
@@ -569,6 +583,10 @@ void Outrun::main_switch()
             osoundint.queue_sound(sound::NEW_COMMAND);
             osoundint.queue_sound(sound::FM_RESET);
             cannonball::audio.clear_wav();
+            
+            // Start post-game span for high score entry
+            TelemetryManager::instance().start_post_game_span();
+            
             game_state = GS_BEST2;
             [[fallthrough]];
 
@@ -583,13 +601,38 @@ void Outrun::main_switch()
                     // JJP - always save when timer reaches zero. This avoids scores being lost
                     // if the player leaves it flashing on 'ED'
                     std::cout << "Saving new high score" << std::endl;
+
+                    // Record high score achievement with initials
+                    int pos = ohiscore.score_position();
+                    std::string initials;
+                    initials += (char)ohiscore.scores[pos].initial1;
+                    initials += (char)ohiscore.scores[pos].initial2;
+                    initials += (char)ohiscore.scores[pos].initial3;
+                    
+                    TelemetryManager::instance().add_event("high_score", {
+                        {"position", std::to_string(pos + 1)},
+                        {"score", std::to_string(ohiscore.scores[pos].score)},
+                        {"initials", initials}
+                    });
+                    
                     config.save_scores(outrun.cannonball_mode == Outrun::MODE_ORIGINAL);
                 }
                 //ROM:0000B700                 bclr    #5,(ppi1_value).l                   ; Turn screen off (not activated until PPI written to)
                 oferrari.car_ctrl_active = true; // 0 : Allow road updates
                 init_jump_table();
+                
+                // Save score and final stage before reinit resets them
+                uint32_t final_score = ostats.score;
+                int final_stage = ostats.cur_stage + 1;
+                std::string completion = (ostats.game_completed & BIT_0) ? "completed" : "timeout";
+                
                 oinitengine.init(cannonball_mode == MODE_TTRIAL ? ttrial.level : 0);
                 //ROM:0000B716                 bclr    #0,(byte_260550).l
+                
+                // End post-game span and game session
+                TelemetryManager::instance().end_post_game_span();
+                TelemetryManager::instance().end_game_session(final_score, completion, final_stage);
+                
                 game_state = GS_REINIT;          // Reinit game to attract mode
             }
             break;

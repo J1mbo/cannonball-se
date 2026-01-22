@@ -14,6 +14,7 @@
 #include "engine/oinputs.hpp"
 #include "engine/ostats.hpp"
 #include "../utils.hpp"
+#include "../telemetry.hpp"
 
 OInputs oinputs;
 
@@ -258,7 +259,9 @@ uint8_t OInputs::do_credits()
             // todo: Increment credits total for bookkeeping
             osoundint.queue_sound(sound::COIN_IN);
             
-            std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: COIN INSERTED, CREDITS: " << (int)ostats.credits << std::endl;
+            TelemetryManager::instance().add_orphan_event("coin_inserted", {
+                {"credits", std::to_string(ostats.credits)}
+            });
         }
         return 3;
     }

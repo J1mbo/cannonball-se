@@ -15,6 +15,7 @@
 #include "engine/ostats.hpp"
 #include "engine/otraffic.hpp"
 #include "../utils.hpp"
+#include "../telemetry.hpp"
 
 OStats ostats;
 
@@ -49,6 +50,7 @@ OStats::~OStats(void)
 void OStats::init(bool ttrial)
 {
     credits = ttrial ? 1 : 0;
+    last_stage_sent = -1;  // Initialize to -1 so first stage triggers telemetry
     // Choose correct lookup table if timing bugs fixed
     lap_ms = config.engine.fix_timer ? LAP_MS_60 : LAP_MS_64;
 }
@@ -78,9 +80,15 @@ void OStats::do_timers()
 {
     if (outrun.game_state != GS_INGAME) return;
 
-    // No need to check if we are in the GS_INGAME state as this was covered above.
-    std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: STAGE " << ((int)cur_stage + 1) << std::endl;
-
+    // Record stage started event only when stage changes
+    if (cur_stage != last_stage_sent) {
+        last_stage_sent = cur_stage;
+        TelemetryManager::instance().add_event("stage_started", {}, {
+            {"stage_number", cur_stage + 1},
+            {"speed_kph", oinitengine.car_increment >> 16},
+            {"score", static_cast<int64_t>(score)}
+        });
+    }
 
     inc_lap_timer();
 

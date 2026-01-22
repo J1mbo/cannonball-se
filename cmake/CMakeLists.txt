@@ -87,6 +87,7 @@ set(src_main
     "${main_cpp_base}/video.hpp"
     "${main_cpp_base}/utils.hpp"
     "${main_cpp_base}/windirent.h"
+    "${main_cpp_base}/telemetry.hpp"
 
     "${main_cpp_base}/main.cpp"
     "${main_cpp_base}/romloader.cpp"
@@ -94,6 +95,7 @@ set(src_main
     "${main_cpp_base}/roms.cpp"
     "${main_cpp_base}/video.cpp"
     "${main_cpp_base}/utils.cpp"
+    "${main_cpp_base}/telemetry.cpp"
     )
 
 set(src_frontend
@@ -301,6 +303,15 @@ else()
     set(_TINYXML2_TARGET PkgConfig::TINYXML2)
 endif()
 
+# --- OpenTelemetry for telemetry/tracing ---
+find_package(Protobuf REQUIRED)
+find_package(CURL REQUIRED)
+find_package(nlohmann_json REQUIRED)
+find_package(opentelemetry-cpp REQUIRED COMPONENTS api sdk otlp_http_exporter)
+if(NOT TARGET opentelemetry-cpp::api)
+    message(FATAL_ERROR "OpenTelemetry C++ SDK not found. Please install opentelemetry-cpp.")
+endif()
+
 # ——————————————————————————————————————
 # EGL / OpenGLES2 via pkg-config (Linux, Android, etc)
 # ——————————————————————————————————————
@@ -326,6 +337,12 @@ target_link_libraries(cannonball-se PRIVATE
     ${_TINYXML2_TARGET}
     PkgConfig::EGL
     PkgConfig::GLESv2
+    opentelemetry-cpp::api
+    opentelemetry-cpp::sdk
+    opentelemetry-cpp::otlp_http_exporter
+    opentelemetry-cpp::resources
+    opentelemetry-cpp::common
+    opentelemetry-cpp::http_client_curl
 )
 
 # --- Linux: udev for joystick hotplugging ---
