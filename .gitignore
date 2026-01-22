@@ -7,3 +7,6 @@ build/
 *.swp
 play_stats.xml
 hiscores.xml
+roms/opr-*
+roms/mpr-*
+roms/epr-*
