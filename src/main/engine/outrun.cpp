@@ -623,7 +623,7 @@ void Outrun::main_switch()
                 init_jump_table();
                 
                 // Save score and final stage before reinit resets them
-                uint32_t final_score = ostats.score;
+                int64_t final_score = TelemetryManager::bcd_score_to_decimal(ostats.score);
                 int final_stage = ostats.cur_stage + 1;
                 std::string completion = (ostats.game_completed & BIT_0) ? "completed" : "timeout";
                 
