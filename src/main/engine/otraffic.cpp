@@ -472,13 +472,15 @@ void OTraffic::update_props(oentry* sprite)
                     
                     TelemetryManager::instance().add_event("vehicle_overtake", {
                         {"vehicle_type", std::to_string(sprite_type)},
-                        {"vehicle", vehicle_name}
+                        {"vehicle", vehicle_name},
+                        {"palette", std::to_string(sprite->pal_src)}
                     }, {
                         {"speed_kph", oinitengine.car_increment >> 16},
                         {"score", static_cast<int64_t>(ostats.score)}
                     });
 
-                    std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: OVERTOOK " << vehicle_name << " (type " << sprite_type << ")" << std::endl;
+                    // TODO: Work out what color the palette number represents...
+                    std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: OVERTOOK " << vehicle_name << " (type " << sprite_type << ", palette " << static_cast<int>(sprite->pal_src) << ")" << std::endl;
                 }
             } 
             else
