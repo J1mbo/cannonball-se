@@ -144,6 +144,31 @@ game_session (root span)
 
 **Coin insert events** are recorded as standalone "orphan" events (not attached to game sessions).
 
+`vehicle_overtake` events contain a vehicle_type ID.  Here's a table mapping these types to the vehicles.  Each vehicle appears multiple times as it has different IDs depending on either the sprite used to render the vehicle (e.g. going straight vs cornering) or the color palette, I'm not sure.  Either way, expect multiple IDs to map to the same car type.
+
+| ID | Vehicle  |
+|----|----------|
+| 0  | truck    |
+| 1  | truck    |
+| 2  | truck    |
+| 3  | truck    |
+| 4  | truck    |
+| 5  | pickup   |
+| 6  | pickup   |
+| 7  | pickup   |
+| 8  | beetle   |
+| 9  | beetle   |
+| 10 | beetle   |
+| 11 | beetle   |
+| 12 | bmw      |
+| 13 | bmw      |
+| 14 | corvette |
+| 15 | corvette |
+| 16 | porsche  |
+| 17 | porsche  |
+| 18 | porsche  |
+| 19 | porsche  |
+
 ### Running an OTLP Collector
 
 Example Docker Compose setup with Jaeger backend:

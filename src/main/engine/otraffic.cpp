@@ -458,12 +458,27 @@ void OTraffic::update_props(oentry* sprite)
                 ostats.update_score(0x20000);
                 if (outrun.game_state == GS_INGAME) {
                     int sprite_type = sprite->type >> 3;
+                    
+                    static const char* VEHICLE_NAMES[] = {
+                        "truck", "truck", "truck", "truck", "truck",
+                        "pickup", "pickup", "pickup",
+                        "beetle", "beetle", "beetle", "beetle",
+                        "bmw", "bmw",
+                        "corvette", "corvette",
+                        "porsche", "porsche", "porsche", "porsche"
+                    };
+                    
+                    const char* vehicle_name = (sprite_type >= 0 && sprite_type < 20) ? VEHICLE_NAMES[sprite_type] : "unknown";
+                    
                     TelemetryManager::instance().add_event("vehicle_overtake", {
-                        {"vehicle_type", std::to_string(sprite_type)}
+                        {"vehicle_type", std::to_string(sprite_type)},
+                        {"vehicle", vehicle_name}
                     }, {
                         {"speed_kph", oinitengine.car_increment >> 16},
                         {"score", static_cast<int64_t>(ostats.score)}
                     });
+
+                    std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: OVERTOOK " << vehicle_name << " (type " << sprite_type << ")" << std::endl;
                 }
             } 
             else
