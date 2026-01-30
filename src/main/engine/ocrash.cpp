@@ -24,6 +24,7 @@
 #include "engine/oferrari.hpp"
 #include "engine/oinputs.hpp"
 #include "engine/olevelobjs.hpp"
+#include "engine/ostats.hpp"
 #include "engine/outils.hpp"
 #include "engine/ocrash.hpp"
 #include "../utils.hpp"
@@ -943,6 +944,9 @@ void OCrash::collide_slow()
     if (outrun.game_state == GS_INGAME) {
         TelemetryManager::instance().add_event("crash", {
             {"crash_type", "bump"}
+        }, {
+            {"speed_kph", oinitengine.car_increment >> 16},
+            {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
         });
     }
     oinitengine.car_increment &= 0xFFFF;
@@ -979,6 +983,9 @@ void OCrash::collide_med()
     if (outrun.game_state == GS_INGAME) {
         TelemetryManager::instance().add_event("crash", {
             {"crash_type", "spin"}
+        }, {
+            {"speed_kph", oinitengine.car_increment >> 16},
+            {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
         });
     }
 
@@ -1047,6 +1054,9 @@ void OCrash::collide_fast()
     if (outrun.game_state == GS_INGAME) {
         TelemetryManager::instance().add_event("crash", {
             {"crash_type", "flip"}
+        }, {
+            {"speed_kph", oinitengine.car_increment >> 16},
+            {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
         });
     }
 

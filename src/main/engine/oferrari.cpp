@@ -1683,7 +1683,7 @@ void OFerrari::do_sound_score_slip()
             {
                 TelemetryManager::instance().add_event("off_road", {}, {
                     {"speed_kph", oinitengine.car_increment >> 16},
-                    {"score", static_cast<int64_t>(ostats.score)}
+                    {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
                 });
             }
         }

@@ -32,8 +32,8 @@ public:
     void end_game_session(int64_t final_score, const std::string& completion_status, int final_stage);
     
     // Stage span management
-    void start_stage_span(int stage_num);
-    void end_stage_span(int time_remaining_seconds);
+    void start_stage_span(int stage_num, int64_t score_start);
+    void end_stage_span(int time_remaining_seconds, int64_t score_end);
     
     // Post-game span management (for high score entry, etc.)
     void start_post_game_span();
@@ -55,6 +55,9 @@ public:
     
     // Helper to convert BCD time to decimal seconds
     static int bcd_to_seconds(int16_t bcd_value);
+    
+    // Helper to convert BCD score to decimal
+    static int64_t bcd_score_to_decimal(uint32_t bcd_score);
     
 private:
     TelemetryManager();

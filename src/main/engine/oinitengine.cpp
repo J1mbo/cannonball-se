@@ -671,7 +671,7 @@ void OInitEngine::init_split3()
         }, {
             {"stage", ostats.routes[0]},
             {"speed_kph", car_increment >> 16},
-            {"score", static_cast<int64_t>(ostats.score)}
+            {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
         });
     }
 
@@ -796,9 +796,9 @@ void OInitEngine::init_split_next_level()
         // End previous stage span (cur_stage has already been incremented)
         // Convert BCD time counter to decimal seconds
         int time_remaining = TelemetryManager::bcd_to_seconds(ostats.time_counter);
-        TelemetryManager::instance().end_stage_span(time_remaining);
+        TelemetryManager::instance().end_stage_span(time_remaining, TelemetryManager::bcd_score_to_decimal(ostats.score));
         // Start new stage span
-        TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1);
+        TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1, TelemetryManager::bcd_score_to_decimal(ostats.score));
     }
 }
 

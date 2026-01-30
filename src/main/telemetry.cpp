@@ -211,7 +211,7 @@ void TelemetryManager::end_game_session(int64_t final_score, const std::string& 
     }
 }
 
-void TelemetryManager::start_stage_span(int stage_num) {
+void TelemetryManager::start_stage_span(int stage_num, int64_t score_start) {
     if (!initialized_ || !impl_->tracer || !impl_->game_session_span) return;
     
     try {
@@ -232,6 +232,7 @@ void TelemetryManager::start_stage_span(int stage_num) {
         
         if (impl_->stage_span) {
             impl_->stage_span->SetAttribute("stage_number", stage_num);
+            impl_->stage_span->SetAttribute("score_start", score_start);
         }
         
     } catch (const std::exception& e) {
@@ -239,11 +240,12 @@ void TelemetryManager::start_stage_span(int stage_num) {
     }
 }
 
-void TelemetryManager::end_stage_span(int time_remaining_seconds) {
+void TelemetryManager::end_stage_span(int time_remaining_seconds, int64_t score_end) {
     if (!initialized_ || !impl_->stage_span) return;
     
     try {
         impl_->stage_span->SetAttribute("time_remaining_seconds", time_remaining_seconds);
+        impl_->stage_span->SetAttribute("score_end", score_end);
         impl_->stage_span->End();
         impl_->stage_span = nullptr;
     } catch (const std::exception& e) {
@@ -375,4 +377,19 @@ int TelemetryManager::bcd_to_seconds(int16_t bcd_value) {
     int tens = (bcd_value >> 4) & 0x0F;
     int ones = bcd_value & 0x0F;
     return tens * 10 + ones;
+}
+
+int64_t TelemetryManager::bcd_score_to_decimal(uint32_t bcd_score) {
+    // Convert 8-digit BCD score to decimal
+    // Each nibble (4 bits) is one decimal digit
+    int64_t result = 0;
+    for (int i = 0; i < 8; i++) {
+        int digit = (bcd_score >> (i * 4)) & 0x0F;
+        int64_t multiplier = 1;
+        for (int j = 0; j < i; j++) {
+            multiplier *= 10;
+        }
+        result += digit * multiplier;
+    }
+    return result;
 }

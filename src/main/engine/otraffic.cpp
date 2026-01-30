@@ -476,7 +476,7 @@ void OTraffic::update_props(oentry* sprite)
                         {"palette", std::to_string(sprite->pal_src)}
                     }, {
                         {"speed_kph", oinitengine.car_increment >> 16},
-                        {"score", static_cast<int64_t>(ostats.score)}
+                        {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
                     });
 
                     // TODO: Work out what color the palette number represents...

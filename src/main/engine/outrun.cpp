@@ -457,7 +457,7 @@ void Outrun::main_switch()
                 TelemetryManager::instance().start_game_session(mode, omusic.get_music_selected());
                 
                 // Start stage 1 span (cur_stage is 0, displayed as stage 1)
-                TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1);
+                TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1, TelemetryManager::bcd_score_to_decimal(ostats.score));
             }
             break;
 
@@ -520,7 +520,7 @@ void Outrun::main_switch()
             osoundint.queue_sound(sound::NEW_COMMAND);
             game_state = GS_GAMEOVER;
 
-            std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: GAME OVER, STAGE " << (int)(ostats.cur_stage + 1) << ", SCORE " << std::hex << ostats.score << std::dec << std::endl;
+            std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: GAME OVER, STAGE " << (int)(ostats.cur_stage + 1) << ", SCORE " << TelemetryManager::bcd_score_to_decimal(ostats.score) << std::endl;
             [[fallthrough]];
 
         case GS_GAMEOVER:
@@ -611,8 +611,9 @@ void Outrun::main_switch()
                     
                     TelemetryManager::instance().add_event("high_score", {
                         {"position", std::to_string(pos + 1)},
-                        {"score", std::to_string(ohiscore.scores[pos].score)},
                         {"initials", initials}
+                    }, {
+                        {"score", TelemetryManager::bcd_score_to_decimal(ohiscore.scores[pos].score)}
                     });
                     
                     config.save_scores(outrun.cannonball_mode == Outrun::MODE_ORIGINAL);

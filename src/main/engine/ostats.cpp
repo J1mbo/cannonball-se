@@ -86,7 +86,7 @@ void OStats::do_timers()
         TelemetryManager::instance().add_event("stage_started", {}, {
             {"stage_number", cur_stage + 1},
             {"speed_kph", oinitengine.car_increment >> 16},
-            {"score", static_cast<int64_t>(score)}
+            {"score", TelemetryManager::bcd_score_to_decimal(score)}
         });
     }
 
@@ -145,7 +145,8 @@ void OStats::convert_speed_score(uint16_t speed)
     uint16_t score = CONVERT[(speed >> 4)];
     update_score(score);
     if (outrun.game_state == GS_INGAME) {
-        std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: SPEED " << speed << std::endl;
+        // This is quite a noisy log line, so only uncomment if needed.
+        //std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: SPEED " << speed << std::endl;
     }
 }
 

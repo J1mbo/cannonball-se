@@ -276,14 +276,6 @@ void OHud::draw_score(uint32_t addr, const uint32_t score, uint8_t font)
 
     video.write_text16(&addr, digits[7] + BASE); // Always draw last digit
     
-    if (outrun.game_state == GS_INGAME) {
-        // Update score attribute on active stage span (periodic updates)
-        uint32_t score = 0;
-        for (int i = 0; i < 8; i++) {
-            score = score * 10 + digits[i];
-        }
-        TelemetryManager::instance().update_stage_attribute("score", static_cast<int64_t>(score));
-    }
     delete[] digits;
 }
 
