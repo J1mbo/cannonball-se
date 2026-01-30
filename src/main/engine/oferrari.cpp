@@ -28,6 +28,7 @@
 #include "engine/ostats.hpp"
 #include "engine/outils.hpp"
 #include "engine/oferrari.hpp"
+#include "../telemetry.hpp"
 
 OFerrari oferrari;
 
@@ -1674,7 +1675,18 @@ void OFerrari::do_sound_score_slip()
     else
     {
         if (wheel_state)
+        {
             osoundint.queue_sound(sound::INIT_SAFETYZONE);
+            
+            // Add telemetry event for going off-road (only in ingame mode)
+            if (outrun.game_state == GS_INGAME)
+            {
+                TelemetryManager::instance().add_event("off_road", {}, {
+                    {"speed_kph", oinitengine.car_increment >> 16},
+                    {"score", static_cast<int64_t>(ostats.score)}
+                });
+            }
+        }
     }
     sprite_wheel_state = wheel_state;
 }
