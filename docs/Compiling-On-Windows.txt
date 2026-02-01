@@ -10,10 +10,15 @@ Process:
    saved to, shown in the 'Path' box (defaults to C:\Users\[username]\Source\Repos). Click Clone, and VS will download the
    source code directly from GitHub.
 
-3. In the "Solution Explorer" pane on the right, VS should now show "Folder View" with the 'Path' from the previous step.
-   Double-click on that to start the build. The CMake configuration take care of installing dependencies, which does take
-   a while (about 20 minutes on my machine) and unfortuately, VS shows "Ready" in the bottom left corner throughout this
-   process. It's not finished until you see in the Output window:
+3. In the "Solution Explorer" pane on the right, VS should now show "Folder View" with the path from the previous step.
+   Double-click on that to start the CMake configuration and build setup.
+
+   The CMake configuration will take care of installing dependencies, which can take a long time (around 20 minutes on some machines).
+   Note: Visual Studio may misleadingly show “Ready” in the bottom-left corner while CMake is still running — always check View → Output → CMake for progress.
+
+   In some cases, Visual Studio may fail to start CMake correctly on first open; if you do not see CMake output or encounter errors such as “Root element is missing”, close and restart Visual Studio, then reopen the folder.
+   
+   The process is not finished until you see in the Output window:
 
    1> CMake generation finsihed.
 
