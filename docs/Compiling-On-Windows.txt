@@ -4,7 +4,7 @@ If you're unfamiliar with compiling on Windows, this guide should get you starte
 
 Process:
 
-1. Install Visual Studio 22 (VS), being sure to select "Desktop Development with C++" under "Workloads" in the installer.
+1. Install Visual Studio 26 (VS), being sure to select "Desktop Development with C++" under "Workloads" in the installer.
 
 2. Open VS, select "Clone a Respository", and enter "https://github.com/J1mbo/CannonBall-SE". Note where this will be
    saved to, shown in the 'Path' box (defaults to C:\Users\[username]\Source\Repos). Click Clone, and VS will download the
