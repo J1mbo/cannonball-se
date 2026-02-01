@@ -1,5 +1,24 @@
 CannonBall-SE Change Log
 
+== v1.4 ==
+
+1.  Hi-res sprite rendering mode (beta). Increases resolution of distant sprites. May result in some misalignment of objects.
+2.  Alternative wheel-slip generation (when fix_bugs in enabled) - provides consistent slip for all parts of the game
+3.  Soft-fail if ROM with fixed samples isn't found - log to stderr and use RevB ROM
+4.  SNES filter moved to CPP (was C)
+5.  Added -perftest command-line option
+6.  F8 can now be used to turn video processing effects on or off in the game
+7.  Fast shader now does crt mask but drops noise, 60fps achievable on Pi2.
+8.  Improved speed of overlay generation.
+9.  CRT bezel effect now adjusts with warpX/warpY.
+10. Updated menu to reflect changes and less video restarts are now needed when configuring the settings.
+11. Revised threaded work order to better utilise cores
+12. Updated Fast fragment shader to match new syntax of the full shader; Slightly faster fastmask() implementation in full shader.
+13. Sprite rendering uses revised, multi-line approach to improve performance on Pi2.
+14. Engine bug fixes:
+14.1 Fix race in snes_ntsc_init() by correcting OpenMP work-sharing
+14.2 Corrected vsync setting at initialisation
+
 == v1.3 ==
 
 1. S16 glowing sprite edges are now always enabled.
