@@ -544,8 +544,6 @@ void Outrun::main_switch()
             }
             osoundint.queue_sound(sound::NEW_COMMAND);
             game_state = GS_GAMEOVER;
-
-            std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: GAME OVER, STAGE " << (int)(ostats.cur_stage + 1) << ", SCORE " << TelemetryManager::bcd_score_to_decimal(ostats.score) << std::endl;
             [[fallthrough]];
 
         case GS_GAMEOVER:
