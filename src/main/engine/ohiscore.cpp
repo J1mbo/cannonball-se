@@ -12,6 +12,7 @@
 #include "engine/ostats.hpp"
 #include "engine/outils.hpp"
 #include "engine/ohiscore.hpp"
+#include "engine/oname.hpp"
 #include <iostream>
 
 OHiScore ohiscore;
@@ -227,6 +228,31 @@ void OHiScore::check_name_entry()
         ohud.draw_score(0x110BDA, ostats.score, 3); // Select font 3 and print score
         state = STATE_DONE;
     }
+    // High Score WITH pre-stored initials - auto-populate
+    else if (!oname.get_initials().empty() && oname.get_initials().length() >= 3)
+    {
+        // Convert stored initials from string to tile values
+        const std::string& initials = oname.get_initials();
+        scores[score_pos].initial1 = (uint8_t)initials[0];
+        scores[score_pos].initial2 = (uint8_t)initials[1];
+        scores[score_pos].initial3 = (uint8_t)initials[2];
+
+        // Display the auto-populated score entry
+        ohud.blit_text1(TEXT1_YOURSCORE);
+        uint32_t score_adr = get_score_adr();
+
+        // Blit the initials directly to screen
+        video.write_text16(score_adr + 0, scores[score_pos].initial1 | 0x8600);
+        video.write_text16(score_adr + 2, scores[score_pos].initial2 | 0x8600);
+        video.write_text16(score_adr + 4, scores[score_pos].initial3 | 0x8600);
+
+        // Display score
+        ohud.draw_score(0x110BDA, ostats.score, 3);
+
+        // Skip to done state (no manual entry needed)
+        state = STATE_DONE;
+    }
+    // High Score WITHOUT pre-stored initials - prompt for entry
     else
     {
         // Get text ram address of score to blit
