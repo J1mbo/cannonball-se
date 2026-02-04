@@ -251,6 +251,8 @@ void OHiScore::check_name_entry()
 
         // Skip to done state (no manual entry needed)
         state = STATE_DONE;
+        ostats.frame_counter = ostats.frame_reset;
+        ostats.time_counter  = 2;
     }
     // High Score WITHOUT pre-stored initials - prompt for entry
     else
