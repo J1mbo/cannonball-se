@@ -38,6 +38,9 @@ void OName::enable()
 
     video.clear_text_ram();
     video.enabled = true;
+
+    // Display title
+    ohud.blit_text_big(8, "ENTER YOUR INITIALS", false);
 }
 
 void OName::disable()
