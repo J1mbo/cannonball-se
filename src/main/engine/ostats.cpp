@@ -237,12 +237,6 @@ void OStats::init_next_level()
         ohud.blit_text1(TEXT1_LAPTIME2);
         ohud.draw_lap_timer(0x110554, stage_times[cur_stage-1], config.engine.fix_bugs ? lap_ms[stage_times[cur_stage-1][2]] : ms_value);
 
-        // TODO SIMON GET THE LAST LAP TIME IN MS
-        if (outrun.game_state == GS_INGAME) {
-            // TODO LOOK AT THE CODE IN OHUD FOR HOW TO GET THIS...
-            std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: LAST STAGE / LAP TIME TODO HERE." << std::endl;
-        }
-        
         otraffic.set_max_traffic();
         osoundint.queue_sound(sound::YM_CHECKPOINT);
         osoundint.queue_sound(sound::VOICE_CHECKPOINT);
