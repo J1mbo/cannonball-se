@@ -133,7 +133,7 @@ Each gameplay session creates a **game_session** root span with nested **stage_N
 
 ```
 game_session (root span)
-├── Attributes: game_mode, music_track
+├── Attributes: game_mode, music_track, player_initials
 ├── stage_1 (child span)
 │   ├── Events: stage_started, route_chosen, crash, vehicle_overtake
 │   └── Attributes: score (updated periodically), time_remaining
@@ -141,6 +141,11 @@ game_session (root span)
 │   └── ...
 └── stage_N (final stage)
 ```
+
+**Session Attributes:**
+- `game_mode`: The selected game mode
+- `music_track`: The music track chosen by the player
+- `player_initials`: Player's 3-character initials (captured at game start; auto-populated for high scores)
 
 **Coin insert events** are recorded as standalone "orphan" events (not attached to game sessions).
 
