@@ -168,7 +168,7 @@ void TelemetryManager::shutdown() {
     }
 }
 
-void TelemetryManager::start_game_session(const std::string& game_mode, int music_selection) {
+void TelemetryManager::start_game_session(const std::string& game_mode, int music_selection, const std::string& player_initials) {
     if (!initialized_ || !impl_->tracer) return;
     
     try {
@@ -181,6 +181,7 @@ void TelemetryManager::start_game_session(const std::string& game_mode, int musi
         if (impl_->game_session_span) {
             impl_->game_session_span->SetAttribute("game_mode", game_mode);
             impl_->game_session_span->SetAttribute("music_selection", music_selection);
+            impl_->game_session_span->SetAttribute("player_initials", player_initials);
         }
     } catch (const std::exception& e) {
         std::cerr << "TelemetryManager: Error starting game session: " << e.what() << std::endl;

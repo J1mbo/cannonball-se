@@ -28,7 +28,7 @@ public:
     void shutdown();
     
     // Game session management
-    void start_game_session(const std::string& game_mode, int music_selection);
+    void start_game_session(const std::string& game_mode, int music_selection, const std::string& player_initials);
     void end_game_session(int64_t final_score, const std::string& completion_status, int final_stage);
     
     // Stage span management

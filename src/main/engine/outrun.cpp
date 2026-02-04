@@ -22,6 +22,7 @@
 #include "engine/ologo.hpp"
 #include "engine/omap.hpp"
 #include "engine/omusic.hpp"
+#include "engine/oname.hpp"
 #include "engine/ooutputs.hpp"
 #include "engine/outrun.hpp"
 #include "engine/opalette.hpp"
@@ -222,6 +223,12 @@ void Outrun::jump_table()
             break;
 
         // ----------------------------------------------------------------------------------------
+        case GS_NAME:
+            // Keep sprite system running during name entry
+            osprites.tick();
+            olevelobjs.do_sprite_routine();
+            break;
+
         // Best OutRunners Entry (EditJumpTable3 Entries)
         // ----------------------------------------------------------------------------------------
         case GS_INIT_BEST2:
@@ -390,6 +397,24 @@ void Outrun::main_switch()
                 game_state = GS_INIT_GAME;
             }
             break;
+
+        // ----------------------------------------------------------------------------------------
+        // Name Entry Screen
+        // ----------------------------------------------------------------------------------------
+
+        case GS_INIT_NAME:
+            oname.enable();
+            game_state = GS_NAME;
+            [[fallthrough]];
+
+        case GS_NAME:
+            oname.tick();
+            if (oname.is_complete())
+            {
+                oname.disable();
+                game_state = GS_INIT_GAME;
+            }
+            break;
         // ----------------------------------------------------------------------------------------
         // In-Game
         // ----------------------------------------------------------------------------------------
@@ -454,7 +479,7 @@ void Outrun::main_switch()
                 // Start game session telemetry
                 std::string mode = (cannonball_mode == MODE_TTRIAL) ? "time_trial" : 
                                    (cannonball_mode == MODE_CONT) ? "continuous" : "original";
-                TelemetryManager::instance().start_game_session(mode, omusic.get_music_selected());
+                TelemetryManager::instance().start_game_session(mode, omusic.get_music_selected(), oname.get_initials());
                 
                 // Start stage 1 span (cur_stage is 0, displayed as stage 1)
                 TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1, TelemetryManager::bcd_score_to_decimal(ostats.score));

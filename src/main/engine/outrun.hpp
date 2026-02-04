@@ -35,6 +35,8 @@ enum
 	GS_INIT_LOGO = 4,			// Load Outrun Logo
 	GS_LOGO = 5,				// Outrun Logo (Attract Mode)
 	GS_INIT_MUSIC = 6,			// Load Music Selection Screen
+	GS_INIT_NAME = 22,			// Initialize player name entry
+	GS_NAME = 23,				// Player name entry screen
 	GS_MUSIC = 7,				// Music Selection Screen
 	GS_INIT_GAME = 8,			// Loading In-Game
 	GS_START1 = 9,				// Start Game, Car Driving In
