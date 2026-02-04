@@ -1,8 +1,17 @@
 # Player Initials Entry Feature
 
+## Overview
+
+This feature adds player initial/name entry at the start of the game and intelligently reuses those initials if the player achieves a high score, eliminating duplicate entry and improving user experience.
+
+**Key Enhancement:** If a player enters their initials at the start and then achieves a high score, the system automatically uses the stored initials without prompting for entry again. The high score is recorded and the table is displayed directly.
+
 ## Requirement
 
-Add a new screen/state after the user has chosen their music where the player can enter their initials (similar to the high score entry screen). These initials should be recorded in the outermost span of the telemetry.
+Add a new screen/state after the user has chosen their music where the player can enter their initials (similar to the high score entry screen). These initials should be:
+1. Recorded in the outermost span of the telemetry
+2. Stored for the duration of the game session
+3. **Automatically reused if the player achieves a high score** - bypassing the normal high score entry screen and directly displaying the updated high score table with the new entry
 
 ## Current Flow
 
@@ -16,7 +25,7 @@ GS_START1-3 (countdown)
 GS_INGAME (gameplay)
 ```
 
-## Desired Flow
+## Desired Flow - Game Start
 
 ```
 GS_MUSIC (music selection)
@@ -30,6 +39,34 @@ GS_INIT_GAME (initialize game)
 GS_START1-3 (countdown)
   ↓
 GS_INGAME (gameplay)
+```
+
+## Desired Flow - Game End (High Score Achieved)
+
+**Current behavior:**
+```
+GS_GAMEOVER (game over display)
+  ↓
+GS_INIT_MUSIC (prepare high score entry)
+  ↓
+GS_MUSIC (high score entry screen)
+  ↓
+GS_INIT_GAME (display high score table)
+```
+
+**New behavior:**
+```
+GS_GAMEOVER (game over display)
+  ↓
+Check if player_initials exist
+  ↓
+  YES → Skip entry screen, use stored initials
+        ↓
+        GS_INIT_GAME (display high score table with new entry) ← MODIFIED
+  ↓
+  NO → Follow current flow (ask for initials)
+        ↓
+        GS_INIT_MUSIC → GS_MUSIC → GS_INIT_GAME
 ```
 
 ## Implementation Plan
@@ -200,16 +237,197 @@ Instantiate the object:
 OName oname;
 ```
 
+### 6. Store Player Initials for Session
+
+To enable automatic reuse of initials at high score entry, we need persistent storage.
+
+#### A. Add Storage to OutRun Class
+**File:** `src/main/engine/outrun.hpp`
+
+Add a member variable to store the player's initials:
+```cpp
+class OutRun {
+    // ... existing members ...
+    std::string player_initials;  // Stores initials entered at game start
+
+public:
+    void set_player_initials(const std::string& initials);
+    const std::string& get_player_initials() const;
+    bool has_player_initials() const;
+};
+```
+
+#### B. Implement Storage Methods
+**File:** `src/main/engine/outrun.cpp`
+
+```cpp
+void OutRun::set_player_initials(const std::string& initials) {
+    player_initials = initials;
+}
+
+const std::string& OutRun::get_player_initials() const {
+    return player_initials;
+}
+
+bool OutRun::has_player_initials() const {
+    return !player_initials.empty() && player_initials.length() >= 3;
+}
+```
+
+#### C. Store Initials After Entry
+**File:** `src/main/engine/outrun.cpp`
+
+In the `GS_NAME` state handler, after initials are entered:
+```cpp
+case GS_NAME:
+    oname.tick();
+    if (oname.is_complete()) {
+        set_player_initials(oname.get_initials());  // Store for later use
+        oname.disable();
+        game_state = GS_INIT_GAME;
+    }
+    break;
+```
+
+#### D. Clear Initials at Session Start
+**File:** `src/main/engine/outrun.cpp`
+
+Clear stored initials when returning to attract mode to ensure each game session is independent:
+```cpp
+case GS_ATTRACT:
+    // ... existing attract mode code ...
+    player_initials.clear();  // Reset for new session
+    break;
+```
+
+### 7. Modify High Score Entry Logic
+
+#### A. Check for Existing Initials
+**File:** `src/main/engine/ohiscore.cpp`
+
+Add a method to check if initials should be auto-populated:
+
+```cpp
+// In ohiscore.hpp - add public method:
+bool should_skip_entry() const;
+
+// In ohiscore.cpp - implementation:
+bool OHiScore::should_skip_entry() const {
+    return outrun.has_player_initials();
+}
+```
+
+#### B. Auto-Populate High Score Entry
+**File:** `src/main/engine/ohiscore.cpp`
+
+Modify the initialization logic to use stored initials when available:
+
+```cpp
+void OHiScore::enable() {
+    // ... existing setup code ...
+
+    if (outrun.has_player_initials()) {
+        // Use initials from game start
+        const std::string& initials = outrun.get_player_initials();
+        for (int i = 0; i < 3 && i < initials.length(); i++) {
+            initial[i] = initials[i];
+        }
+
+        // Immediately save high score and skip to display
+        write_hiscore_to_ram();
+        state = STATE_DONE;  // Skip entry, go straight to display
+    } else {
+        // No stored initials - use normal entry flow
+        state = STATE_ENTRY;
+    }
+}
+```
+
+#### C. Handle State Transitions
+**File:** `src/main/engine/ohiscore.cpp`
+
+In the main tick() method, respect the auto-populated state:
+
+```cpp
+void OHiScore::tick() {
+    switch (state) {
+        case STATE_INIT:
+            // ... existing init code ...
+            break;
+
+        case STATE_ENTRY:
+            // Normal manual entry flow
+            handle_input();
+            break;
+
+        case STATE_DONE:
+            // Skip entry - proceed to high score display
+            // Let parent state machine handle transition
+            break;
+    }
+}
+```
+
+#### D. Skip Entry Screen Rendering
+**File:** `src/main/engine/ohiscore.cpp`
+
+Update rendering to skip the alphabet/entry UI when using stored initials:
+
+```cpp
+void OHiScore::render() {
+    if (state == STATE_DONE && outrun.has_player_initials()) {
+        // Render only the high score table
+        render_hiscore_table();
+    } else {
+        // Render full entry screen with alphabet
+        render_entry_screen();
+        render_hiscore_table();
+    }
+}
+```
+
+### 8. Update State Machine Flow
+
+**File:** `src/main/engine/outrun.cpp`
+
+Modify the high score entry state to detect and handle auto-population:
+
+```cpp
+case GS_MUSIC:  // This state is reused for high score entry
+    ohiscore.tick();
+
+    if (ohiscore.is_complete()) {
+        // High score entry complete (either manual or auto)
+        ohiscore.disable();
+
+        if (outrun.has_player_initials()) {
+            // Initials were auto-used, proceed directly to table display
+            game_state = GS_INIT_GAME;  // Or appropriate next state
+        } else {
+            // Manual entry was used, follow normal flow
+            game_state = GS_INIT_GAME;
+        }
+    }
+    break;
+```
+
 ## Key Files to Modify
+
+### Initial Entry Screen (Steps 1-5)
 
 1. **`src/main/engine/outrun.hpp`**
    - Add `GS_INIT_NAME` and `GS_NAME` enum values
    - Add `extern OName oname;` declaration
+   - Add `player_initials` member variable
+   - Add methods: `set_player_initials()`, `get_player_initials()`, `has_player_initials()`
 
 2. **`src/main/engine/outrun.cpp`**
    - Add state handlers for `GS_INIT_NAME` and `GS_NAME`
    - Instantiate `OName oname;`
    - Update telemetry call to pass initials (line ~457)
+   - Implement player initials storage methods
+   - Store initials after entry in `GS_NAME` handler
+   - Clear initials in attract mode
 
 3. **`src/main/engine/omusic.cpp`**
    - Change state transition from `GS_INIT_GAME` to `GS_INIT_NAME` (line ~210)
@@ -226,6 +444,19 @@ OName oname;
 
 7. **`src/main/engine/oname.cpp`** (NEW FILE)
    - Class implementation (borrow heavily from `ohiscore.cpp`)
+
+### High Score Entry Auto-Population (Steps 6-8)
+
+8. **`src/main/engine/ohiscore.hpp`**
+   - Add `should_skip_entry()` method declaration
+   - Add state constants if not already present (STATE_INIT, STATE_ENTRY, STATE_DONE)
+
+9. **`src/main/engine/ohiscore.cpp`**
+   - Implement `should_skip_entry()` method
+   - Modify `enable()` to check for stored initials and auto-populate
+   - Update `tick()` to handle auto-populated state
+   - Update rendering to skip entry UI when using stored initials
+   - Ensure `write_hiscore_to_ram()` is called with stored initials
 
 ## Technical Notes
 
@@ -258,6 +489,7 @@ Match the visual style of the high score entry screen:
 
 ## Testing Checklist
 
+### Initial Entry Screen (Game Start)
 - [ ] New screen displays after music selection
 - [ ] Steering wheel navigates through alphabet
 - [ ] Accelerator confirms letter selection
@@ -267,3 +499,26 @@ Match the visual style of the high score entry screen:
 - [ ] Initials recorded in telemetry game_session span
 - [ ] Game flow continues normally after initial entry
 - [ ] Visual style matches game aesthetic
+
+### High Score Auto-Population (Game End)
+- [ ] **With stored initials + high score:**
+  - [ ] High score entry screen is skipped
+  - [ ] Stored initials are automatically used for high score
+  - [ ] High score table displays with new entry
+  - [ ] No manual entry is required
+
+- [ ] **Without stored initials + high score:**
+  - [ ] Normal high score entry screen displays
+  - [ ] Manual entry works as before
+  - [ ] (Fallback behavior preserved)
+
+- [ ] **Stored initials persistence:**
+  - [ ] Initials stored after entry at game start
+  - [ ] Initials available throughout game session
+  - [ ] Initials cleared when returning to attract mode
+  - [ ] New session requires new initial entry
+
+- [ ] **Edge cases:**
+  - [ ] Multiple game sessions with different initials
+  - [ ] Game over without high score (no entry screen shown)
+  - [ ] Very high score with stored initials auto-populates correctly
