@@ -451,7 +451,7 @@ int8_t OHiScore::read_controls()
     else if (steering >= 0x10)
         steer += 1;
 
-    if (steer >= 0x14)
+    if (steer >= 0x08)
         steer = 0;
     else
         movement = 0; // no movement
