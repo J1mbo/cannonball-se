@@ -7,6 +7,9 @@ Updates for CannonBall-SE are Copyright (c) 2025 James Pearce:
 Updates Aug-25:  removed AVX dependency (now works with only SSE4.1)
                  removed ARM AArch64 dependency (now works with ARMv7 NEON e.g. Pi2 v1.1)
 Updates Sep-25:  added scalar fall-back for Pi1 and PiZero
+Updates Feb-26:  added SSE2 fall-back; SSE4.1 now selected at compile time via __SSE4_1__
+                 so no explicit -msse4.1 flag is required
+                 RISC-V RVV 1.0 SIMD path (WITH_RVV=ON / -march=rv64gcv)
 */
 #include <stdio.h>
 
@@ -299,6 +302,8 @@ void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, 
     #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_NEON
 #  elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
     #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_SSE4
+#  elif defined(__riscv) && defined(__riscv_v)
+    #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_RVV
 #  endif
 #endif
 
@@ -375,6 +380,21 @@ void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, 
   uint16_t mask = (uint16_t)-(lanes_min == 0xFFFFu);                                \
   this_colour = first_val & mask;                                                   \
 } while (0)
+
+/* --- RISC-V Vector (RVV 1.0) --- */
+#define CHECK_ALL_EQUAL_RVV do {                                                    \
+  SIMD_INPUT_REGISTER_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                    \
+  uint16_t first_val = EXTRACT_SIMD_REGISTER_VALUE(first_line, 0);                  \
+  vuint16m1_t ref = __riscv_vmv_v_x_u16m1(first_val, 4);                            \
+  vbool16_t cmp   = __riscv_vmseq_vv_u16m1_b16(first_line, ref, 4);                \
+  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm1, ref, 4));       \
+  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm2, ref, 4));       \
+  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm3, ref, 4));       \
+  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm4, ref, 4));       \
+  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm5, ref, 4));       \
+  uint16_t mask = (uint16_t)-(__riscv_vcpop_m_b16(cmp, 4) == 4);                   \
+  this_colour = first_val & mask;                                                   \
+} while(0)
 
 
 #if SNES_NTSC_HAVE_SIMD

@@ -417,16 +417,13 @@ endif()
 
 # Debug builds
 # --- Debug hardening & sanitizers (GCC/Clang only) ------------------------------
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND
-   (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i[345]86"))
-  # This flag is only relevant on Intel/AMD CPUs
-  set(SSE_FLAG "-msse4.1")
-endif()
-
+# No explicit -msse4.1 here: the SIMD code detects SSE4.1 at compile time via
+# __SSE4_1__ and falls back to an SSE2 path automatically.  Release builds with
+# WITH_MARCH_NATIVE=ON enable SSE4.1 on capable hosts through -march=native.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # Compile-time flags (Debug only)
   target_compile_options(cannonball-se PRIVATE
-    $<$<CONFIG:Debug>:-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer -ftrapv $<$<BOOL:${SSE_FLAG}>:${SSE_FLAG}>>
+    $<$<CONFIG:Debug>:-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer -ftrapv>
   )
 
   # Link-time flags (Debug only) — needed for sanitizers
@@ -474,6 +471,11 @@ if(WITH_MARCH_NATIVE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       $<$<COMPILE_LANGUAGE:C>:-march=native>
       $<$<COMPILE_LANGUAGE:CXX>:-march=native>)
   endif()
+endif()
+
+option(WITH_RVV "Enable RISC-V Vector (RVV) SIMD (requires -march=..._v)" OFF)
+if(WITH_RVV AND CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64")
+    target_compile_options(cannonball-se PRIVATE -march=rv64gcv)
 endif()
 
 
