@@ -23,16 +23,47 @@ extern "C" {
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
     #include <arm_neon.h>
     #define SNES_NTSC_HAVE_SIMD 1
-#elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
+#elif defined(_M_X64) || defined(__x86_64__)
+    /* 64-bit x86: SSE2 is guaranteed by the x86-64 ABI. */
     #if defined(_MSC_VER)
         #include <immintrin.h>
     #else
         #include <x86intrin.h>
     #endif
     #define SNES_NTSC_HAVE_SIMD 1
+    #if defined(__SSE4_1__)
+        /* -msse4.1 / -march=native on an SSE4+ host, or MSVC /arch:AVX */
+        #define SNES_NTSC_X86_LEVEL 4
+    #else
+        /* SSE2: baseline for every x86-64 CPU ever made */
+        #define SNES_NTSC_X86_LEVEL 2
+    #endif
+#elif defined(__i386__) || defined(_M_IX86)
+    /* 32-bit x86: only enable SIMD when SSE2 is explicitly available. */
+    #if defined(__SSE2__) || (defined(_MSC_VER) && defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+        #if defined(_MSC_VER)
+            #include <immintrin.h>
+        #else
+            #include <x86intrin.h>
+        #endif
+        #define SNES_NTSC_HAVE_SIMD 1
+        #if defined(__SSE4_1__)
+            #define SNES_NTSC_X86_LEVEL 4
+        #else
+            #define SNES_NTSC_X86_LEVEL 2
+        #endif
+    #else
+        /* Pre-SSE2 x86: fall back to scalar. */
+        #define SNES_NTSC_HAVE_SIMD 0
+    #endif
 #elif defined(_M_ARM64) || defined(__aarch64__)
     /* AArch64 without NEON is unusual; if absent we fall back to scalar. */
     #define SNES_NTSC_HAVE_SIMD 0
+#elif defined(__riscv) && defined(__riscv_v)
+    /* RISC-V with the V extension (RVV 1.0). Set by -march=rv64gcv or similar. */
+    #include <riscv_vector.h>
+    #define SNES_NTSC_HAVE_SIMD 1
+    #define SNES_NTSC_HAVE_RVV  1
 #else
     /* No SIMD available (e.g., ARMv6 / Raspberry Pi Zero W). Use scalar path. */
     #define SNES_NTSC_HAVE_SIMD 0
@@ -331,12 +362,16 @@ extern "C" {
 #define SNES_NTSC_CLAMP_AND_CONVERT SNES_NTSC_CLAMP_AND_CONVERT_NEON
 #define SNES_NTSC_RGB_OUT_STORE SNES_NTSC_RGB_OUT_STORE_NEON
 #define SNES_NTSC_RGB_STORE SNES_NTSC_RGB_STORE_NEON
-#elif SNES_NTSC_HAVE_SIMD && (defined(_M_X64) || defined(__x86_64__) || defined(__i386__))
-	// x86 Architecture with SSE4.1 support
+#elif SNES_NTSC_HAVE_SIMD && defined(SNES_NTSC_X86_LEVEL)
+	/* x86 Architecture – SSE2 minimum; SSE4.1 insert used when SNES_NTSC_X86_LEVEL >= 4. */
 #define SIMD_REGISTER_t __m128i
 #define SIMD_INPUT_REGISTER_t __m128i
 #define SIMD_ZERO                   SIMD_ZERO_SSE4
+#if SNES_NTSC_X86_LEVEL >= 4
 #define INSERT_SIMD_REGISTER_VALUE  INSERT_SIMD_REGISTER_VALUE_SSE4
+#else
+#define INSERT_SIMD_REGISTER_VALUE  INSERT_SIMD_REGISTER_VALUE_SSE2
+#endif
 #define EXTRACT_SIMD_REGISTER_VALUE EXTRACT_SIMD_REGISTER_VALUE_SSE4
 #define LOAD_SIMD_REGISTER          LOAD_SIMD_REGISTER_SSE4
 #define SET_SIMD_REGISTER           _mm_set_epi32
@@ -347,6 +382,22 @@ extern "C" {
 #define SNES_NTSC_CLAMP_AND_CONVERT SNES_NTSC_CLAMP_AND_CONVERT_SSE4
 #define SNES_NTSC_RGB_OUT_STORE     SNES_NTSC_RGB_OUT_STORE_SSE4
 #define SNES_NTSC_RGB_STORE         SNES_NTSC_RGB_STORE_SSE4
+#elif SNES_NTSC_HAVE_SIMD && defined(SNES_NTSC_HAVE_RVV)
+    /* RISC-V Vector (RVV 1.0) — vl=4 x uint32, vl=4 x uint16 */
+#define SIMD_REGISTER_t              vuint32m1_t
+#define SIMD_INPUT_REGISTER_t        vuint16m1_t
+#define SIMD_ZERO                    SIMD_ZERO_RVV
+#define INSERT_SIMD_REGISTER_VALUE   INSERT_SIMD_REGISTER_VALUE_RVV
+#define EXTRACT_SIMD_REGISTER_VALUE  EXTRACT_SIMD_REGISTER_VALUE_RVV
+#define LOAD_SIMD_REGISTER           LOAD_SIMD_REGISTER_RVV
+#define SET_SIMD_REGISTER            SET_SIMD_REGISTER_RVV
+#define ZERO_SIMD_REGISTER           SIMD_ZERO_RVV
+#define ROTATE_OUT                   ROTATE_OUT_RVV
+#define SET_SNES_MASK_VECTORS        SET_SNES_MASK_VECTORS_RVV
+#define SNES_NTSC_CLAMP              SNES_NTSC_CLAMP_RVV
+#define SNES_NTSC_CLAMP_AND_CONVERT  SNES_NTSC_CLAMP_AND_CONVERT_RVV
+#define SNES_NTSC_RGB_OUT_STORE      SNES_NTSC_RGB_OUT_STORE_RVV
+#define SNES_NTSC_RGB_STORE          SNES_NTSC_RGB_STORE_RVV
 #endif
 
 #define SIMD_ZERO_SSE4 _mm_setzero_si128()
@@ -373,6 +424,15 @@ extern "C" {
 #define INSERT_SIMD_REGISTER_VALUE_SSE4(reg, value, pos) \
 	_mm_insert_epi32(reg, value, pos)
 
+/* SSE2 replacement for _mm_insert_epi32 (SSE4.1).
+ * Inserts a 32-bit integer at compile-time-constant lane 'pos' (0-3)
+ * using two _mm_insert_epi16 calls (available since SSE2).
+ * 'pos' MUST be a compile-time integer constant (0, 1, 2, or 3). */
+#define INSERT_SIMD_REGISTER_VALUE_SSE2(reg, value, pos) \
+    _mm_insert_epi16( \
+        _mm_insert_epi16((reg), (int)((uint32_t)(value) & 0xFFFFu), (pos)*2), \
+        (int)((uint32_t)(value) >> 16u), (pos)*2+1)
+
 #define INSERT_SIMD_REGISTER_VALUE_NEON(reg, value, pos) \
 	vsetq_lane_u32(value, reg, pos)
 
@@ -388,6 +448,9 @@ extern "C" {
 #define LOAD_SIMD_REGISTER_NEON(ptr) \
 	vld1_u16(ptr)
 
+/* Note: _mm_alignr_epi8 requires SSSE3. This macro is not used in the
+ * active dispatch path (ROTATE_OUT_SSE4 is used instead); provided for
+ * reference only. */
 #define ROTATE_OUT_SSE4_128(A, B, elements) \
 	_mm_alignr_epi8((B), (A), (elements)*4)
 
@@ -617,6 +680,88 @@ extern "C" {
 
 #define SNES_NTSC_RGB_STORE_NEON(line_out, raw_vec) do { \
     vst1q_u32((uint32_t*)line_out, raw_vec); \
+} while(0)
+
+/* ---- RISC-V Vector (RVV 1.0) macros ---- */
+
+#define SIMD_ZERO_RVV                   __riscv_vmv_v_x_u32m1(0, 4)
+#define SET_SIMD_REGISTER_RVV(a,b,c,d) \
+    ({ uint32_t _t[4]={(a),(b),(c),(d)}; __riscv_vle32_v_u32m1(_t, 4); })
+
+#define SET_SNES_MASK_VECTORS_RVV \
+    const vuint32m1_t alevel_vec     = __riscv_vmv_v_x_u32m1(0x000000FFu, 4); \
+    const vuint32m1_t RED_MASK       = __riscv_vmv_v_x_u32m1(0xFF000000u, 4); \
+    const vuint32m1_t GREEN_MASK     = __riscv_vmv_v_x_u32m1(0x00FF0000u, 4); \
+    const vuint32m1_t BLUE_MASK      = __riscv_vmv_v_x_u32m1(0x0000FF00u, 4); \
+    const vuint32m1_t clamp_mask_vec = __riscv_vmv_v_x_u32m1(snes_ntsc_clamp_mask, 4); \
+    const vuint32m1_t clamp_add_vec  = __riscv_vmv_v_x_u32m1(snes_ntsc_clamp_add, 4)
+
+/* Load 4 x uint16 from pointer */
+#define LOAD_SIMD_REGISTER_RVV(ptr)  __riscv_vle16_v_u16m1((ptr), 4)
+
+/* Extract lane pos from uint16 vector */
+#define EXTRACT_SIMD_REGISTER_VALUE_RVV(reg, pos) \
+    (uint16_t)__riscv_vmv_x_s_u16m1_u16(__riscv_vslidedown_vx_u16m1((reg), (pos), 4))
+
+/* Insert 32-bit scalar into lane pos of uint32 vector via mask-merge */
+#define INSERT_SIMD_REGISTER_VALUE_RVV(reg, value, pos) \
+    __riscv_vmerge_vxm_u32m1((reg), (uint32_t)(value), \
+        __riscv_vmseq_vx_u32m1_b32( \
+            __riscv_vid_v_u32m1(4), (uint32_t)(pos), 4), 4)
+
+/* Concatenate: low (4-pos) lanes of B after the top (4-pos) lanes of A */
+#define ROTATE_OUT_RVV(A, B, pos) \
+    __riscv_vslideup_vx_u16m1( \
+        __riscv_vslidedown_vx_u16m1(__riscv_vmv_v_v_u16m1((A), 4), (pos), 4), \
+        __riscv_vmv_v_v_u16m1((B), 4), (unsigned)(4-(pos)), 4)
+
+/* Clamp only (no colour conversion) */
+#define SNES_NTSC_CLAMP_RVV(io) do { \
+    vuint32m1_t _sub   = __riscv_vand_vv_u32m1( \
+                             __riscv_vsrl_vx_u32m1((io), 9, 4), \
+                             clamp_mask_vec, 4); \
+    vuint32m1_t _clamp = __riscv_vsub_vv_u32m1(clamp_add_vec, _sub, 4); \
+    (io) = __riscv_vor_vv_u32m1((io), _clamp, 4); \
+    _clamp = __riscv_vsub_vv_u32m1(_clamp, _sub, 4); \
+    (io) = __riscv_vand_vv_u32m1((io), _clamp, 4); \
+} while(0)
+
+/* Clamp + convert to RGBA little-endian (matches SSE4 / NEON versions) */
+#define SNES_NTSC_CLAMP_AND_CONVERT_RVV(io) do { \
+    vuint32m1_t _sub   = __riscv_vand_vv_u32m1( \
+                             __riscv_vsrl_vx_u32m1((io), 9, 4), \
+                             clamp_mask_vec, 4); \
+    vuint32m1_t _clamp = __riscv_vsub_vv_u32m1(clamp_add_vec, _sub, 4); \
+    (io) = __riscv_vor_vv_u32m1((io), _clamp, 4); \
+    _clamp = __riscv_vsub_vv_u32m1(_clamp, _sub, 4); \
+    (io) = __riscv_vand_vv_u32m1((io), _clamp, 4); \
+    vuint32m1_t _r = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((io), 3, 4), RED_MASK,   4); \
+    vuint32m1_t _g = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((io), 5, 4), GREEN_MASK, 4); \
+    vuint32m1_t _b = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((io), 7, 4), BLUE_MASK,  4); \
+    vuint32m1_t _a_hi  = __riscv_vsll_vx_u32m1(alevel_vec, 24, 4); \
+    vuint32m1_t _r_lo  = __riscv_vsrl_vx_u32m1(_r, 24, 4); \
+    vuint32m1_t _g_mid = __riscv_vsrl_vx_u32m1(_g,  8, 4); \
+    vuint32m1_t _b_hi  = __riscv_vsll_vx_u32m1(_b,  8, 4); \
+    (io) = __riscv_vor_vv_u32m1(__riscv_vor_vv_u32m1(_a_hi, _b_hi, 4), \
+                                __riscv_vor_vv_u32m1(_g_mid, _r_lo, 4), 4); \
+} while(0)
+
+/* Store four pre-computed RGBA values to RAM */
+#define SNES_NTSC_RGB_STORE_RVV(line_out, raw_vec) \
+    __riscv_vse32_v_u32m1((uint32_t*)(line_out), (raw_vec), 4)
+
+/* Convert raw_vec to RGBA and store (end-of-line path with explicit alevel_vec) */
+#define SNES_NTSC_RGB_OUT_STORE_RVV(line_out, raw_vec, alevel_vec) do { \
+    vuint32m1_t _r = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((raw_vec), 3, 4), RED_MASK,   4); \
+    vuint32m1_t _g = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((raw_vec), 5, 4), GREEN_MASK, 4); \
+    vuint32m1_t _b = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((raw_vec), 7, 4), BLUE_MASK,  4); \
+    vuint32m1_t _a_hi  = __riscv_vsll_vx_u32m1((alevel_vec), 24, 4); \
+    vuint32m1_t _r_lo  = __riscv_vsrl_vx_u32m1(_r, 24, 4); \
+    vuint32m1_t _g_mid = __riscv_vsrl_vx_u32m1(_g,  8, 4); \
+    vuint32m1_t _b_hi  = __riscv_vsll_vx_u32m1(_b,  8, 4); \
+    vuint32m1_t _out   = __riscv_vor_vv_u32m1(__riscv_vor_vv_u32m1(_a_hi, _b_hi, 4), \
+                                              __riscv_vor_vv_u32m1(_g_mid, _r_lo, 4), 4); \
+    __riscv_vse32_v_u32m1((uint32_t*)(line_out), _out, 4); \
 } while(0)
 
 
