@@ -14,9 +14,11 @@ Process:
    Double-click on that to start the CMake configuration and build setup.
 
    The CMake configuration will take care of installing dependencies, which can take a long time (around 20 minutes on some machines).
-   Note: Visual Studio may misleadingly show “Ready” in the bottom-left corner while CMake is still running — always check View → Output → CMake for progress.
+   Note: Visual Studio may misleadingly show “Ready” in the bottom-left corner while CMake is still running — always check
+   View → Output → CMake for progress.
 
-   In some cases, Visual Studio may fail to start CMake correctly on first open; if you do not see CMake output or encounter errors such as “Root element is missing”, close and restart Visual Studio, then reopen the folder.
+   In some cases, Visual Studio may fail to start CMake correctly on first open; if you do not see CMake output or encounter errors
+   such as “Root element is missing”, close and restart Visual Studio, then reopen the folder.
    
    The process is not finished until you see in the Output window:
 
