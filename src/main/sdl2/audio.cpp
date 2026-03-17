@@ -200,27 +200,43 @@ void Audio::start_audio(bool list_devices_only)
         }
 
         // SDL2 block
-        // Allow SDL to negotiate the audio format if the hardware doesn't support S16
-        // (e.g. Raspberry Pi 4 vc4-hdmi ALSA driver requires S32)
-        dev = SDL_OpenAudioDevice(playback_device, 0, &desired, &obtained, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
+        // Allow SDL to negotiate format/rate/samples if the hardware doesn't match exactly.
+        // The vc4-hdmi ALSA hw: device on RPi4 (kernel 6.x) rejects all formats via hw:;
+        // if that happens we fall back to the system default audio driver (PipeWire/PulseAudio).
+        dev = SDL_OpenAudioDevice(playback_device, 0, &desired, &obtained,
+            SDL_AUDIO_ALLOW_FORMAT_CHANGE | SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+
+        if (dev == 0 && platform == "Linux") {
+            // ALSA hw: failed (common with vc4-hdmi on RPi4 kernel 6.x).
+            // Fall back to SDL's default audio driver (PipeWire/PulseAudio on Bookworm).
+            std::cerr << "ALSA device open failed: " << SDL_GetError() << std::endl;
+            std::cout << "Retrying with system default audio driver (PipeWire/PulseAudio)..." << std::endl;
+            SDL_AudioQuit();
+            if (SDL_Init(SDL_INIT_AUDIO) == 0) {
+                // Use NULL = system default device; route to desired output via system audio settings
+                dev = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained,
+                    SDL_AUDIO_ALLOW_FORMAT_CHANGE | SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+            }
+        }
+
         if (dev == 0) {
-                std::cerr << "Error opening audio device: " << SDL_GetError() << std::endl;
-                return;
-            }
-
-            obtained_format = obtained.format;
-            std::cout << "Requested Sample Rate: " << desired.freq << ", ";
-            std::cout << "SDL Returned Configured Sample Rate: " << obtained.freq << std::endl;
-            if (obtained.format != desired.format) {
-                std::cout << "Note: audio format changed by driver (requested S16, got "
-                          << SDL_AUDIO_BITSIZE(obtained.format) << "-bit). S16->S32 conversion enabled." << std::endl;
-            }
-            FREQ = obtained.freq;
-
-            if (desired.samples != obtained.samples) {
-                std::cerr << "Error initalizing audio: number of samples not supported." << std::endl
-                          << "Please compare desired vs obtained. Look at what audio driver SDL2 is using." << std::endl;
+            std::cerr << "Error opening audio device: " << SDL_GetError() << std::endl;
             return;
+        }
+
+        obtained_format = obtained.format;
+        std::cout << "Requested Sample Rate: " << desired.freq << ", ";
+        std::cout << "SDL Returned Configured Sample Rate: " << obtained.freq << std::endl;
+        if (obtained.format != desired.format) {
+            std::cout << "Note: audio format negotiated by driver (requested S16, got "
+                      << SDL_AUDIO_BITSIZE(obtained.format) << "-bit "
+                      << (SDL_AUDIO_ISFLOAT(obtained.format) ? "float" : "int") << ")." << std::endl;
+        }
+        FREQ = obtained.freq;
+
+        if (desired.samples != obtained.samples) {
+            std::cout << "Note: audio buffer size changed from " << desired.samples
+                      << " to " << obtained.samples << " samples." << std::endl;
         }
 
         // new SDL buffering - start paused; will be un-paused in first tick()
@@ -416,16 +432,20 @@ void Audio::sdl_callback_trampoline(void* udata, Uint8* stream, int len)
     self->samplesReady.acquire();
     auto &src = self->ringBuffer[self->consIndex.load()];
 
-    if (SDL_AUDIO_BITSIZE(self->obtained_format) == 32) {
-        // Device requires 32-bit audio (e.g. Raspberry Pi 4 vc4-hdmi ALSA driver).
-        // Upscale our S16 ring buffer to S32 by shifting left 16 bits.
-        const int16_t* in = src.data();
+    const int16_t* in = src.data();
+    const int num_samples = static_cast<int>(self->mix_buffer_bytes / sizeof(int16_t));
+    if (SDL_AUDIO_ISFLOAT(self->obtained_format)) {
+        // F32: PipeWire/PulseAudio default format
+        float* out = reinterpret_cast<float*>(stream);
+        for (int i = 0; i < num_samples; i++)
+            out[i] = in[i] * (1.0f / 32768.0f);
+    } else if (SDL_AUDIO_BITSIZE(self->obtained_format) == 32) {
+        // S32: e.g. vc4-hdmi ALSA driver on RPi4 kernel 6.x
         int32_t* out = reinterpret_cast<int32_t*>(stream);
-        int num_samples = static_cast<int>(self->mix_buffer_bytes / sizeof(int16_t));
-        for (int i = 0; i < num_samples; i++) {
+        for (int i = 0; i < num_samples; i++)
             out[i] = static_cast<int32_t>(in[i]) << 16;
-        }
     } else {
+        // S16: direct copy
         memcpy(stream, src.data(), len);
     }
 
