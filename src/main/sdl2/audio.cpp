@@ -212,7 +212,7 @@ void Audio::start_audio(bool list_devices_only)
             std::cerr << "ALSA device open failed: " << SDL_GetError() << std::endl;
             std::cout << "Retrying with system default audio driver (PipeWire/PulseAudio)..." << std::endl;
             SDL_AudioQuit();
-            if (SDL_Init(SDL_INIT_AUDIO) == 0) {
+            if (SDL_AudioInit(NULL) == 0) {
                 // Use NULL = system default device; route to desired output via system audio settings
                 dev = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained,
                     SDL_AUDIO_ALLOW_FORMAT_CHANGE | SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
