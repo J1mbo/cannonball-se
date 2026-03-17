@@ -200,15 +200,21 @@ void Audio::start_audio(bool list_devices_only)
         }
 
         // SDL2 block
-        dev = SDL_OpenAudioDevice(playback_device, 0, &desired, &obtained, /*SDL_AUDIO_ALLOW_FORMAT_CHANGE*/0);
+        // Allow SDL to negotiate the audio format if the hardware doesn't support S16
+        // (e.g. Raspberry Pi 4 vc4-hdmi ALSA driver requires S32)
+        dev = SDL_OpenAudioDevice(playback_device, 0, &desired, &obtained, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
         if (dev == 0) {
                 std::cerr << "Error opening audio device: " << SDL_GetError() << std::endl;
                 return;
             }
 
-            // JJP info line
+            obtained_format = obtained.format;
             std::cout << "Requested Sample Rate: " << desired.freq << ", ";
             std::cout << "SDL Returned Configured Sample Rate: " << obtained.freq << std::endl;
+            if (obtained.format != desired.format) {
+                std::cout << "Note: audio format changed by driver (requested S16, got "
+                          << SDL_AUDIO_BITSIZE(obtained.format) << "-bit). S16->S32 conversion enabled." << std::endl;
+            }
             FREQ = obtained.freq;
 
             if (desired.samples != obtained.samples) {
@@ -220,7 +226,8 @@ void Audio::start_audio(bool list_devices_only)
         // new SDL buffering - start paused; will be un-paused in first tick()
         SDL_PauseAudioDevice(dev, 1);
 
-        mix_buffer_bytes = obtained.samples * CHANNELS * (BITS / 8);
+        // Ring buffer always holds S16 samples regardless of output format
+        mix_buffer_bytes = obtained.samples * CHANNELS * sizeof(int16_t);
 
         clear_buffers();
         clear_wav();
@@ -407,9 +414,21 @@ void Audio::sdl_callback_trampoline(void* udata, Uint8* stream, int len)
     auto* self = static_cast<Audio*>(udata);
     // wait until a buffer is ready
     self->samplesReady.acquire();
-    // copy one buffer
     auto &src = self->ringBuffer[self->consIndex.load()];
-    memcpy(stream, src.data(), len);
+
+    if (SDL_AUDIO_BITSIZE(self->obtained_format) == 32) {
+        // Device requires 32-bit audio (e.g. Raspberry Pi 4 vc4-hdmi ALSA driver).
+        // Upscale our S16 ring buffer to S32 by shifting left 16 bits.
+        const int16_t* in = src.data();
+        int32_t* out = reinterpret_cast<int32_t*>(stream);
+        int num_samples = static_cast<int>(self->mix_buffer_bytes / sizeof(int16_t));
+        for (int i = 0; i < num_samples; i++) {
+            out[i] = static_cast<int32_t>(in[i]) << 16;
+        }
+    } else {
+        memcpy(stream, src.data(), len);
+    }
+
     self->consIndex = (self->consIndex + 1) % BUFFER_COUNT;
     // free space for mixer
     self->spaceAvailable.release();

@@ -79,6 +79,7 @@ public:
         mix_buffer_bytes(0),
         audio_paused(1),
         dev(0),
+        obtained_format(AUDIO_S16SYS),
         wavfile{ /*filename*/ "", /*data*/ nullptr, /*total_length*/0, /*loaded_length*/ 0,
                  /*pos*/0, /*streaming*/ false, /*fully_loaded*/false, /*stopping*/false }
     {}
@@ -107,6 +108,7 @@ private:
     uint32_t mix_buffer_bytes; // Each frame is 250 samples and 8ms at 31250kHz sample rate.
     int audio_paused;
     SDL_AudioDeviceID dev;
+    SDL_AudioFormat obtained_format;
 
     void clear_buffers();
 
