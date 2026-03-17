@@ -207,15 +207,39 @@ void Audio::start_audio(bool list_devices_only)
             SDL_AUDIO_ALLOW_FORMAT_CHANGE | SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
 
         if (dev == 0 && platform == "Linux") {
-            // ALSA hw: failed (common with vc4-hdmi on RPi4 kernel 6.x).
-            // Fall back to SDL's default audio driver (PipeWire/PulseAudio on Bookworm).
+            // ALSA hw: failed (common with vc4-hdmi on RPi4 kernel 6.x - the hw: device
+            // rejects format negotiation). Try the same device via the ALSA plughw: layer,
+            // which handles format conversion in software.
             std::cerr << "ALSA device open failed: " << SDL_GetError() << std::endl;
-            std::cout << "Retrying with system default audio driver (PipeWire/PulseAudio)..." << std::endl;
-            SDL_AudioQuit();
-            if (SDL_AudioInit(NULL) == 0) {
-                // Use NULL = system default device; route to desired output via system audio settings
-                dev = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained,
-                    SDL_AUDIO_ALLOW_FORMAT_CHANGE | SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+
+            if (playback_device != NULL) {
+                // Derive the ALSA card name from the SDL device name:
+                // e.g. "vc4-hdmi-0, MAI PCM i2s-hifi-0" -> "vc4hdmi0"
+                std::string card = playback_device;
+                auto comma = card.find(',');
+                if (comma != std::string::npos) card = card.substr(0, comma);
+                card.erase(std::remove_if(card.begin(), card.end(),
+                    [](char c){ return !std::isalnum(static_cast<unsigned char>(c)); }), card.end());
+                std::string plughw = "plughw:CARD=" + card + ",DEV=0";
+                std::cout << "Retrying with ALSA plughw (" << plughw << ")..." << std::endl;
+                SDL_setenv("AUDIODEV", plughw.c_str(), 1);
+                SDL_AudioQuit();
+                if (SDL_AudioInit("alsa") == 0) {
+                    dev = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained,
+                        SDL_AUDIO_ALLOW_FORMAT_CHANGE | SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+                }
+                SDL_setenv("AUDIODEV", "", 1);
+            }
+
+            if (dev == 0) {
+                // plughw also failed (or no specific device was selected).
+                // Last resort: SDL's default audio driver (PipeWire/PulseAudio if installed).
+                std::cout << "Retrying with system default audio driver..." << std::endl;
+                SDL_AudioQuit();
+                if (SDL_AudioInit(NULL) == 0) {
+                    dev = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained,
+                        SDL_AUDIO_ALLOW_FORMAT_CHANGE | SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+                }
             }
         }
 
