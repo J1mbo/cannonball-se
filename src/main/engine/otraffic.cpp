@@ -812,7 +812,6 @@ void OTraffic::check_collision(oentry* sprite)
 // Source: 0x7A8C
 void OTraffic::traffic_sound()
 {
-    /*
     // Clear traffic data
     osoundint.engine_data[sound::TRAFFIC1] = 0;
     osoundint.engine_data[sound::TRAFFIC2] = 0;
@@ -846,5 +845,4 @@ void OTraffic::traffic_sound()
         uint8_t vol = (t->road_priority & 0x1F0) >> 1;
         osoundint.engine_data[sound::TRAFFIC1 + i] = pan | vol;
     }
-    */
 }
