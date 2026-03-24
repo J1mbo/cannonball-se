@@ -11,6 +11,7 @@
 #include "engine/oinputs.hpp"
 #include "engine/outrun.hpp"
 #include "roms.hpp"
+#include "sdl2/input.hpp"
 #include "video.hpp"
 
 OName oname;
@@ -174,7 +175,47 @@ void OName::do_input(uint32_t adr)
 // Based on ohiscore.cpp:390-432
 int8_t OName::read_controls()
 {
-    // Determine when accelerator has been pressed then depressed
+    // When using digital (keyboard/gamepad button) input, bypass analog ramp
+    // simulation for immediate response to key presses.
+    if (!input.analog || !input.gamepad)
+    {
+        // Accelerator: fire on the exact frame the key transitions to pressed
+        if (input.has_pressed(Input::ACCEL))
+        {
+            acc_prev = 0;
+            acc_curr = -1;
+        }
+        else if (input.is_pressed(Input::ACCEL))
+        {
+            acc_prev = acc_curr;
+            acc_curr = -1;
+        }
+        else
+        {
+            acc_prev = acc_curr;
+            acc_curr = 0;
+        }
+
+        // Steering: instant step on initial key press, then repeat after delay
+        if (input.has_pressed(Input::LEFT))  { steer = 0; return -1; }
+        if (input.has_pressed(Input::RIGHT)) { steer = 0; return 1; }
+
+        if (input.is_pressed(Input::LEFT) && !input.is_pressed(Input::RIGHT))
+        {
+            if (++steer >= 0x14) { steer = 0; return -1; }
+        }
+        else if (input.is_pressed(Input::RIGHT) && !input.is_pressed(Input::LEFT))
+        {
+            if (++steer >= 0x14) { steer = 0; return 1; }
+        }
+        else
+        {
+            steer = 0;
+        }
+        return 0;
+    }
+
+    // Analog controls: original ramp-based logic
     if (oinputs.input_acc < 0x30)
     {
         acc_prev = acc_curr;
@@ -190,7 +231,6 @@ int8_t OName::read_controls()
         acc_curr = -1;
     }
 
-    // Check Steering Wheel
     int8_t movement = 1; // default to right
     int16_t steering = (oinputs.input_steering & 0xFF) - 0x80;
     if (steering < 0)
@@ -199,8 +239,6 @@ int8_t OName::read_controls()
         movement = -1; // left
     }
 
-    // Set increment to potentially advance to next letter.
-    // This depends on how far the steering wheel is turned.
     if (steering >= 0x30)
         steer += 5;
     else if (steering >= 0x10)
@@ -209,7 +247,7 @@ int8_t OName::read_controls()
     if (steer >= 0x14)
         steer = 0;
     else
-        movement = 0; // no movement
+        movement = 0;
 
     return movement;
 }
