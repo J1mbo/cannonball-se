@@ -25,6 +25,68 @@
 #include "../utils.hpp"
 #include "../telemetry.hpp"
 
+// Decode a Sega System 16 packed 16-bit color value to 8-bit RGB.
+// Format: D15=shade, D14=B0, D13=G0, D12=R0, D11-D8=B4-B1, D7-D4=G4-G1, D3-D0=R4-R1
+static void decode_sega_color(uint16_t c, int& r, int& g, int& b)
+{
+    int r5 = ((c & 0xF) << 1)        | ((c >> 12) & 1);
+    int g5 = (((c >> 4) & 0xF) << 1) | ((c >> 13) & 1);
+    int b5 = (((c >> 8) & 0xF) << 1) | ((c >> 14) & 1);
+    r = (r5 << 3) | (r5 >> 2);
+    g = (g5 << 3) | (g5 >> 2);
+    b = (b5 << 3) | (b5 >> 2);
+}
+
+// Return the dominant color name for a sprite palette index.
+// Each entry in PALETTE_EXPANSION is 8 uint32s = 16 colors (two per uint32, big-endian).
+// We find the most saturated non-shadow, non-highlight color and match it to a name.
+static const char* pal_src_to_color(uint8_t pal_src)
+{
+    int max_pal = (int)(sizeof(PALETTE_EXPANSION) / sizeof(PALETTE_EXPANSION[0])) / 8;
+    if (pal_src >= max_pal) return "unknown";
+
+    const uint32_t* pal = &PALETTE_EXPANSION[pal_src * 8];
+
+    int best_r = 128, best_g = 128, best_b = 128, best_sat = -1;
+    for (int i = 0; i < 8; i++) {
+        for (int half = 0; half < 2; half++) {
+            if (i == 0 && half == 0) continue; // color 0 = transparent
+            uint16_t c = (half == 0) ? (uint16_t)(pal[i] >> 16) : (uint16_t)(pal[i] & 0xFFFF);
+            int r, g, b;
+            decode_sega_color(c, r, g, b);
+            int maxC = std::max({r, g, b}), minC = std::min({r, g, b});
+            if (maxC < 60) continue;                          // too dark (shadow)
+            if (r > 180 && g > 180 && b > 180) continue;     // too light (highlight)
+            int sat = maxC - minC;
+            if (sat > best_sat) { best_sat = sat; best_r = r; best_g = g; best_b = b; }
+        }
+    }
+
+    if (best_sat < 30) return "grey";
+
+    struct NamedColor { const char* name; int r, g, b; };
+    static const NamedColor COLORS[] = {
+        { "red",    210,  30,  30 },
+        { "orange", 210, 120,  20 },
+        { "yellow", 200, 200,  20 },
+        { "green",   20, 180,  20 },
+        { "cyan",    20, 200, 200 },
+        { "blue",    20,  20, 200 },
+        { "purple", 150,  20, 180 },
+        { "pink",   220,  80, 150 },
+        { "brown",  150,  80,  30 },
+    };
+
+    const char* best_name = "grey";
+    int best_dist = INT_MAX;
+    for (const auto& nc : COLORS) {
+        int dr = best_r - nc.r, dg = best_g - nc.g, db = best_b - nc.b;
+        int dist = dr*dr + dg*dg + db*db;
+        if (dist < best_dist) { best_dist = dist; best_name = nc.name; }
+    }
+    return best_name;
+}
+
 OTraffic otraffic;
 
 OTraffic::OTraffic(void)
@@ -470,17 +532,19 @@ void OTraffic::update_props(oentry* sprite)
                     
                     const char* vehicle_name = (sprite_type >= 0 && sprite_type < 20) ? VEHICLE_NAMES[sprite_type] : "unknown";
                     
+                    const char* color_name = pal_src_to_color(sprite->pal_src);
+
                     TelemetryManager::instance().add_event("vehicle_overtake", {
                         {"vehicle_type", std::to_string(sprite_type)},
                         {"vehicle", vehicle_name},
+                        {"color", color_name},
                         {"palette", std::to_string(sprite->pal_src)}
                     }, {
                         {"speed_kph", oinitengine.car_increment >> 16},
                         {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
                     });
 
-                    // TODO: Work out what color the palette number represents...
-                    std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: OVERTOOK " << vehicle_name << " (type " << sprite_type << ", palette " << static_cast<int>(sprite->pal_src) << ")" << std::endl;
+                    std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: OVERTOOK " << color_name << " " << vehicle_name << " (type " << sprite_type << ", palette " << static_cast<int>(sprite->pal_src) << ")" << std::endl;
                 }
             } 
             else
