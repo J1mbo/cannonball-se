@@ -850,6 +850,9 @@ void Outrun::init_attract()
     attract_view              = 0;
     oattractai.init();
     game_state = cannonball_mode == MODE_TTRIAL ? GS_INIT_MUSIC : GS_ATTRACT;
+
+    if (game_state == GS_ATTRACT && config.sound.advertise)
+        omusic.play_music();
 }
 
 void Outrun::tick_attract()

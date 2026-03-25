@@ -339,6 +339,15 @@ void Audio::tick()
         // launch mixing thread
         mixThread = std::thread(&Audio::mixing_loop, this);
 
+        // Pre-fill the entire ring buffer before unpausing the device.
+        // Without this, the SDL audio callback fires immediately on unpause
+        // but the mixing thread hasn't produced any data yet, causing the
+        // callback to block — which makes audio start late or not at all.
+        for (int i = 0; i < BUFFER_COUNT; i++)
+            samplesReady.acquire();   // wait for mixing thread to fill each slot
+        for (int i = 0; i < BUFFER_COUNT; i++)
+            samplesReady.release();   // put them back for the callback to consume
+
         // and unpause the device
         SDL_PauseAudioDevice(dev, 0);
         audio_paused = 0;
@@ -452,8 +461,13 @@ void Audio::fill_and_mix(uint8_t *stream, int len)
 void Audio::sdl_callback_trampoline(void* udata, Uint8* stream, int len)
 {
     auto* self = static_cast<Audio*>(udata);
-    // wait until a buffer is ready
-    self->samplesReady.acquire();
+    // Non-blocking acquire: if the mixer has fallen behind, output silence
+    // rather than blocking the audio callback thread (which causes ALSA underruns
+    // and audio that stalls or starts randomly).
+    if (!self->samplesReady.try_acquire()) {
+        memset(stream, 0, len);
+        return;
+    }
     auto &src = self->ringBuffer[self->consIndex.load()];
 
     const int16_t* in = src.data();

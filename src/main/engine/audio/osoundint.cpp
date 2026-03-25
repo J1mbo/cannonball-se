@@ -135,11 +135,6 @@ void OSoundInt::queue_sound(uint8_t snd)
         {
             // Return if we are not playing sound in attract mode
             if (!config.sound.advertise && snd != sound::COIN_IN) return;
-
-            // Do not play music in attract mode, even if attract sound enabled
-            if (snd == sound::MUSIC_BREEZE || snd == sound::MUSIC_MAGICAL ||
-                snd == sound::MUSIC_SPLASH || snd == sound::MUSIC_LASTWAVE)
-                return;
         }
         add_to_queue(snd);
     }
