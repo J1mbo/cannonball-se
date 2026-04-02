@@ -228,6 +228,11 @@ bool Video::supports_vsync()
     return renderer->supports_vsync();
 }
 
+std::string Video::capture_screenshot_base64(int quality)
+{
+    return renderer->capture_screenshot_base64(quality);
+}
+
 // ---------------------------------------------------------------------------
 // Text Handling Code
 // ---------------------------------------------------------------------------

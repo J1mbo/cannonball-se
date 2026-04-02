@@ -32,10 +32,6 @@ public:
     void draw_course_map();
     void position_ferrari(uint8_t index);
 
-private:
-    // Total sprite pieces that comprise course map. 3c
-    const static uint8_t MAP_PIECES = 0x3C;
-
     uint8_t map_state;
 
     enum
@@ -54,6 +50,10 @@ private:
         // Clear Course Map
         MAP_CLEAR = 0x18,
     };
+
+private:
+    // Total sprite pieces that comprise course map. 3c
+    const static uint8_t MAP_PIECES = 0x3C;
 
     // Direction to move on mini-map
 

@@ -29,6 +29,7 @@
 #include "engine/otiles.hpp"
 #include "engine/otraffic.hpp"
 #include "../telemetry.hpp"
+#include "../video.hpp"
 #include "engine/oinitengine.hpp"
 #include "../utils.hpp"
 
@@ -808,10 +809,11 @@ void OInitEngine::init_split_next_level()
         // Convert BCD time counter to decimal seconds
         int time_remaining = TelemetryManager::bcd_to_seconds(ostats.time_counter);
         int64_t score_at_transition = TelemetryManager::bcd_score_to_decimal(ostats.score);
+        std::string stage_screenshot = video.capture_screenshot_base64();
         TelemetryManager::instance().end_stage_span(time_remaining, score_at_transition);
         TelemetryManager::instance().log_game_event("game.stage.end",
             TelemetryManager::SEV_INFO,
-            {},
+            {{"screenshot_jpeg", stage_screenshot}},
             {
                 {"stage_number", (int64_t)ostats.cur_stage},
                 {"score_end", score_at_transition},

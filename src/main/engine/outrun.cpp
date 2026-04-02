@@ -59,6 +59,8 @@ Outrun outrun;
 Outrun::Outrun()
 {
     outputs = new OOutputs();
+    gameover_screenshot_delay = 0;
+    map_screenshot_taken = false;
 }
 
 Outrun::~Outrun()
@@ -553,10 +555,16 @@ void Outrun::main_switch()
                 ohud.blit_text_new(31, 18, Utils::to_string((int) ttrial.crashes).c_str(), OHud::GREEN);
             }
             osoundint.queue_sound(sound::NEW_COMMAND);
+            gameover_screenshot_delay = 2;  // wait for GAME OVER text to render
             game_state = GS_GAMEOVER;
             [[fallthrough]];
 
         case GS_GAMEOVER:
+            // Capture game-over screenshot after text has had time to render
+            if (gameover_screenshot_delay > 0) {
+                if (--gameover_screenshot_delay == 0)
+                    gameover_screenshot_b64 = video.capture_screenshot_base64();
+            }
             if (cannonball_mode == MODE_ORIGINAL)
             {
                 if (decrement_timers())
@@ -585,10 +593,20 @@ void Outrun::main_switch()
         case GS_INIT_MAP:
             omap.init();
             ohud.blit_text2(TEXT2_COURSEMAP);
+            map_screenshot_taken = false;
             game_state = GS_MAP;
             [[fallthrough]];
 
         case GS_MAP:
+            // Take screenshot when minicar reaches endpoint (MAP_DISPLAY state)
+            if (!map_screenshot_taken && omap.map_state == OMap::MAP_DISPLAY) {
+                map_screenshot_taken = true;
+                map_screenshot_b64 = video.capture_screenshot_base64();
+                TelemetryManager::instance().log_game_event("game.map_screen",
+                    TelemetryManager::SEV_INFO,
+                    {{"screenshot_jpeg", map_screenshot_b64}}
+                );
+            }
             break;
 
         // ----------------------------------------------------------------------------------------
@@ -681,13 +699,15 @@ void Outrun::main_switch()
                 TelemetryManager::instance().log_game_event("game.session.end",
                     TelemetryManager::SEV_INFO,
                     {
-                        {"completion_status", completion}
+                        {"completion_status", completion},
+                        {"screenshot_jpeg", gameover_screenshot_b64}
                     },
                     {
                         {"final_score", final_score},
                         {"final_stage", (int64_t)final_stage}
                     }
                 );
+                gameover_screenshot_b64.clear();
                 
                 game_state = GS_REINIT;          // Reinit game to attract mode
             }

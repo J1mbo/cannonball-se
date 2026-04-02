@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <string>
 #include "stdint.hpp"
 #include "globals.hpp"
 #include "roms.hpp"
@@ -52,6 +53,7 @@ public:
     void present_frame();
     bool supports_window();
     bool supports_vsync();
+    std::string capture_screenshot_base64(int quality = 40);
 
     void clear_text_ram();
     void write_text8(uint32_t, const uint8_t);

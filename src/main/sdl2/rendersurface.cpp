@@ -19,7 +19,13 @@
 #include <iterator>
 #include <iostream>
 #include <mutex>
+#include <vector>
+#include <string>
+#include <cstring>
 #include "rendersurface.hpp"
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "../stb_image_write.h"
 #include "frontend/config.hpp"
 // Aligned Memory Allocation (standard C++17)
 #include <new>        // std::align_val_t, ::operator new/delete
@@ -36,6 +42,36 @@
 #ifndef CB_PIXEL_ALIGNMENT
 #define CB_PIXEL_ALIGNMENT 64
 #endif
+
+// ---------------------------------------------------------------------------
+// Screenshot helpers
+// ---------------------------------------------------------------------------
+
+static void stbi_write_to_vector(void* ctx, void* data, int sz)
+{
+    auto* v = static_cast<std::vector<uint8_t>*>(ctx);
+    v->insert(v->end(), static_cast<uint8_t*>(data),
+              static_cast<uint8_t*>(data) + sz);
+}
+
+static const char B64_TABLE[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static std::string base64_encode_bytes(const std::vector<uint8_t>& in)
+{
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    for (size_t i = 0; i < in.size(); i += 3) {
+        uint32_t b = (uint32_t)in[i] << 16;
+        if (i + 1 < in.size()) b |= (uint32_t)in[i + 1] << 8;
+        if (i + 2 < in.size()) b |= (uint32_t)in[i + 2];
+        out += B64_TABLE[(b >> 18) & 63];
+        out += B64_TABLE[(b >> 12) & 63];
+        out += (i + 1 < in.size()) ? B64_TABLE[(b >> 6) & 63] : '=';
+        out += (i + 2 < in.size()) ? B64_TABLE[b & 63] : '=';
+    }
+    return out;
+}
 
 RenderSurface::RenderSurface()
 {
@@ -1210,4 +1246,70 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
     activity_counter.fetch_sub(1, std::memory_order_acq_rel);
     std::unique_lock<std::mutex> lock(mtx);
     cv.notify_all();  // In case disable() is waiting
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot: capture the last completed frame as base64-encoded JPEG
+// ---------------------------------------------------------------------------
+
+std::string RenderSurface::capture_screenshot_base64(int quality)
+{
+    // Snapshot the last-completed surface under the lock, then release.
+    int w = 0, h = 0;
+    std::vector<uint8_t> pixels_rgb;
+
+    {
+        std::lock_guard<std::mutex> lock(drawFrameMutex);
+        SDL_Surface* src = GameSurface[current_game_surface ^ 1];
+        if (!src) return "";
+
+        w = src->w;
+        h = src->h;
+        pixels_rgb.resize(w * h * 3);
+
+        if (src->format->BitsPerPixel == 16) {
+            // Non-Blargg path: pixels are custom R5G5B5A1
+            // Layout (MSB→LSB): RRRRR GGGGG BBBBB A
+            // i.e. R at bits 15-11, G at bits 10-6, B at bits 5-1, A at bit 0
+            for (int y = 0; y < h; y++) {
+                const uint16_t* row = reinterpret_cast<const uint16_t*>(
+                    static_cast<const uint8_t*>(src->pixels) + y * src->pitch);
+                uint8_t* out = pixels_rgb.data() + y * w * 3;
+                for (int x = 0; x < w; x++) {
+                    uint16_t px = row[x];
+                    uint32_t r5 = (px >> 11) & 0x1Fu;
+                    uint32_t g5 = (px >>  6) & 0x1Fu;
+                    uint32_t b5 = (px >>  1) & 0x1Fu;
+                    out[x*3+0] = static_cast<uint8_t>((r5 << 3) | (r5 >> 2));
+                    out[x*3+1] = static_cast<uint8_t>((g5 << 3) | (g5 >> 2));
+                    out[x*3+2] = static_cast<uint8_t>((b5 << 3) | (b5 >> 2));
+                }
+            }
+        } else {
+            // Blargg path: SDL_PIXELFORMAT_RGBA8888 (32-bit)
+            // For RGBA8888 on this platform: R at Ashift=0, G at Bshift=8,
+            // B at Gshift=16 (see swapped init assignments).
+            const uint8_t rs = Ashift;  // actual R data shift (= SDL Ashift)
+            const uint8_t gs = Bshift;  // actual G data shift (= SDL Bshift)
+            const uint8_t bs = Gshift;  // actual B data shift (= SDL Gshift)
+            for (int y = 0; y < h; y++) {
+                const uint32_t* row = reinterpret_cast<const uint32_t*>(
+                    static_cast<const uint8_t*>(src->pixels) + y * src->pitch);
+                uint8_t* out = pixels_rgb.data() + y * w * 3;
+                for (int x = 0; x < w; x++) {
+                    uint32_t px = row[x];
+                    out[x*3+0] = static_cast<uint8_t>((px >> rs) & 0xFF);
+                    out[x*3+1] = static_cast<uint8_t>((px >> gs) & 0xFF);
+                    out[x*3+2] = static_cast<uint8_t>((px >> bs) & 0xFF);
+                }
+            }
+        }
+    }
+
+    // Encode as JPEG in memory.
+    std::vector<uint8_t> jpeg_data;
+    stbi_write_jpg_to_func(stbi_write_to_vector, &jpeg_data,
+                           w, h, 3, pixels_rgb.data(), quality);
+
+    return base64_encode_bytes(jpeg_data);
 }

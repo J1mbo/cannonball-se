@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <string>
 #include "stdint.hpp"
 #include "roms.hpp"
 #include "globals.hpp"
@@ -236,6 +237,12 @@ private:
 
     // Debug to denote when fork has been chosen
     int8_t fork_chosen;
+
+    // Screenshot capture state
+    std::string gameover_screenshot_b64;
+    std::string map_screenshot_b64;
+    int  gameover_screenshot_delay;
+    bool map_screenshot_taken;
 
 	void jump_table();
 	void init_jump_table();

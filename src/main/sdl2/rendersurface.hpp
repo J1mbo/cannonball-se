@@ -37,6 +37,7 @@ public:
     bool start_frame() {return true;};
     bool finalize_frame();
     void draw_frame(uint16_t* pixels, int fastpass);
+    std::string capture_screenshot_base64(int quality = 40) override;
 
 private:
     // SDL2 window

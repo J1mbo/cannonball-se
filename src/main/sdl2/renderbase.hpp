@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstddef> // For std::size_t
+#include <string>
 constexpr std::size_t ALIGNMENT = 16; // 16 for SSE, 32 for AVX
 constexpr std::size_t LOOKUP_SIZE = (32 * 32 * 32 * 2); // 32 colours per channel plus shadow bit
 
@@ -31,6 +32,7 @@ public:
     void init_palette(int red_curve, int green_curve, int blue_curve);
     virtual bool supports_window() { return true; }
     virtual bool supports_vsync() { return false; }
+    virtual std::string capture_screenshot_base64(int quality = 40) { return ""; }
 
     // S16 video hardware ladder DAC values
     alignas(ALIGNMENT) uint32_t rgb_lookup[LOOKUP_SIZE];
