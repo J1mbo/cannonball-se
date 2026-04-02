@@ -113,7 +113,7 @@ The OpenTelemetry C++ SDK is installed automatically by `install.sh`. Manual ins
 - CMake 3.20+
 - libcurl
 - protobuf-compiler and libprotobuf-dev
-- OpenTelemetry C++ SDK v1.14.2 with OTLP HTTP exporter
+- OpenTelemetry C++ SDK v1.14.2 with OTLP HTTP exporter and logs support
 
 ### Configuration
 
@@ -127,9 +127,13 @@ Edit `config.xml` and set the OTLP endpoint:
 
 **The game will exit with an error if `otlp_endpoint` is not configured.**
 
-### Telemetry Data Structure
+The logs endpoint is derived automatically by replacing `/v1/traces` with `/v1/logs` in the configured URL, so no additional configuration is needed.
 
-Each gameplay session creates a **game_session** root span with nested **stage_N** child spans:
+### Signals
+
+CannonBall-SE emits two complementary OpenTelemetry signals:
+
+**Traces** (→ Tempo / Jaeger) provide session narrative and timing context:
 
 ```
 game_session (root span)
@@ -142,14 +146,47 @@ game_session (root span)
 └── stage_N (final stage)
 ```
 
-**Session Attributes:**
-- `game_mode`: The selected game mode
-- `music_track`: The music track chosen by the player
-- `player_initials`: Player's 3-character initials (captured at game start; auto-populated for high scores)
+**Logs** (→ Loki) provide structured, queryable records of every game event. Each log record includes `trace_id` and `span_id` for correlation back to the corresponding trace, plus `player_initials` on all in-session events.
 
-**Coin insert events** are recorded as standalone "orphan" events (not attached to game sessions).
+| Event | Severity | Key Attributes |
+|-------|----------|----------------|
+| `game.session.start` | INFO | `game_mode`, `player_initials`, `music_selection` |
+| `game.session.end` | INFO | `completion_status`, `final_score`, `final_stage` |
+| `game.stage.start` | INFO | `stage_number`, `score_start`, `speed_kph` |
+| `game.stage.end` | INFO | `stage_number`, `score_end`, `time_remaining_seconds` |
+| `game.post_game.start` | INFO | — |
+| `game.post_game.end` | INFO | — |
+| `game.coin_inserted` | INFO | `credits` |
+| `game.high_score` | INFO | `position`, `initials`, `score` |
+| `game.route_chosen` | INFO | `direction`, `stage`, `speed_kph`, `score` |
+| `game.crash` | WARN | `crash_type` (bump/spin/flip), `speed_kph`, `score`, `stage_number` |
+| `game.off_road` | WARN | `speed_kph`, `score`, `stage_number` |
+| `game.vehicle_overtake` | INFO | `vehicle`, `color`, `vehicle_type`, `palette`, `speed_kph`, `score`, `stage_number` |
 
-`vehicle_overtake` events contain a vehicle_type ID.  Here's a table mapping these types to the vehicles.  Each vehicle appears multiple times as it has different IDs depending on either the sprite used to render the vehicle (e.g. going straight vs cornering) or the color palette, I'm not sure.  Either way, expect multiple IDs to map to the same car type.
+All logs also carry `trace_id` (which doubles as a session ID), `span_id`, `service.name`, and `host.name` as resource attributes.
+
+**Example LogQL queries (Grafana → Loki):**
+
+```logql
+# All game events
+{service_name="cannonball-se"}
+
+# Crashes only
+{service_name="cannonball-se"} | json | event="game.crash"
+
+# High-speed crashes
+{service_name="cannonball-se"} | json | event="game.crash" | speed_kph > 150
+
+# All events for a specific player
+{service_name="cannonball-se"} | json | player_initials="AAA"
+
+# All events in one game session (click trace_id in a table panel to get the value)
+{service_name="cannonball-se"} | json | trace_id="<trace_id>"
+```
+
+**Coin insert events** are also recorded as standalone trace spans (not attached to game sessions) for backwards compatibility.
+
+`vehicle_overtake` events include a `vehicle_type` ID. Each vehicle appears multiple times as it has different IDs depending on the sprite variant or colour palette used.
 
 | ID | Vehicle  |
 |----|----------|
@@ -196,6 +233,20 @@ Then configure `config.xml` with:
 ```
 
 View traces at `http://<jaeger-host>:16686`
+
+### Grafana Cloud
+
+CannonBall-SE works directly with Grafana Cloud's OTLP gateway. Configure `config.xml` with your stack's endpoint and credentials:
+
+```xml
+<telemetry>
+  <otlp_endpoint>https://otlp-gateway-prod-<region>.grafana.net/otlp/v1/traces</otlp_endpoint>
+  <instance_id>your-instance-id</instance_id>
+  <auth_token>your-grafana-cloud-token</auth_token>
+</telemetry>
+```
+
+Traces are routed to **Tempo** and logs to **Loki** automatically via the same gateway and credentials. No separate log endpoint configuration is needed.
 
 ---
 ## Board Selection & Performance Notes
