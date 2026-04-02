@@ -42,6 +42,22 @@ public:
     // Add event to current stage span (or orphan if no span)
     void add_event(const std::string& name, const std::map<std::string, std::string>& string_attrs = {},
                    const std::map<std::string, int64_t>& int_attrs = {});
+
+    // Emit structured log with trace correlation
+    void log_game_event(
+        const std::string& event_name,
+        int severity_number,
+        const std::map<std::string, std::string>& string_attrs = {},
+        const std::map<std::string, int64_t>& int_attrs = {},
+        const std::map<std::string, double>& double_attrs = {}
+    );
+
+    // Severity constants (map to OpenTelemetry severity numbers)
+    enum Severity {
+        SEV_INFO  = 9,   // INFO
+        SEV_WARN  = 13,  // WARN
+        SEV_ERROR = 17   // ERROR
+    };
     
     // Add orphan event without parent context (e.g., coin inserts)
     void add_orphan_event(const std::string& name, const std::map<std::string, std::string>& string_attrs = {},

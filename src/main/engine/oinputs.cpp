@@ -262,6 +262,11 @@ uint8_t OInputs::do_credits()
             TelemetryManager::instance().add_orphan_event("coin_inserted", {
                 {"credits", std::to_string(ostats.credits)}
             });
+            TelemetryManager::instance().log_game_event("game.coin_inserted",
+                TelemetryManager::SEV_INFO,
+                {},
+                {{"credits", (int64_t)ostats.credits}}
+            );
         }
         return 3;
     }
