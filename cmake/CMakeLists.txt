@@ -309,7 +309,7 @@ endif()
 find_package(Protobuf REQUIRED)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(opentelemetry-cpp REQUIRED COMPONENTS api sdk otlp_http_exporter)
+find_package(opentelemetry-cpp REQUIRED COMPONENTS api sdk otlp_http_exporter logs otlp_http_log_record_exporter)
 if(NOT TARGET opentelemetry-cpp::api)
     message(FATAL_ERROR "OpenTelemetry C++ SDK not found. Please install opentelemetry-cpp.")
 endif()
@@ -342,6 +342,8 @@ target_link_libraries(cannonball-se PRIVATE
     opentelemetry-cpp::api
     opentelemetry-cpp::sdk
     opentelemetry-cpp::otlp_http_exporter
+    opentelemetry-cpp::logs
+    opentelemetry-cpp::otlp_http_log_record_exporter
     opentelemetry-cpp::resources
     opentelemetry-cpp::common
     opentelemetry-cpp::http_client_curl

@@ -543,6 +543,20 @@ void OTraffic::update_props(oentry* sprite)
                         {"speed_kph", oinitengine.car_increment >> 16},
                         {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
                     });
+                    TelemetryManager::instance().log_game_event("game.vehicle_overtake",
+                        TelemetryManager::SEV_INFO,
+                        {
+                            {"vehicle_type", std::to_string(sprite_type)},
+                            {"vehicle", vehicle_name},
+                            {"color", color_name},
+                            {"palette", std::to_string(sprite->pal_src)}
+                        },
+                        {
+                            {"speed_kph", (int64_t)(oinitengine.car_increment >> 16)},
+                            {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)},
+                            {"stage_number", (int64_t)(ostats.cur_stage + 1)}
+                        }
+                    );
 
                     std::cout << Utils::get_timestamp_ms() << ": " << "SIMON: OVERTOOK " << color_name << " " << vehicle_name << " (type " << sprite_type << ", palette " << static_cast<int>(sprite->pal_src) << ")" << std::endl;
                 }

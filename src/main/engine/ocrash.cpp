@@ -948,6 +948,15 @@ void OCrash::collide_slow()
             {"speed_kph", oinitengine.car_increment >> 16},
             {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
         });
+        TelemetryManager::instance().log_game_event("game.crash",
+            TelemetryManager::SEV_WARN,
+            {{"crash_type", "bump"}},
+            {
+                {"speed_kph", (int64_t)(oinitengine.car_increment >> 16)},
+                {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)},
+                {"stage_number", (int64_t)(ostats.cur_stage + 1)}
+            }
+        );
     }
     oinitengine.car_increment &= 0xFFFF;
 
@@ -987,6 +996,15 @@ void OCrash::collide_med()
             {"speed_kph", oinitengine.car_increment >> 16},
             {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
         });
+        TelemetryManager::instance().log_game_event("game.crash",
+            TelemetryManager::SEV_WARN,
+            {{"crash_type", "spin"}},
+            {
+                {"speed_kph", (int64_t)(oinitengine.car_increment >> 16)},
+                {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)},
+                {"stage_number", (int64_t)(ostats.cur_stage + 1)}
+            }
+        );
     }
 
     // set_collision:
@@ -1058,6 +1076,15 @@ void OCrash::collide_fast()
             {"speed_kph", oinitengine.car_increment >> 16},
             {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
         });
+        TelemetryManager::instance().log_game_event("game.crash",
+            TelemetryManager::SEV_WARN,
+            {{"crash_type", "flip"}},
+            {
+                {"speed_kph", (int64_t)(oinitengine.car_increment >> 16)},
+                {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)},
+                {"stage_number", (int64_t)(ostats.cur_stage + 1)}
+            }
+        );
     }
 
     // set_collision:

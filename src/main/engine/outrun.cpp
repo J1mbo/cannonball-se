@@ -480,7 +480,17 @@ void Outrun::main_switch()
                 std::string mode = (cannonball_mode == MODE_TTRIAL) ? "time_trial" : 
                                    (cannonball_mode == MODE_CONT) ? "continuous" : "original";
                 TelemetryManager::instance().start_game_session(mode, omusic.get_music_selected(), oname.get_initials());
-                
+                TelemetryManager::instance().log_game_event("game.session.start",
+                    TelemetryManager::SEV_INFO,
+                    {
+                        {"game_mode", mode},
+                        {"player_initials", oname.get_initials()}
+                    },
+                    {
+                        {"music_selection", (int64_t)omusic.get_music_selected()}
+                    }
+                );
+
                 // Start stage 1 span (cur_stage is 0, displayed as stage 1)
                 TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1, TelemetryManager::bcd_score_to_decimal(ostats.score));
             }
@@ -609,6 +619,7 @@ void Outrun::main_switch()
             
             // Start post-game span for high score entry
             TelemetryManager::instance().start_post_game_span();
+            TelemetryManager::instance().log_game_event("game.post_game.start", TelemetryManager::SEV_INFO);
             
             game_state = GS_BEST2;
             [[fallthrough]];
@@ -638,6 +649,16 @@ void Outrun::main_switch()
                     }, {
                         {"score", TelemetryManager::bcd_score_to_decimal(ohiscore.scores[pos].score)}
                     });
+                    TelemetryManager::instance().log_game_event("game.high_score",
+                        TelemetryManager::SEV_INFO,
+                        {
+                            {"position", std::to_string(pos + 1)},
+                            {"initials", initials}
+                        },
+                        {
+                            {"score", TelemetryManager::bcd_score_to_decimal(ohiscore.scores[pos].score)}
+                        }
+                    );
                     
                     config.save_scores(outrun.cannonball_mode == Outrun::MODE_ORIGINAL);
                 }
@@ -655,7 +676,18 @@ void Outrun::main_switch()
                 
                 // End post-game span and game session
                 TelemetryManager::instance().end_post_game_span();
+                TelemetryManager::instance().log_game_event("game.post_game.end", TelemetryManager::SEV_INFO);
                 TelemetryManager::instance().end_game_session(final_score, completion, final_stage);
+                TelemetryManager::instance().log_game_event("game.session.end",
+                    TelemetryManager::SEV_INFO,
+                    {
+                        {"completion_status", completion}
+                    },
+                    {
+                        {"final_score", final_score},
+                        {"final_stage", (int64_t)final_stage}
+                    }
+                );
                 
                 game_state = GS_REINIT;          // Reinit game to attract mode
             }

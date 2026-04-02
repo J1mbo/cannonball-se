@@ -1685,6 +1685,15 @@ void OFerrari::do_sound_score_slip()
                     {"speed_kph", oinitengine.car_increment >> 16},
                     {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
                 });
+                TelemetryManager::instance().log_game_event("game.off_road",
+                    TelemetryManager::SEV_WARN,
+                    {},
+                    {
+                        {"speed_kph", (int64_t)(oinitengine.car_increment >> 16)},
+                        {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)},
+                        {"stage_number", (int64_t)(ostats.cur_stage + 1)}
+                    }
+                );
             }
         }
     }

@@ -673,6 +673,17 @@ void OInitEngine::init_split3()
             {"speed_kph", car_increment >> 16},
             {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
         });
+        TelemetryManager::instance().log_game_event("game.route_chosen",
+            TelemetryManager::SEV_INFO,
+            {
+                {"direction", route_selected == 0 ? "right" : "left"}
+            },
+            {
+                {"stage", (int64_t)ostats.routes[0]},
+                {"speed_kph", (int64_t)(car_increment >> 16)},
+                {"score", TelemetryManager::bcd_score_to_decimal(ostats.score)}
+            }
+        );
     }
 
     if (oroad.road_width >> 16 > 0x300)
@@ -796,9 +807,28 @@ void OInitEngine::init_split_next_level()
         // End previous stage span (cur_stage has already been incremented)
         // Convert BCD time counter to decimal seconds
         int time_remaining = TelemetryManager::bcd_to_seconds(ostats.time_counter);
-        TelemetryManager::instance().end_stage_span(time_remaining, TelemetryManager::bcd_score_to_decimal(ostats.score));
+        int64_t score_at_transition = TelemetryManager::bcd_score_to_decimal(ostats.score);
+        TelemetryManager::instance().end_stage_span(time_remaining, score_at_transition);
+        TelemetryManager::instance().log_game_event("game.stage.end",
+            TelemetryManager::SEV_INFO,
+            {},
+            {
+                {"stage_number", (int64_t)ostats.cur_stage},
+                {"score_end", score_at_transition},
+                {"time_remaining_seconds", (int64_t)time_remaining}
+            }
+        );
         // Start new stage span
-        TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1, TelemetryManager::bcd_score_to_decimal(ostats.score));
+        TelemetryManager::instance().start_stage_span(ostats.cur_stage + 1, score_at_transition);
+        TelemetryManager::instance().log_game_event("game.stage.start",
+            TelemetryManager::SEV_INFO,
+            {},
+            {
+                {"stage_number", (int64_t)(ostats.cur_stage + 1)},
+                {"score_start", score_at_transition},
+                {"speed_kph", (int64_t)(car_increment >> 16)}
+            }
+        );
     }
 }
 
