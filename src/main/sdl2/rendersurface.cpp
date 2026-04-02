@@ -19,6 +19,7 @@
 #include <iterator>
 #include <iostream>
 #include <mutex>
+#include <chrono>
 #include <vector>
 #include <string>
 #include <cstring>
@@ -831,6 +832,58 @@ bool RenderSurface::finalize_frame()
     glb::draw( /*useOffscreen=*/(offscreen_rendering==1),
                /*drawOverlay=*/((config.video.crt_shape != 0)||(config.video.shadow_mask==1)) );
 
+    // Deferred screenshot: capture post-shader pixels before the buffer swap
+    if (screenshot_pending_.load(std::memory_order_acquire)) {
+        screenshot_pending_.store(false, std::memory_order_release);
+        int win_w = 0, win_h = 0;
+        SDL_GL_GetDrawableSize(window, &win_w, &win_h);
+        std::vector<uint8_t> raw(win_w * win_h * 4);
+        glReadPixels(0, 0, win_w, win_h, GL_RGBA, GL_UNSIGNED_BYTE, raw.data());
+        // OpenGL origin is bottom-left; flip vertically and strip alpha
+        std::vector<uint8_t> rgb(win_w * win_h * 3);
+        for (int y = 0; y < win_h; y++) {
+            const uint8_t* src_row = raw.data() + (win_h - 1 - y) * win_w * 4;
+            uint8_t*       dst_row = rgb.data()  + y * win_w * 3;
+            for (int x = 0; x < win_w; x++) {
+                dst_row[x*3+0] = src_row[x*4+0];
+                dst_row[x*3+1] = src_row[x*4+1];
+                dst_row[x*3+2] = src_row[x*4+2];
+            }
+        }
+        // Scale down to fit within 640px wide so the base64 stays under Loki's
+        // 64 KB structured-metadata limit.
+        const int MAX_SCREENSHOT_W = 640;
+        std::vector<uint8_t> scaled;
+        const uint8_t* encode_pixels = rgb.data();
+        int encode_w = win_w, encode_h = win_h;
+        if (win_w > MAX_SCREENSHOT_W) {
+            encode_w = MAX_SCREENSHOT_W;
+            encode_h = (win_h * MAX_SCREENSHOT_W) / win_w;
+            scaled.resize(encode_w * encode_h * 3);
+            for (int y = 0; y < encode_h; y++) {
+                int src_y = (y * win_h) / encode_h;
+                const uint8_t* src_row = rgb.data() + src_y * win_w * 3;
+                uint8_t*       dst_row = scaled.data() + y * encode_w * 3;
+                for (int x = 0; x < encode_w; x++) {
+                    int src_x = (x * win_w) / encode_w;
+                    dst_row[x*3+0] = src_row[src_x*3+0];
+                    dst_row[x*3+1] = src_row[src_x*3+1];
+                    dst_row[x*3+2] = src_row[src_x*3+2];
+                }
+            }
+            encode_pixels = scaled.data();
+        }
+
+        std::vector<uint8_t> jpeg;
+        stbi_write_jpg_to_func(stbi_write_to_vector, &jpeg, encode_w, encode_h, 3, encode_pixels, screenshot_quality_pending_);
+        {
+            std::lock_guard<std::mutex> lk(screenshot_result_mutex_);
+            screenshot_result_ = base64_encode_bytes(jpeg);
+            screenshot_result_ready_ = true;
+        }
+        screenshot_result_cv_.notify_one();
+    }
+
     glb::present();
 
     // notify disable() that we're done
@@ -1254,62 +1307,19 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
 
 std::string RenderSurface::capture_screenshot_base64(int quality)
 {
-    // Snapshot the last-completed surface under the lock, then release.
-    int w = 0, h = 0;
-    std::vector<uint8_t> pixels_rgb;
-
+    // Reset ready flag and request a capture from the render thread.
     {
-        std::lock_guard<std::mutex> lock(drawFrameMutex);
-        SDL_Surface* src = GameSurface[current_game_surface ^ 1];
-        if (!src) return "";
-
-        w = src->w;
-        h = src->h;
-        pixels_rgb.resize(w * h * 3);
-
-        if (src->format->BitsPerPixel == 16) {
-            // Non-Blargg path: pixels are custom R5G5B5A1
-            // Layout (MSB→LSB): RRRRR GGGGG BBBBB A
-            // i.e. R at bits 15-11, G at bits 10-6, B at bits 5-1, A at bit 0
-            for (int y = 0; y < h; y++) {
-                const uint16_t* row = reinterpret_cast<const uint16_t*>(
-                    static_cast<const uint8_t*>(src->pixels) + y * src->pitch);
-                uint8_t* out = pixels_rgb.data() + y * w * 3;
-                for (int x = 0; x < w; x++) {
-                    uint16_t px = row[x];
-                    uint32_t r5 = (px >> 11) & 0x1Fu;
-                    uint32_t g5 = (px >>  6) & 0x1Fu;
-                    uint32_t b5 = (px >>  1) & 0x1Fu;
-                    out[x*3+0] = static_cast<uint8_t>((r5 << 3) | (r5 >> 2));
-                    out[x*3+1] = static_cast<uint8_t>((g5 << 3) | (g5 >> 2));
-                    out[x*3+2] = static_cast<uint8_t>((b5 << 3) | (b5 >> 2));
-                }
-            }
-        } else {
-            // Blargg path: SDL_PIXELFORMAT_RGBA8888 (32-bit)
-            // For RGBA8888 on this platform: R at Ashift=0, G at Bshift=8,
-            // B at Gshift=16 (see swapped init assignments).
-            const uint8_t rs = Ashift;  // actual R data shift (= SDL Ashift)
-            const uint8_t gs = Bshift;  // actual G data shift (= SDL Bshift)
-            const uint8_t bs = Gshift;  // actual B data shift (= SDL Gshift)
-            for (int y = 0; y < h; y++) {
-                const uint32_t* row = reinterpret_cast<const uint32_t*>(
-                    static_cast<const uint8_t*>(src->pixels) + y * src->pitch);
-                uint8_t* out = pixels_rgb.data() + y * w * 3;
-                for (int x = 0; x < w; x++) {
-                    uint32_t px = row[x];
-                    out[x*3+0] = static_cast<uint8_t>((px >> rs) & 0xFF);
-                    out[x*3+1] = static_cast<uint8_t>((px >> gs) & 0xFF);
-                    out[x*3+2] = static_cast<uint8_t>((px >> bs) & 0xFF);
-                }
-            }
-        }
+        std::lock_guard<std::mutex> lk(screenshot_result_mutex_);
+        screenshot_result_ready_ = false;
+        screenshot_result_.clear();
     }
+    screenshot_quality_pending_ = quality;
+    screenshot_pending_.store(true, std::memory_order_release);
 
-    // Encode as JPEG in memory.
-    std::vector<uint8_t> jpeg_data;
-    stbi_write_jpg_to_func(stbi_write_to_vector, &jpeg_data,
-                           w, h, 3, pixels_rgb.data(), quality);
+    // Wait for finalize_frame() to perform glReadPixels and signal us.
+    std::unique_lock<std::mutex> lk(screenshot_result_mutex_);
+    bool ok = screenshot_result_cv_.wait_for(lk, std::chrono::seconds(2),
+        [this] { return screenshot_result_ready_ || shutting_down.load(); });
 
-    return base64_encode_bytes(jpeg_data);
+    return (ok && screenshot_result_ready_) ? screenshot_result_ : "";
 }

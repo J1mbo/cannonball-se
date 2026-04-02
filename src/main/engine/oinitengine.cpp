@@ -813,7 +813,7 @@ void OInitEngine::init_split_next_level()
         TelemetryManager::instance().end_stage_span(time_remaining, score_at_transition);
         TelemetryManager::instance().log_game_event("game.stage.end",
             TelemetryManager::SEV_INFO,
-            {{"screenshot_jpeg", stage_screenshot}},
+            {{"screenshot_jpg", stage_screenshot}},
             {
                 {"stage_number", (int64_t)ostats.cur_stage},
                 {"score_end", score_at_transition},

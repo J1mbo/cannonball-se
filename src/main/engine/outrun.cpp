@@ -604,7 +604,7 @@ void Outrun::main_switch()
                 map_screenshot_b64 = video.capture_screenshot_base64();
                 TelemetryManager::instance().log_game_event("game.map_screen",
                     TelemetryManager::SEV_INFO,
-                    {{"screenshot_jpeg", map_screenshot_b64}}
+                    {{"screenshot_jpg", map_screenshot_b64}}
                 );
             }
             break;
@@ -700,7 +700,7 @@ void Outrun::main_switch()
                     TelemetryManager::SEV_INFO,
                     {
                         {"completion_status", completion},
-                        {"screenshot_jpeg", gameover_screenshot_b64}
+                        {"screenshot_jpg", gameover_screenshot_b64}
                     },
                     {
                         {"final_score", final_score},
