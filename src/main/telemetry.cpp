@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <sstream>
 #include <iomanip>
+#include <chrono>
+#include <algorithm>
 
 #include "opentelemetry/sdk/trace/tracer_provider.h"
 #include "opentelemetry/sdk/trace/batch_span_processor.h"
@@ -34,6 +36,10 @@ struct TelemetryImpl {
     opentelemetry::nostd::shared_ptr<opentelemetry::sdk::logs::LoggerProvider> log_provider;
     opentelemetry::nostd::shared_ptr<opentelemetry::logs::Logger> logger;
     std::string current_player_initials;
+    // Clean-driving streak tracking (wall-clock). Reset at session start, updated on each
+    // crash/off-road, folded with the tail when read at session end.
+    std::chrono::steady_clock::time_point last_incident_time{};
+    int64_t longest_clean_seconds = 0;
 };
 
 // Base64 encoding helper
@@ -221,6 +227,10 @@ void TelemetryManager::start_game_session(const std::string& game_mode, int musi
         // Store player initials for attaching to all in-session logs
         impl_->current_player_initials = player_initials;
 
+        // Reset clean-driving streak tracking for the new session
+        impl_->last_incident_time = std::chrono::steady_clock::now();
+        impl_->longest_clean_seconds = 0;
+
         // Start new game session span
         impl_->game_session_span = impl_->tracer->StartSpan("game_session");
 
@@ -256,6 +266,15 @@ void TelemetryManager::end_game_session(int64_t final_score, const std::string& 
     } catch (const std::exception& e) {
         std::cerr << "TelemetryManager: Error ending game session: " << e.what() << std::endl;
     }
+}
+
+int64_t TelemetryManager::get_longest_clean_seconds() const {
+    if (!initialized_ || !impl_->game_session_span) return impl_->longest_clean_seconds;
+    // Fold in the current (still-open) clean stretch: time since the last incident.
+    auto now = std::chrono::steady_clock::now();
+    int64_t tail = std::chrono::duration_cast<std::chrono::seconds>(
+        now - impl_->last_incident_time).count();
+    return std::max(impl_->longest_clean_seconds, tail);
 }
 
 void TelemetryManager::start_stage_span(int stage_num, int64_t score_start) {
@@ -429,6 +448,17 @@ void TelemetryManager::log_game_event(
     const std::map<std::string, double>& double_attrs)
 {
     if (!initialized_ || !impl_->logger) return;
+
+    // Track clean-driving streaks: a crash or off-road resets the timer, recording the
+    // stretch that just ended if it is the longest so far.
+    if (impl_->game_session_span &&
+        (event_name == "game.crash" || event_name == "game.off_road")) {
+        auto now = std::chrono::steady_clock::now();
+        int64_t clean = std::chrono::duration_cast<std::chrono::seconds>(
+            now - impl_->last_incident_time).count();
+        if (clean > impl_->longest_clean_seconds) impl_->longest_clean_seconds = clean;
+        impl_->last_incident_time = now;
+    }
 
     try {
         // Get trace/span IDs from the most specific active span

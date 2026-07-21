@@ -30,6 +30,11 @@ public:
     // Game session management
     void start_game_session(const std::string& game_mode, int music_selection, const std::string& player_initials);
     void end_game_session(int64_t final_score, const std::string& completion_status, int final_stage);
+
+    // Longest continuous clean-driving stretch for the current session (wall-clock seconds
+    // with no crash or off-road). Folds in the time since the last incident, so it is correct
+    // when read at session end. Emitted as an attribute on game.session.end.
+    int64_t get_longest_clean_seconds() const;
     
     // Stage span management
     void start_stage_span(int stage_num, int64_t score_start);

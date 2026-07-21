@@ -828,7 +828,11 @@ void OInitEngine::init_split_next_level()
             {
                 {"stage_number", (int64_t)(ostats.cur_stage + 1)},
                 {"score_start", score_at_transition},
-                {"speed_kph", (int64_t)(car_increment >> 16)}
+                {"speed_kph", (int64_t)(car_increment >> 16)},
+                // Canonical OutRun section id (stage_lookup_off). Uniquely identifies which
+                // branch of the map this is, e.g. Stage 2 Gateway (0x09) vs Devil's Canyon (0x08).
+                // The ordered sequence of stage_id across a session reconstructs the route taken.
+                {"stage_id", (int64_t)oroad.stage_lookup_off}
             }
         );
     }

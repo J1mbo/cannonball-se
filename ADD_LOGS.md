@@ -129,8 +129,8 @@ Each event below should be logged with structured attributes:
 | Event Name | Severity | String Attributes | Int64 Attributes | Double Attributes | Notes |
 |------------|----------|-------------------|------------------|-------------------|-------|
 | `game.session.start` | INFO | `game_mode`, `player_initials` | `music_selection` | - | When game starts |
-| `game.session.end` | INFO | `completion_status` | `final_score`, `final_stage` | - | Game over |
-| `game.stage.start` | INFO | - | `stage_number`, `score_start`, `speed_kph` | - | Stage begins |
+| `game.session.end` | INFO | `completion_status`, `screenshot_jpg` | `final_score`, `final_stage`, `longest_clean_seconds` | - | Game over (`longest_clean_seconds` = longest crash/off-road-free stretch, wall-clock; logged before the session span ends so it retains `trace_id`) |
+| `game.stage.start` | INFO | - | `stage_number`, `score_start`, `speed_kph`, `stage_id` | - | Stage begins (`stage_id` = canonical section id / `stage_lookup_off`, identifies map branch) |
 | `game.stage.end` | INFO | - | `stage_number`, `score_end`, `time_remaining_seconds`, `score_delta` | - | Stage completes |
 | `game.post_game.start` | INFO | - | - | - | High score entry |
 | `game.post_game.end` | INFO | - | - | - | Post-game complete |
