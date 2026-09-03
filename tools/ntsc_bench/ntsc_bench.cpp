@@ -18,9 +18,10 @@
  *
  * Runtime flags (see also README.md):
  *   --pattern random|mixed       pixel pattern used to fill the input frame
- *                                 (default random).
+ *                                 (default random). Ignored when --input is
+ *                                 given.
  *   --colours N / --colors N     size of the fixed-seed palette, 1-65536
- *                                 (default 256).
+ *                                 (default 256). Ignored when --input is given.
  *   --palette random|contiguous  how palette *values* map onto ntsc table
  *                                 rows (default random). "random" keeps the
  *                                 original pseudo-random 16-bit values, bit-
@@ -31,14 +32,42 @@
  *                                 scattered across the full 32 MiB table.
  *                                 Pixel *placement* (which palette slot lands
  *                                 on which pixel) uses the same RNG sequence
- *                                 in both modes.
- *   --width W / --height H       input frame size (default 640x448).
+ *                                 in both modes. Ignored when --input is given.
+ *   --width W / --height H       input frame size (default 640x448). Ignored
+ *                                 (overridden by the loaded frames' own
+ *                                 dimensions) when --input is given, and
+ *                                 forced to 320x224 by --lores.
  *   --seconds S                  length of the timed loop (default 5).
  *   --threads T                  horizontal bands run concurrently (default 1).
  *   --hugepages                  allocate the 32 MiB ntsc table 2 MiB-aligned
  *                                 and madvise(MADV_HUGEPAGE) it before init
  *                                 (default off). Linux only; prints
  *                                 "unsupported" and continues elsewhere.
+ *   --input <path>                replace the synthetic input with real
+ *                                 captured game frames: <path> may be one
+ *                                 frame_*.bin file, a directory (all
+ *                                 frame_*.bin files in it, sorted), or a
+ *                                 comma-separated list of either. All loaded
+ *                                 frames must share one width/height (mixed
+ *                                 geometries are rejected). The timed loop
+ *                                 cycles through the loaded frames in order,
+ *                                 one frame per iteration, at *that frame's
+ *                                 own recorded* burst phase (mirrors the
+ *                                 game); the checksum instead runs every
+ *                                 loaded frame at phases 0, 1 and 2 (frames
+ *                                 outer, phases inner), one FNV-1a over all
+ *                                 of it, as the cross-build bit-exactness
+ *                                 gate for the whole captured-frame corpus.
+ *                                 Mutually exclusive with --lores.
+ *   --lores                       test the low-res blitter (snes_ntsc_blit)
+ *                                 against a synthetic 320x224 input instead
+ *                                 of the hires blitter under test; BENCH_FN
+ *                                 is ignored (fn=snes_ntsc_blit in the
+ *                                 output). Regression-only for the lores
+ *                                 path in later stages, not for performance
+ *                                 comparison against the hires numbers
+ *                                 elsewhere in this file. Mutually exclusive
+ *                                 with --input.
  *****************************************************************************/
 #include "snes_ntsc.h"
 
@@ -50,6 +79,9 @@
 #include <thread>
 #include <vector>
 #include <string>
+#include <algorithm>
+#include <filesystem>
+#include <utility>
 
 #if defined(__linux__)
 #include <sys/mman.h>
@@ -218,6 +250,118 @@ static uint64_t fnv1a(const void* data, size_t len, uint64_t h) {
     return h;
 }
 
+// ---- --input: captured game frames (see write_dump_frame() in --------------
+// src/main/sdl2/rendersurface.cpp for the authoritative format doc) ---------
+//
+// A frame-dump file holds a 64-byte header, then three uint16_t arrays:
+// raw[w*h] (S16 slot indices 0..8191), table[palette_entries] (rgb_blargg,
+// exactly as it stood for this frame) and colour[w*h] = table[raw[]] -
+// exactly what the blitter is handed today. `raw` and `table` are kept (not
+// just `colour`) so a future slot-indexed blitter API can be benched from
+// the same loaded frames without changing this loader.
+struct Frame {
+    uint32_t width = 0, height = 0, frame_number = 0, phase = 0;
+    uint32_t hires = 0, wide = 0, palette_entries = 0;
+    std::vector<uint16_t> raw;    // slot indices, for a future slot-indexed API
+    std::vector<uint16_t> table;  // per-frame colour table, ditto
+    std::vector<uint16_t> colour; // raw[] through table[]: today's blit input
+    std::string path;
+};
+
+// Loads and validates one CBSEFRM1 frame-dump file: magic, and file size
+// against the size implied by the header's own width/height/palette_entries
+// (mirrors frame_stats.py's read_frame()). Returns false and fills `err` on
+// any problem; never partially fills `fr` on failure.
+static bool load_frame(const std::string& path, Frame& fr, std::string& err) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) { err = path + ": cannot open"; return false; }
+
+    std::fseek(f, 0, SEEK_END);
+    long file_size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (file_size < 64) { err = path + ": file too small for a header"; std::fclose(f); return false; }
+
+    uint32_t hdr[16];
+    if (std::fread(hdr, sizeof(uint32_t), 16, f) != 16) {
+        err = path + ": short read on header"; std::fclose(f); return false;
+    }
+    if (std::memcmp(hdr, "CBSEFRM1", 8) != 0) {
+        err = path + ": bad magic (not a CBSEFRM1 frame dump)"; std::fclose(f); return false;
+    }
+
+    Frame tmp;
+    tmp.width = hdr[2]; tmp.height = hdr[3]; tmp.frame_number = hdr[4];
+    tmp.phase = hdr[5]; tmp.hires = hdr[6]; tmp.wide = hdr[7]; tmp.palette_entries = hdr[8];
+    tmp.path = path;
+
+    const size_t pixel_count = (size_t)tmp.width * (size_t)tmp.height;
+    const long expected_size = 64 + (long)(pixel_count * 2) + (long)(tmp.palette_entries * 2)
+                                   + (long)(pixel_count * 2);
+    if (file_size != expected_size) {
+        char msg[256];
+        std::snprintf(msg, sizeof(msg),
+                      ": size mismatch: file is %ld bytes, expected %ld (width=%u height=%u palette_entries=%u)",
+                      file_size, expected_size, tmp.width, tmp.height, tmp.palette_entries);
+        err = path + msg;
+        std::fclose(f);
+        return false;
+    }
+
+    tmp.raw.resize(pixel_count);
+    tmp.table.resize(tmp.palette_entries);
+    tmp.colour.resize(pixel_count);
+    bool ok = std::fread(tmp.raw.data(), sizeof(uint16_t), pixel_count, f) == pixel_count &&
+              std::fread(tmp.table.data(), sizeof(uint16_t), tmp.palette_entries, f) == tmp.palette_entries &&
+              std::fread(tmp.colour.data(), sizeof(uint16_t), pixel_count, f) == pixel_count;
+    std::fclose(f);
+    if (!ok) { err = path + ": short read on frame data"; return false; }
+
+    fr = std::move(tmp);
+    return true;
+}
+
+// Expands a --input spec into a list of frame_*.bin paths, in the order the
+// bench will use them: a single .bin file, a directory (its frame_*.bin
+// files, sorted - the zero-padded frame number makes lexicographic order
+// equal numeric order), or a comma-separated list of either, concatenated in
+// the order given.
+static bool expand_input_paths(const std::string& spec, std::vector<std::string>& out, std::string& err) {
+    namespace fs = std::filesystem;
+    size_t start = 0;
+    while (start <= spec.size()) {
+        size_t comma = spec.find(',', start);
+        std::string part = (comma == std::string::npos) ? spec.substr(start) : spec.substr(start, comma - start);
+        start = (comma == std::string::npos) ? spec.size() + 1 : comma + 1;
+        if (part.empty()) continue;
+
+        std::error_code ec;
+        fs::file_status st = fs::status(part, ec);
+        if (ec || !fs::exists(st)) { err = part + ": not found"; return false; }
+
+        if (fs::is_directory(st)) {
+            std::vector<std::string> files;
+            for (auto& entry : fs::directory_iterator(part, ec)) {
+                if (ec) break;
+                if (!entry.is_regular_file()) continue;
+                std::string name = entry.path().filename().string();
+                if (name.rfind("frame_", 0) == 0 && name.size() >= 4 &&
+                    name.compare(name.size() - 4, 4, ".bin") == 0) {
+                    files.push_back(entry.path().string());
+                }
+            }
+            if (ec) { err = part + ": " + ec.message(); return false; }
+            std::sort(files.begin(), files.end());
+            out.insert(out.end(), files.begin(), files.end());
+        } else if (fs::is_regular_file(st)) {
+            out.push_back(part);
+        } else {
+            err = part + ": not a regular file or directory";
+            return false;
+        }
+    }
+    return true;
+}
+
 struct Args {
     std::string pattern = "random";
     int colours = 256;
@@ -227,6 +371,8 @@ struct Args {
     int threads = 1;
     std::string palette = "random";
     bool hugepages = false;
+    std::string input; // empty = synthetic input (default)
+    bool lores = false;
 };
 
 static Args parse_args(int argc, char** argv) {
@@ -242,6 +388,8 @@ static Args parse_args(int argc, char** argv) {
         else if (s == "--threads") a.threads = std::atoi(next(i));
         else if (s == "--palette") a.palette = next(i);
         else if (s == "--hugepages") a.hugepages = true;
+        else if (s == "--input")  a.input   = next(i);
+        else if (s == "--lores")  a.lores   = true;
     }
     if (a.colours < 1) a.colours = 1;
     if (a.colours > 65536) a.colours = 65536;
@@ -252,19 +400,71 @@ static Args parse_args(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     Args args = parse_args(argc, argv);
-    const int width  = args.width;
-    const int height = args.height;
+
+    if (!args.input.empty() && args.lores) {
+        std::printf("error: --input and --lores may not be combined\n");
+        return 1;
+    }
+
+    // ---- --input: load captured frames, if requested --------------------
+    std::vector<Frame> in_frames;
+    if (!args.input.empty()) {
+        std::vector<std::string> paths;
+        std::string err;
+        if (!expand_input_paths(args.input, paths, err)) {
+            std::printf("error: %s\n", err.c_str());
+            return 1;
+        }
+        if (paths.empty()) {
+            std::printf("error: --input '%s' matched no frame_*.bin files\n", args.input.c_str());
+            return 1;
+        }
+        in_frames.reserve(paths.size());
+        for (auto& p : paths) {
+            Frame fr;
+            if (!load_frame(p, fr, err)) {
+                std::printf("error: %s\n", err.c_str());
+                return 1;
+            }
+            if (!in_frames.empty() &&
+                (fr.width != in_frames.front().width || fr.height != in_frames.front().height)) {
+                std::printf("error: --input geometry mismatch: '%s' is %ux%u but '%s' is %ux%u "
+                            "(mixed geometries in one run are not supported)\n",
+                            in_frames.front().path.c_str(), in_frames.front().width, in_frames.front().height,
+                            fr.path.c_str(), fr.width, fr.height);
+                return 1;
+            }
+            in_frames.push_back(std::move(fr));
+        }
+    }
+    const bool using_input = !in_frames.empty();
+    if (using_input) {
+        std::printf("input: %d frame(s) loaded, %ux%u; --pattern/--colours/--palette/--width/--height ignored\n",
+                    (int)in_frames.size(), in_frames.front().width, in_frames.front().height);
+    }
+
+    const int width  = args.lores ? 320 : (using_input ? (int)in_frames.front().width  : args.width);
+    const int height = args.lores ? 224 : (using_input ? (int)in_frames.front().height : args.height);
     const int threads = args.threads;
     Pattern pattern = (args.pattern == "mixed") ? Pattern::Mixed : Pattern::Random;
     Palette palette = (args.palette == "contiguous") ? Palette::Contiguous : Palette::Random;
 
 #ifdef BENCH_SCALAR
-    const int out_width = SNES_NTSC_OUT_WIDTH(width >> 1); // matches non-SIMD game build
+    const int out_width = args.lores ? SNES_NTSC_OUT_WIDTH(320) : SNES_NTSC_OUT_WIDTH(width >> 1); // matches non-SIMD game build
 #else
-    const int out_width = SNES_NTSC_OUT_WIDTH_SIMD(width);
+    const int out_width = args.lores ? SNES_NTSC_OUT_WIDTH(320) : SNES_NTSC_OUT_WIDTH_SIMD(width);
 #endif
     const long out_pitch = (long)out_width * 4;
     const long Alevel = 255;
+
+    // Function under test: normally BENCH_FN (selected at compile time), but
+    // --lores always exercises the low-res blitter instead, regardless of
+    // BENCH_FN. Both candidates share one call signature (see snes_ntsc.h);
+    // the C-style casts below only strip 'restrict' qualifiers some of them
+    // carry, which does not change calling convention or behaviour.
+    using BlitFn = void (*)(snes_ntsc_t const*, SNES_NTSC_IN_T const*, long, int, int, int, void*, long, long);
+    const BlitFn blit_fn = args.lores ? (BlitFn)&snes_ntsc_blit : (BlitFn)&BENCH_FN;
+    const char* fn_name  = args.lores ? "snes_ntsc_blit" : STR(BENCH_FN);
 
     const char* simd =
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
@@ -281,9 +481,17 @@ int main(int argc, char** argv) {
         "none";
 #endif
 
-    std::printf("ntsc_bench fn=%s rev=%s simd=%s\n", STR(BENCH_FN), STR(BENCH_REV), simd);
-    std::printf("geometry: in %dx%d -> out_width=%d out_pitch=%ld  pattern=%s colours=%d threads=%d\n",
-                width, height, out_width, out_pitch, args.pattern.c_str(), args.colours, threads);
+    std::printf("ntsc_bench fn=%s rev=%s simd=%s\n", fn_name, STR(BENCH_REV), simd);
+    if (args.lores) {
+        std::printf("geometry: in %dx%d -> out_width=%d out_pitch=%ld  lores=1 pattern=%s colours=%d threads=%d\n",
+                    width, height, out_width, out_pitch, args.pattern.c_str(), args.colours, threads);
+    } else if (using_input) {
+        std::printf("geometry: in %dx%d -> out_width=%d out_pitch=%ld  inputs=%d threads=%d\n",
+                    width, height, out_width, out_pitch, (int)in_frames.size(), threads);
+    } else {
+        std::printf("geometry: in %dx%d -> out_width=%d out_pitch=%ld  pattern=%s colours=%d threads=%d\n",
+                    width, height, out_width, out_pitch, args.pattern.c_str(), args.colours, threads);
+    }
 
     bool hp_madvise_ok = false;
     snes_ntsc_t* ntsc = nullptr;
@@ -312,38 +520,77 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    uint16_t* input = (uint16_t*)aligned_alloc64((size_t)width * height * sizeof(uint16_t));
-    uint32_t* out   = (uint32_t*)aligned_alloc64((size_t)out_width * height * sizeof(uint32_t));
-    if (!input || !out) { std::printf("alloc buffers failed\n"); return 1; }
+    // ---- input buffers ---------------------------------------------------
+    // Synthetic (default / --lores) modes fill one buffer once and reuse it
+    // every frame, as before. --input instead needs one 64-byte-aligned copy
+    // of each loaded frame's colour[] - the SIMD blitters require 64-byte
+    // alignment (see the note atop snes_ntsc.h) and std::vector's allocator
+    // gives no such guarantee, so the file-loaded colour[] can't be handed
+    // to them directly.
+    uint16_t* input = nullptr;
+    std::vector<uint16_t*> input_aligned; // one per loaded frame, --input only
+    const size_t pixel_bytes = (size_t)width * height * sizeof(uint16_t);
 
-    fill_input(input, width, height, pattern, args.colours, palette);
+    if (using_input) {
+        input_aligned.assign(in_frames.size(), nullptr);
+        for (size_t i = 0; i < in_frames.size(); ++i) {
+            uint16_t* buf = (uint16_t*)aligned_alloc64(pixel_bytes);
+            if (!buf) { std::printf("alloc input buffer failed\n"); return 1; }
+            std::memcpy(buf, in_frames[i].colour.data(), pixel_bytes);
+            input_aligned[i] = buf;
+        }
+    } else {
+        input = (uint16_t*)aligned_alloc64(pixel_bytes);
+        if (!input) { std::printf("alloc buffers failed\n"); return 1; }
+        fill_input(input, width, height, pattern, args.colours, palette);
+    }
+
+    uint32_t* out = (uint32_t*)aligned_alloc64((size_t)out_width * height * sizeof(uint32_t));
+    if (!out) { std::printf("alloc buffers failed\n"); return 1; }
     std::memset(out, 0, (size_t)out_width * height * sizeof(uint32_t));
 
-    // Runs one full frame at the given base burst phase, split into `threads`
-    // horizontal bands. Each band's starting phase is offset by its absolute
-    // row count so the result is bit-identical to a single un-split call
-    // (the blitter advances burst_phase by one, mod 3, per row it processes).
-    auto run_frame = [&](int phase) {
+    // Runs one full frame of `in_buf` at the given base burst phase, split
+    // into `threads` horizontal bands. Each band's starting phase is offset
+    // by its absolute row count so the result is bit-identical to a single
+    // un-split call (the blitter advances burst_phase by one, mod 3, per row
+    // it processes).
+    auto run_frame = [&](const uint16_t* in_buf, int phase) {
         int base = height / threads, extra = height % threads;
         int rows0 = base + (0 < extra ? 1 : 0);
         std::vector<std::thread> pool;
         int row = rows0;
         for (int t = 1; t < threads; ++t) {
             int rows = base + (t < extra ? 1 : 0);
-            const uint16_t* in_band = input + (size_t)row * width;
+            const uint16_t* in_band = in_buf + (size_t)row * width;
             uint32_t* out_band      = out + (size_t)row * out_width;
             int band_phase = (phase + row) % 3;
             pool.emplace_back([=]() {
-                BENCH_FN(ntsc, in_band, width, band_phase, width, rows, out_band, out_pitch, Alevel);
+                blit_fn(ntsc, in_band, width, band_phase, width, rows, out_band, out_pitch, Alevel);
             });
             row += rows;
         }
-        BENCH_FN(ntsc, input, width, phase % 3, width, rows0, out, out_pitch, Alevel); // band 0
+        blit_fn(ntsc, in_buf, width, phase % 3, width, rows0, out, out_pitch, Alevel); // band 0
         for (auto& th : pool) th.join();
     };
 
+    // Selects the input buffer and burst phase for iteration `i`. Default and
+    // --lores: the single synthetic buffer, phase cycling 0,1,2 (unchanged
+    // from before). --input: frame (i % N) in loaded order, at *that frame's
+    // own recorded* phase - mirrors what the game hands the blitter frame to
+    // frame, rather than a fixed 3-phase cycle.
+    auto pick = [&](long i) -> std::pair<const uint16_t*, int> {
+        if (using_input) {
+            size_t idx = (size_t)(i % (long)in_frames.size());
+            return { input_aligned[idx], (int)in_frames[idx].phase };
+        }
+        return { input, (int)(i % 3) };
+    };
+
     // Warm-up
-    for (int i = 0; i < 10; ++i) run_frame(i % 3);
+    for (long i = 0; i < 10; ++i) {
+        auto picked = pick(i);
+        run_frame(picked.first, picked.second);
+    }
 
     // Timed loop
     using clk = std::chrono::steady_clock;
@@ -351,8 +598,9 @@ int main(int argc, char** argv) {
     long frames = 0;
     auto run_start = clk::now();
     while (std::chrono::duration<double>(clk::now() - run_start).count() < args.seconds) {
+        auto picked = pick(frames);
         auto t0 = clk::now();
-        run_frame((int)(frames % 3));
+        run_frame(picked.first, picked.second);
         auto t1 = clk::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         if (ms < min_ms) min_ms = ms;
@@ -363,23 +611,42 @@ int main(int argc, char** argv) {
     double mean_ms = (frames > 0) ? total_ms / (double)frames : 0.0;
     double fps = (mean_ms > 0.0) ? 1000.0 / mean_ms : 0.0;
 
-    // Correctness checksum: 3 more frames at phases 0,1,2, FNV-1a accumulated
-    // cumulatively across all three output buffers.
+    // Correctness checksum.
+    // Default / --lores: 3 more frames at phases 0,1,2, FNV-1a accumulated
+    // cumulatively across all three output buffers - unchanged from before.
+    // --input: every loaded frame at phases 0, 1 and 2 (frames outer, phases
+    // inner), one FNV-1a accumulated over all of it - the cross-build
+    // bit-exactness gate for the whole captured-frame corpus.
     uint64_t checksum = 14695981039346656037ULL; // FNV-1a 64-bit offset basis
     size_t out_bytes = (size_t)out_width * height * sizeof(uint32_t);
-    for (int phase = 0; phase < 3; ++phase) {
-        run_frame(phase);
-        checksum = fnv1a(out, out_bytes, checksum);
+    if (using_input) {
+        for (size_t i = 0; i < in_frames.size(); ++i) {
+            for (int phase = 0; phase < 3; ++phase) {
+                run_frame(input_aligned[i], phase);
+                checksum = fnv1a(out, out_bytes, checksum);
+            }
+        }
+    } else {
+        for (int phase = 0; phase < 3; ++phase) {
+            run_frame(input, phase);
+            checksum = fnv1a(out, out_bytes, checksum);
+        }
     }
 
     std::printf("RESULT fn=%s rev=%s simd=%s w=%d h=%d pattern=%s colours=%d threads=%d "
                 "frames=%ld ms=%.2f fps=%.1f min=%.1f max=%.1f checksum=0x%016llx "
-                "palette=%s hugepages=%d\n",
-                STR(BENCH_FN), STR(BENCH_REV), simd, width, height, args.pattern.c_str(),
-                args.colours, threads, frames, mean_ms, fps, min_ms, max_ms,
-                (unsigned long long)checksum, args.palette.c_str(), args.hugepages ? 1 : 0);
+                "palette=%s hugepages=%d inputs=%d lores=%d\n",
+                fn_name, STR(BENCH_REV), simd, width, height,
+                using_input ? "input" : args.pattern.c_str(),
+                using_input ? 0 : args.colours, threads, frames, mean_ms, fps, min_ms, max_ms,
+                (unsigned long long)checksum,
+                using_input ? "n/a" : args.palette.c_str(),
+                args.hugepages ? 1 : 0,
+                using_input ? (int)in_frames.size() : 0,
+                args.lores ? 1 : 0);
 
-    aligned_free64(input);
+    if (input) aligned_free64(input);
+    for (auto* p : input_aligned) aligned_free64(p);
     aligned_free64(out);
     std::free(ntsc);
     return 0;

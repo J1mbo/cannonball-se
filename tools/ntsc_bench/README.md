@@ -26,13 +26,15 @@ the working tree (`_fast` + `_fast2`), or a future rewrite.
 
 ```sh
 ./bench_fast2 [--pattern random|mixed] [--colours N] [--width W] [--height H] \
-              [--seconds S] [--threads T] [--palette random|contiguous] [--hugepages]
+              [--seconds S] [--threads T] [--palette random|contiguous] [--hugepages] \
+              [--input <path>] [--lores]
 ```
 
 Defaults: `random`, 256 colours, 640x448, 5 seconds, 1 thread, `--palette
-random`, `--hugepages` off. The input frame is filled once with a
-deterministic xorshift32 RNG (fixed seed) from a palette of `--colours`
-distinct values, then reused unchanged every frame.
+random`, `--hugepages` off, no `--input` (synthetic input), `--lores` off.
+The input frame is filled once with a deterministic xorshift32 RNG (fixed
+seed) from a palette of `--colours` distinct values, then reused unchanged
+every frame - unless `--input` is given (see below).
 
 - `--palette random|contiguous` - `random` (default) keeps the original
   pseudo-random 16-bit palette values, bit-identical to the checksums above.
@@ -47,6 +49,29 @@ distinct values, then reused unchanged every frame.
   figure from `/proc/self/smaps_rollup` so you can see whether the kernel
   actually backed the table with transparent huge pages. Linux only; prints
   `unsupported` and falls back to a normal allocation elsewhere. Default off.
+- `--input <path>` - replace the synthetic input with real captured game
+  frames (see "Captured game frames" below for the file format and where
+  `frames/` comes from). `<path>` may be one `frame_*.bin` file, a directory
+  (all `frame_*.bin` files in it, sorted - the zero-padded frame number
+  makes lexicographic order equal numeric order), or a comma-separated list
+  of either. All loaded frames must share one width/height; mixed geometries
+  are rejected with an error. Overrides `--width`/`--height`; `--pattern`,
+  `--colours`/`--colors` and `--palette` are ignored. The timed loop cycles
+  through the loaded frames in order, one frame per iteration, each at
+  *that frame's own recorded* burst phase (mirroring what the game actually
+  hands the blitter, rather than a fixed 0/1/2 cycle). The checksum instead
+  runs *every* loaded frame at phases 0, 1 and 2 (frames outer, phases
+  inner), one FNV-1a accumulated over all of it - this is the cross-build
+  bit-exactness gate for the whole captured-frame corpus, independent of
+  which phases happened to be recorded. Mutually exclusive with `--lores`.
+- `--lores` - test the low-res blitter (`snes_ntsc_blit`) against a
+  synthetic 320x224 input instead of the hires blitter under test; `BENCH_FN`
+  is ignored (the RESULT line's `fn` reads `snes_ntsc_blit`). `out_width` is
+  `SNES_NTSC_OUT_WIDTH(320)` = 749, independent of `-DBENCH_SCALAR` (the
+  lores blitter has no separate SIMD/scalar path). This exists purely to
+  regress the lores path in later re-architecture stages - it is not
+  comparable to the hires numbers elsewhere in this file. Mutually exclusive
+  with `--input`.
 
 Driver scripts (run from WSL, from the repo root):
 
@@ -68,7 +93,8 @@ and after so a thermally-throttled run is visible.
 ```
 RESULT fn=snes_ntsc_blit_hires_fast rev=086591c simd=NEON w=640 h=448 \
   pattern=random colours=256 threads=1 frames=312 ms=16.03 fps=62.4 \
-  min=15.8 max=17.1 checksum=0x1a2b3c4d5e6f7081 palette=random hugepages=0
+  min=15.8 max=17.1 checksum=0x1a2b3c4d5e6f7081 palette=random hugepages=0 \
+  inputs=0 lores=0
 ```
 
 `fn`/`rev` identify what was built; `simd` is the ISA actually compiled in
@@ -83,19 +109,46 @@ filter semantics must produce the same checksum on any machine or SIMD ISA
 equivalent output (e.g. `_fast` vs `_fast2`). `palette`/`hugepages` echo the
 `--palette` and `--hugepages` settings used for the run (see Usage above).
 
+`inputs` and `lores` are new fields for the real-frame and lores-regression
+modes, always present (0/off by default, like `hugepages`):
+
+- `inputs=<count>` - number of frames loaded by `--input` (0 when absent).
+  When `--input` is active, `pattern` reads `input`, `colours` reads `0` and
+  `palette` reads `n/a` (all three are ignored in this mode - see Usage);
+  `w`/`h` are the loaded frames' own dimensions, and `checksum` is the
+  frames-outer/phases-inner sweep described above, not the synthetic
+  three-phase sweep.
+- `lores=1` when `--lores` is active (0 otherwise). `fn` then reads
+  `snes_ntsc_blit` regardless of `BENCH_FN`, and `w`/`h`/`out_width` are the
+  fixed lores geometry (320x224 -> 749) rather than whatever the binary was
+  built to test.
+
 ## Reference checksums (640x448, table built like the game: composite preset, merge_fields = 0)
 
 The bench clears `merge_fields` exactly as `RenderSurface::init_blargg_filter()` does.
 Earlier runs (before 2026-09-02 evening) used the raw preset, whose literal has
 `merge_fields = 1`, so their checksums differ from the ones below. Timings are unaffected.
 
-| Function (rev) | random, 256 colours | random, 65536 colours | mixed |
-|---|---|---|---|
-| snes_ntsc_blit_hires_fast (086591c) | 0x95f5c92e642a686f | 0x50df72f5a78f9e6d | 0x2921e1e8ab232056 |
-| snes_ntsc_blit_hires_fast2 (working tree) | 0x95f5c92e642a686f | same as _fast | 0x7d137397ad358e78 (MISMATCH: repeat-block bug) |
-| snes_ntsc_blit_hires scalar (086591c), out_width 749 | 0x8a54cf7b7096697e | 0x5afd2d5d92a24084 | 0x8390b47c580c191e |
+| Function (rev) | random, 256 colours | random, 65536 colours | mixed | 24 captured frames, host/SSE4 (`--input`) | 24 captured frames, Pi/NEON (`--input`) |
+|---|---|---|---|---|---|
+| snes_ntsc_blit_hires_fast (086591c) | 0x95f5c92e642a686f | 0x50df72f5a78f9e6d | 0x2921e1e8ab232056 | 0xf977fe072096daea | 0xe3557fa06310379d **(MISMATCH, see below)** |
+| snes_ntsc_blit_hires_fast2 (working tree) | 0x95f5c92e642a686f | same as _fast | 0x7d137397ad358e78 (MISMATCH: repeat-block bug) | not measured (Stage 0 covers `_fast`/scalar only) | not measured |
+| snes_ntsc_blit_hires scalar (086591c), out_width 749 | 0x8a54cf7b7096697e | 0x5afd2d5d92a24084 | 0x8390b47c580c191e | 0xa01757db54ee3c6f | 0xa01757db54ee3c6f (matches) |
 
-SSE4 (host) and NEON (Pi) builds of the same source produce identical checksums.
+SSE4 (host) and NEON (Pi) builds of the same source produce identical
+checksums on every column above **except** `snes_ntsc_blit_hires_fast` on the
+24 captured frames, which differs between host and Pi (both stable/reproducible
+on their own platform - see "Real-frame baseline" below for details and a
+working hypothesis). The scalar path agrees cross-platform on captured frames
+just as it always has on the synthetic patterns. `snes_ntsc_blit_hires_fast`
+and the scalar `snes_ntsc_blit_hires` disagree with each other on every
+column, as expected: they use different `out_width` (752 vs 749), so even
+identical per-pixel math produces a different byte stream.
+
+`--lores` reference (`snes_ntsc_blit`, synthetic 320x224, random 256 colours,
+086591c): checksum `0x18b1960769cc63dd`. Not comparable to the hires rows
+above (different blitter, different geometry) - it exists to regress the
+lores path in later stages once it's touched by the re-architecture.
 
 ## Working-set sweep (sl-d303, 640x448, 1 thread, performance governor, core 3, 2 s runs)
 
@@ -177,4 +230,72 @@ multiple of 3 so all burst phases are sampled.
   three phases), with PNGs in `frames/png/`. Averages over the full capture: 100 distinct
   colours, 65% flat chunks, 91% identical even/odd pairs, 81% vertical repetition.
 
-Not yet available: an `--input frame.bin` mode for ntsc_bench itself.
+`ntsc_bench --input frames/` (or a single file, or a comma-separated list -
+see Usage above) benches and checksums this corpus directly; `run_pi.sh`
+ships `frames/*.bin` to the Pi and translates a local `--input` path under
+this directory automatically (see comment at the top of `run_pi.sh`). See
+"Real-frame baseline" below for the Stage 0 numbers this produced.
+
+## Real-frame baseline (24 captured frames)
+
+Stage 0 of the NTSC filter re-architecture (see `analysis/ARCHITECTURE.md`
+section 11): baseline timing and checksums for the shipped `086591c` code on
+the 24 captured frames above, gating every later stage's real-content claims.
+`sl-d303`, performance governor, pinned core 3, `--input tools/ntsc_bench/frames
+--seconds 5`, median of three runs; `vcgencmd get_throttled` read `0x0`
+before and after every run below (no thermal throttling, all runs).
+
+| Function (rev) | ms/frame (median of 3) | fps | checksum (24 frames x 3 phases) |
+|---|---|---|---|
+| snes_ntsc_blit_hires_fast (086591c) | 5.43 | 184.1 | 0xe3557fa06310379d |
+| snes_ntsc_blit_hires scalar (086591c) | 11.33 | 88.3 | 0xa01757db54ee3c6f |
+
+**The scalar checksum matches the host (WSL/SSE4) figure in the
+reference-checksums table above bit-for-bit, as expected - but the `_fast`
+(SIMD) checksum does not** (host: `0xf977fe072096daea`, Pi: `0xe3557fa06310379d`).
+This is reproducible and stable (identical on all 3 Pi runs above, and on two
+independent host runs), and it is not a transfer problem - the 24 frame files
+on the Pi are byte-identical to the local copies (`md5sum` matches every
+file). It is also new information: the existing random/mixed synthetic
+benchmarks have always agreed bit-for-bit between SSE and NEON builds of
+`_fast` (see the reference-checksums table), so this is the first input that
+exposes a real SSE4-vs-NEON divergence in the shipped `_fast` blitter, and it
+only shows up on real game content - exactly the gap `--input` was added to
+close. The likely area is the ISA-conditional repeat-block detector
+(`CHECK_ALL_EQUAL_SSE4` vs `CHECK_ALL_EQUAL_AARCH64` in `snes_ntsc.cpp`,
+feeding the "broadcast the last sub-vector" shortcut `analysis/ARCHITECTURE.md`
+section 6 already calls fragile): real frames are 65% flat 6-pixel chunks and
+91% identical even/odd pairs, so they exercise that shortcut far more than
+the old synthetic patterns, where a full 24-pixel window repeating exactly is
+comparatively rare. This has NOT been root-caused or fixed here (Stage 0 is
+measurement only, and `src/` is off-limits) - it needs a decision before
+Stage 1: pick one platform's `_fast` output as the bit-exactness reference
+(or fix the divergence first), since `_fast` is not currently self-consistent
+across SIMD ISAs on real content, only on the old synthetic ones. The scalar
+path has no such shortcut and matches perfectly, so it is the trustworthy
+cross-platform reference in the meantime.
+
+For reference, the same two functions with the default synthetic random
+256-colour input, one run each (compare against the working-set sweep table
+above, whose N=256 row was measured before `merge_fields` was corrected but
+is timing-equivalent - see the note on that table):
+
+| Function (rev) | ms/frame | fps |
+|---|---|---|
+| snes_ntsc_blit_hires_fast (086591c) | 19.11 | 52.3 |
+| snes_ntsc_blit_hires scalar (086591c) | 23.67 | 42.3 |
+
+Both are within a few percent of the working-set sweep table's N=256 row
+(19.60 ms / 22.20 ms), as expected for the same function and table size on
+the same box.
+
+Real game content (mostly flat 6-pixel runs and repeated even/odd pairs, and
+averaging ~100 distinct colours against the table's 32 MiB - see the frame
+statistics above) is **3.5x faster for `_fast`** (5.43 ms vs 19.11 ms) and
+**2.1x faster for scalar** (11.33 ms vs 23.67 ms) than the random-256-colour
+synthetic benchmark, even though neither function has an explicit run-length
+shortcut for the general case today (`_fast`'s repeat-block detector aside) -
+most of this gap is real content touching far fewer distinct table rows,
+i.e. a smaller working set, than the synthetic 256-colour fill. This is
+exactly the gap Part C of the re-architecture (the run-length ladder,
+`analysis/ARCHITECTURE.md` section 6) is designed to widen further.
