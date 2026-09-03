@@ -2,8 +2,8 @@
 
 Part D of tools/ntsc_bench/analysis/ARCHITECTURE.md (section 7): a small header giving
 snes_ntsc_blit_hires_vec() (see snes_ntsc.cpp) one v4u32 type and a dozen operations on
-it - unaligned/aligned load, aligned store, splat, add, sub, and, or, andnot, shift-by-
-immediate, zero - with NEON, SSE2 and RVV backends plus a plain-C fallback used when none
+it - unaligned/aligned load, aligned/unaligned store, splat, add, sub, and, or, andnot,
+shift-by-immediate, zero - with NEON, SSE2 and RVV backends plus a plain-C fallback used when none
 of those is available, or when SNES_NTSC_FORCE_SCALAR_SIMD is defined (forces the
 fallback even on a machine that has real SIMD, for testing it anywhere).
 
@@ -75,6 +75,7 @@ static inline v4u32 snes_v4_splat(uint32_t x)                  { return vdupq_n_
 static inline v4u32 snes_v4_load_u(const uint32_t* p)          { return vld1q_u32(p); }
 static inline v4u32 snes_v4_load_a(const uint32_t* p)          { return vld1q_u32(p); }
 static inline void  snes_v4_store_a(uint32_t* p, v4u32 v)       { vst1q_u32(p, v); }
+static inline void  snes_v4_store_u(uint32_t* p, v4u32 v)       { vst1q_u32(p, v); } /* NEON has no unaligned-store penalty/requirement */
 static inline v4u32 snes_v4_add(v4u32 a, v4u32 b)               { return vaddq_u32(a, b); }
 static inline v4u32 snes_v4_sub(v4u32 a, v4u32 b)               { return vsubq_u32(a, b); }
 static inline v4u32 snes_v4_and(v4u32 a, v4u32 b)               { return vandq_u32(a, b); }
@@ -93,6 +94,7 @@ static inline v4u32 snes_v4_splat(uint32_t x)                  { return _mm_set1
 static inline v4u32 snes_v4_load_u(const uint32_t* p)           { return _mm_loadu_si128((const __m128i*)p); }
 static inline v4u32 snes_v4_load_a(const uint32_t* p)           { return _mm_load_si128((const __m128i*)p); }
 static inline void  snes_v4_store_a(uint32_t* p, v4u32 v)       { _mm_store_si128((__m128i*)p, v); }
+static inline void  snes_v4_store_u(uint32_t* p, v4u32 v)       { _mm_storeu_si128((__m128i*)p, v); }
 static inline v4u32 snes_v4_add(v4u32 a, v4u32 b)               { return _mm_add_epi32(a, b); }
 static inline v4u32 snes_v4_sub(v4u32 a, v4u32 b)               { return _mm_sub_epi32(a, b); }
 static inline v4u32 snes_v4_and(v4u32 a, v4u32 b)               { return _mm_and_si128(a, b); }
@@ -111,6 +113,7 @@ static inline v4u32 snes_v4_splat(uint32_t x)                  { return __riscv_
 static inline v4u32 snes_v4_load_u(const uint32_t* p)           { return __riscv_vle32_v_u32m1(p, 4); }
 static inline v4u32 snes_v4_load_a(const uint32_t* p)           { return __riscv_vle32_v_u32m1(p, 4); }
 static inline void  snes_v4_store_a(uint32_t* p, v4u32 v)       { __riscv_vse32_v_u32m1(p, v, 4); }
+static inline void  snes_v4_store_u(uint32_t* p, v4u32 v)       { __riscv_vse32_v_u32m1(p, v, 4); } /* RVV has no separate unaligned store */
 static inline v4u32 snes_v4_add(v4u32 a, v4u32 b)               { return __riscv_vadd_vv_u32m1(a, b, 4); }
 static inline v4u32 snes_v4_sub(v4u32 a, v4u32 b)               { return __riscv_vsub_vv_u32m1(a, b, 4); }
 static inline v4u32 snes_v4_and(v4u32 a, v4u32 b)               { return __riscv_vand_vv_u32m1(a, b, 4); }
@@ -137,6 +140,7 @@ static inline v4u32 snes_v4_load_a(const uint32_t* p) { return snes_v4_load_u(p)
 static inline void  snes_v4_store_a(uint32_t* p, v4u32 v) {
     p[0]=v.v[0]; p[1]=v.v[1]; p[2]=v.v[2]; p[3]=v.v[3];
 }
+static inline void  snes_v4_store_u(uint32_t* p, v4u32 v) { snes_v4_store_a(p, v); }
 static inline v4u32 snes_v4_add(v4u32 a, v4u32 b) {
     v4u32 r; for (int i=0;i<4;++i) r.v[i]=a.v[i]+b.v[i]; return r; /* wraps mod 2^32, same as scalar */
 }
@@ -164,21 +168,27 @@ template<int N> static inline v4u32 snes_v4_shl_imm(v4u32 a) {
 /* ==================================================================================== */
 /* Clamp + convert, generic in terms of the v4u32 primitives above only. Mirrors
    SNES_NTSC_CLAMP_ (shift 0) followed by the scalar SNES_NTSC_RGB_OUT_ 24-bit sequence in
-   snes_ntsc.h bit for bit: same shifts, same masks, same wrap-around adds/subs, and the
-   final bswap32 (there implemented as a single scalar byte-swap instruction) reproduced
-   here as four masked shifts + or's, since a dedicated lane-wise byte-reverse is not one
-   of the primitives this layer exposes. Compare against SNES_NTSC_CLAMP_AND_CONVERT_NEON
-   / _SSE4 in snes_ntsc.h: those build the same ABGR-before-swap word this function calls
-   `abgr` via a different (SIMD-native) route (vrev32q_u8 / a lane-wise byte reverse
-   instead of shift-mask-or), but the byte order that ends up in memory - R,G,B,A at
-   increasing addresses, i.e. little-endian 0xAABBGGRR - is identical either way, and this
-   version needs no extra primitive. Alevel is not masked (matches the scalar macro). */
-static inline v4u32 snes_ntsc_simd_clamp_convert(v4u32 io, uint32_t clamp_mask, uint32_t clamp_add,
-                                                  uint32_t alevel)
+   snes_ntsc.h bit for bit - but not via the same route any more (Stage 3 review): instead
+   of building an ABGR word and then bswap32'ing it (four masked shifts/ors for the swap
+   alone), the final little-endian RGBA word is produced directly from the clamped value
+   `io` in one pass:
+       rgba = ((io >> 21) & 0xFF) | ((io >> 3) & 0xFF00) | ((io << 15) & 0xFF0000) | alpha_vec
+   This is the same bit-for-bit result as the old route (verified by tracing each byte
+   through the old shift-mask-or-then-bswap sequence: the old R byte, after the swap,
+   equals bits [21:28] of the clamped `io`, i.e. exactly (io>>21)&0xFF; likewise G is
+   (io>>3)&0xFF00 and B is (io<<15)&0xFF0000) but needs 3 shifts + 3 ands + 3 ors instead
+   of the old ~9 (3 shifts + 3 ands + 3 ors for the ABGR build) + ~11 (4 ands + 4 shifts +
+   3 ors for the bswap) = ~20 total. `alpha_vec` is Alevel already shifted into bit
+   31:24 and splat, i.e. snes_v4_splat((uint32_t)Alevel << 24) - hoisted out of the
+   caller's row loop (it is a per-call constant), along with `clamp_mask_vec`/
+   `clamp_add_vec` (also per-call constants, previously re-splatted on every single
+   invocation). Alevel is not masked here either (matches the scalar macro) - so, as
+   with the scalar macro, Alevel must fit in the low 8 bits (<= 255): a wider Alevel
+   would corrupt the R/G/B bits through this same unmasked-OR mechanism, in either the
+   old route or this one, since `alpha_vec`'s only guaranteed-zero bits are 23:0. */
+static inline v4u32 snes_ntsc_simd_clamp_convert(v4u32 io, v4u32 clamp_mask_vec, v4u32 clamp_add_vec,
+                                                  v4u32 alpha_vec)
 {
-    v4u32 clamp_mask_vec = snes_v4_splat(clamp_mask);
-    v4u32 clamp_add_vec  = snes_v4_splat(clamp_add);
-
     /* ---- clamp (SNES_NTSC_CLAMP_, shift 0) ---- */
     v4u32 sub   = snes_v4_and(snes_v4_shr_imm<9>(io), clamp_mask_vec);
     v4u32 clamp = snes_v4_sub(clamp_add_vec, sub);
@@ -186,22 +196,11 @@ static inline v4u32 snes_ntsc_simd_clamp_convert(v4u32 io, uint32_t clamp_mask, 
     clamp = snes_v4_sub(clamp, sub);
     io = snes_v4_and(io, clamp);
 
-    /* ---- convert internal raw format to R,G,B + Alevel packed as scalar's `rgba` ---- */
-    v4u32 r = snes_v4_and(snes_v4_shl_imm<3>(io), snes_v4_splat(0xFF000000u));
-    v4u32 g = snes_v4_and(snes_v4_shl_imm<5>(io), snes_v4_splat(0x00FF0000u));
-    v4u32 b = snes_v4_and(snes_v4_shl_imm<7>(io), snes_v4_splat(0x0000FF00u));
-    v4u32 a = snes_v4_splat(alevel);
-    v4u32 abgr = snes_v4_or(snes_v4_or(r, g), snes_v4_or(b, a));
-
-    /* ---- bswap32 each lane (== scalar's bswap32(rgba)), via mask/shift/or only ---- */
-    v4u32 byte0 = snes_v4_and(abgr, snes_v4_splat(0x000000FFu));
-    v4u32 byte1 = snes_v4_and(abgr, snes_v4_splat(0x0000FF00u));
-    v4u32 byte2 = snes_v4_and(abgr, snes_v4_splat(0x00FF0000u));
-    v4u32 byte3 = snes_v4_and(abgr, snes_v4_splat(0xFF000000u));
-    v4u32 rgba = snes_v4_or(
-        snes_v4_or(snes_v4_shl_imm<24>(byte0), snes_v4_shl_imm<8>(byte1)),
-        snes_v4_or(snes_v4_shr_imm<8>(byte2),  snes_v4_shr_imm<24>(byte3)));
-    return rgba;
+    /* ---- convert clamped value directly to little-endian RGBA (see comment above) ---- */
+    v4u32 r = snes_v4_and(snes_v4_shr_imm<21>(io), snes_v4_splat(0x000000FFu));
+    v4u32 g = snes_v4_and(snes_v4_shr_imm<3>(io),  snes_v4_splat(0x0000FF00u));
+    v4u32 b = snes_v4_and(snes_v4_shl_imm<15>(io), snes_v4_splat(0x00FF0000u));
+    return snes_v4_or(snes_v4_or(r, g), snes_v4_or(b, alpha_vec));
 }
 
 #endif /* SNES_NTSC_SIMD_H */

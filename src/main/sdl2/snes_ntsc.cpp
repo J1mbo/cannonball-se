@@ -19,6 +19,9 @@ Updates Feb-26:  added SSE2 fall-back; SSE4.1 now selected at compile time via _
 #endif
 #include <stdint.h> // uint32_t etc
 #include "snes_ntsc_simd.h" // portable v4u32 SIMD layer for snes_ntsc_blit_hires_vec (Stage 2)
+#include <cstdlib>  // atexit (debug-only FLAT constancy report, see gen_slot())
+#include <atomic>   // debug-only counters below; snes_ntsc_init() regenerates slots under OpenMP
+#include <vector>   // Part C classification buffer in snes_ntsc_blit_hires_vec()
 
 
 /* Copyright (C) 2006-2007 Shay Green. This module is free software; you
@@ -120,6 +123,35 @@ struct snes_ntsc_gen_state_t
 static_assert(sizeof(snes_ntsc_gen_state_t) <= sizeof(snes_ntsc_t::gen_state),
     "snes_ntsc_gen_state_t must fit inside snes_ntsc_t::gen_state");
 
+// ---------------------------------------------------------------------------
+// Debug-only FLAT constancy check (Part C / Stage 3 risk #1 in
+// tools/ntsc_bench/analysis/ARCHITECTURE.md section 12: "the claim that a flat
+// field gives one value at every position rests on correct_errors; it is
+// derived, not yet dumped"). gen_slot() below computes FLAT[phase][slot] as 7
+// independent raw sums (one per output position within a steady 12-pixel
+// run); ALGORITHM.md 3.6 says a flat field must give the *same* value at
+// every position and every phase, so under NDEBUG-off builds gen_slot()
+// verifies exactly that for every slot it (re)generates and this reports the
+// running tally at process exit. Purely informational - the blitter never
+// reads these counters and does not rely on the check having run; it always
+// uses whichever 7 (possibly-not-equal, in the hypothetical failure case)
+// stored values gen_slot() actually computed. std::atomic because
+// snes_ntsc_init() regenerates slots from an OpenMP-parallel loop.
+#ifndef NDEBUG
+static std::atomic<long> g_flat_check_slots{ 0 };
+static std::atomic<long> g_flat_check_fails{ 0 };
+static void snes_ntsc_flat_check_report()
+{
+    long total = g_flat_check_slots.load();
+    long fails = g_flat_check_fails.load();
+    fprintf(stderr,
+        "snes_ntsc: FLAT constancy check: %ld/%ld slot-generations held "
+        "(7 stored values equal within each phase, and equal across all 3 phases)\n",
+        total - fails, total);
+}
+static int g_flat_check_report_installed = (atexit(snes_ntsc_flat_check_report), 0);
+#endif
+
 // Generates one slot's kernel (all three burst phases) from a packed S16
 // colour value, running exactly the float/YIQ/gen_kernel/merge/correct_errors
 // sequence the old whole-table snes_ntsc_init() ran per colour entry, into a
@@ -168,7 +200,102 @@ static void gen_slot(snes_ntsc_t* ntsc, int slot, unsigned short colour,
             for (int n = (int)snes_ntsc_block_lead + (int)rgb_kernel_size; n < (int)snes_ntsc_block_words; ++n)
                 dst[n] = 0;
         }
+
+        // -------------------------------------------------------------------
+        // Part C (Stage 3): derive PK/CK/FLAT for this slot/phase from the base
+        // block just scattered above (see ARCHITECTURE.md section 6 and the
+        // Stage 3 design brief's "Derived tables" / "Why these are exact").
+        // All three are plain integer sums of dst_slot's 14-real-word
+        // alignment blocks, so wrap-around 32-bit addition makes them exact
+        // regardless of summation order.
+
+        // K_a[n]: real tap n (0..13) of alignment a; 0 outside that range
+        // (matches the base block's own zero padding, but computed directly
+        // here rather than by reading the pad words, for clarity).
+        auto Kread = [&](int a, int n) -> snes_ntsc_rgb_t {
+            if (n < 0 || n > 13) return 0;
+            return dst_slot[snes_ntsc_block_words * a + snes_ntsc_block_lead + n];
+        };
+
+        // 1. Pair kernel: PK_a[n] = K_a[n] + K_a[n-1], n = 0..14 (15 words).
+        snes_ntsc_rgb_t PK[snes_ntsc_alignment_count][15];
+        for (int a = 0; a < snes_ntsc_alignment_count; ++a) {
+            for (int n = 0; n <= 14; ++n)
+                PK[a][n] = Kread(a, n) + Kread(a, n - 1);
+
+            snes_ntsc_rgb_t* pk_dst = ntsc->plane_pk[bidx][slot][a];
+            for (int i = 0; i < (int)snes_ntsc_block_lead; ++i) pk_dst[i] = 0;
+            for (int n = 0; n <= 14; ++n) pk_dst[(int)snes_ntsc_block_lead + n] = PK[a][n];
+            for (int i = (int)snes_ntsc_block_lead + 15; i < (int)snes_ntsc_pk_block_words; ++i) pk_dst[i] = 0;
+        }
+
+        // 2. Chunk kernel: CK[n] = PK_0[n] + PK_1[n-2] + PK_2[n-4], n = 0..18
+        // (19 words); PK_a[m] = 0 outside 0..14.
+        auto PKread = [&](int a, int m) -> snes_ntsc_rgb_t {
+            if (m < 0 || m > 14) return 0;
+            return PK[a][m];
+        };
+        snes_ntsc_rgb_t CK[19];
+        for (int n = 0; n <= 18; ++n)
+            CK[n] = PKread(0, n) + PKread(1, n - 2) + PKread(2, n - 4);
+
+        {
+            snes_ntsc_rgb_t* ck_dst = ntsc->plane_ck[bidx][slot];
+            for (int i = 0; i < (int)snes_ntsc_block_lead; ++i) ck_dst[i] = 0;
+            for (int n = 0; n <= 18; ++n) ck_dst[(int)snes_ntsc_block_lead + n] = CK[n];
+            for (int i = (int)snes_ntsc_block_lead + 19; i < (int)snes_ntsc_ck_words; ++i) ck_dst[i] = 0;
+        }
+
+        // 3. Flat pattern: raw[x] = CK[x] + CK[x+7] + (x<=4 ? CK[x+14] : 0),
+        // x = 0..6. Stage 3 review: stored already CLAMPED AND CONVERTED to a
+        // little-endian RGBA word, with Alevel forced to 0 here (so the alpha
+        // byte, bits 31:24, is zero) rather than left RAW - the blitter used to
+        // clamp+convert these on every emit, which made a steady-run chunk cost
+        // at least as much as the general path it was supposed to avoid. Alevel
+        // is applied at emit time as a plain OR of a precomputed
+        // snes_v4_splat((uint32_t)Alevel << 24) (see snes_ntsc_blit_hires_vec),
+        // which is exactly equivalent to clamp+convert-with-the-real-Alevel
+        // because Alevel only ever contributes to bits 31:24 of the final word
+        // (see SNES_NTSC_CLAMP_AND_CONVERT_SCALAR / snes_ntsc_simd_clamp_convert)
+        // and clamp+convert-with-Alevel=0 leaves those bits zero - PROVIDED
+        // Alevel fits in a byte (<=255), the same implicit requirement the
+        // scalar macro already has (it doesn't mask Alevel either). Word 7 is
+        // unused padding.
+        auto CKread = [&](int n) -> snes_ntsc_rgb_t {
+            if (n < 0 || n > 18) return 0;
+            return CK[n];
+        };
+        {
+            snes_ntsc_rgb_t* flat_dst = ntsc->plane_flat[bidx][slot];
+            for (int x = 0; x <= 6; ++x) {
+                snes_ntsc_rgb_t raw = CKread(x) + CKread(x + 7) + ((x <= 4) ? CKread(x + 14) : 0);
+                SNES_NTSC_CLAMP_AND_CONVERT_SCALAR(raw, 0u);
+                flat_dst[x] = raw;
+            }
+            flat_dst[7] = 0;
+        }
     }
+
+#ifndef NDEBUG
+    // Debug-only FLAT constancy check (see the comment above g_flat_check_slots):
+    // the 7 stored (clamped+converted) values just computed for each phase should
+    // all be equal, and
+    // identical across all 3 phases. Purely informational; never consulted by
+    // the blitter.
+    {
+        bool ok = true;
+        snes_ntsc_rgb_t v0 = ntsc->plane_flat[0][slot][0];
+        for (int b = 0; b < snes_ntsc_burst_count && ok; ++b)
+            for (int x = 0; x < 7; ++x)
+                if (ntsc->plane_flat[b][slot][x] != v0) { ok = false; break; }
+        g_flat_check_slots.fetch_add(1, std::memory_order_relaxed);
+        if (!ok) {
+            g_flat_check_fails.fetch_add(1, std::memory_order_relaxed);
+            fprintf(stderr, "snes_ntsc: FLAT constancy FAILED for slot %d (colour 0x%04x)\n",
+                slot, (unsigned)colour);
+        }
+    }
+#endif
 }
 
 void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup,
@@ -848,32 +975,311 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
     SNES_NTSC_VEC_PIXEL(23, 2, 6, 2, 3); \
 } while (0)
 
+// Part C (Stage 3): the run-length ladder, see ARCHITECTURE.md section 6 and
+// the Stage 3 design brief. Real game content is 65% uniform 6-pixel chunks
+// and 91% identical even/odd pairs (frame_stats.py over tools/ntsc_bench/
+// frames/), so most chunks never need the 24-pixel general kernel above at
+// all: a chunk-wide classification (one compare per pixel, done once per row
+// before any accumulation) picks, per 6-pixel chunk, the cheapest of four
+// paths that all sum to exactly the same 32-bit wrap-around total the general
+// kernel would have produced (PK/CK/FLAT are themselves just precomputed
+// partial sums of the same K blocks - see gen_slot() in this file). Applied
+// only to the row's G main groups (pixels 2..24G+1); the row's prologue
+// (virtual group -1) and tail group keep using SNES_NTSC_VEC_GROUP_BODY()
+// unchanged above - together they are at most 2 of a row's G+2 groups (26-33
+// for the widths this filter supports), so shortcutting them buys nothing
+// worth the extra edge-case surface of teaching the ladder about black
+// padding and the tail's short/spill semantics.
+
+// Compile-time experiment (Stage 3 review): which ladder levels are enabled,
+// bit0 = flat/skip, bit1 = CK (uniform chunk), bit2 = PK (pair). Clearing a
+// bit routes that case to the next path down (flat to uniform to pair to
+// general), rather than deleting a level outright, so e.g. mask 1 still
+// finds pairs/uniform colour runs via the general per-pixel path, just
+// without the CK/PK tables. Default 7 = the full ladder; run_host.sh/
+// run_pi.sh can override via BENCH_CXXFLAGS=-DSNES_NTSC_LADDER_MASK=<n> to
+// measure which level(s) actually pay off on a given core (see README).
+#ifndef SNES_NTSC_LADDER_MASK
+#define SNES_NTSC_LADDER_MASK 7
+#endif
+
+// One PK (pair) window: identical to SNES_NTSC_VEC_PIXEL's load pattern
+// (see its comment above snes_ntsc_blit_hires_vec) but reading the 24-word
+// plane_pk block for alignment ALIGN instead of the 20-word plane block. PK's
+// real span is 15 words (one more than K's 14), so the r-range needing a 5th
+// load shifts from {r==3} to {r==2,r==3} - i.e. M is a simple threshold on R,
+// so unlike SNES_NTSC_VEC_PIXEL (frozen Stage-2 code, left untouched) this
+// derives it internally instead of taking it as a parameter. Pixel K's slot
+// is slotv[K]; both pixels of an identical pair share one slot, so either
+// index works - callers pass the pair's even one, whose (ALIGN,V0,R) is
+// exactly its entry in the per-pixel K table above.
+#define SNES_NTSC_VEC_PK(K, ALIGN, V0, R) do {                                         \
+    const snes_ntsc_rgb_t* base = PPK + (size_t)slotv[K] * (size_t)snes_ntsc_pk_slot_words \
+                                     + (size_t)(ALIGN) * (size_t)snes_ntsc_pk_block_words;  \
+    A[(V0)+0] = snes_v4_add(A[(V0)+0], snes_v4_load_u(base + (3-(R)+0)));               \
+    A[(V0)+1] = snes_v4_add(A[(V0)+1], snes_v4_load_u(base + (3-(R)+4)));               \
+    A[(V0)+2] = snes_v4_add(A[(V0)+2], snes_v4_load_u(base + (3-(R)+8)));               \
+    A[(V0)+3] = snes_v4_add(A[(V0)+3], snes_v4_load_u(base + (3-(R)+12)));              \
+    if ((R) >= 2)                                                                      \
+        A[(V0)+4] = snes_v4_add(A[(V0)+4], snes_v4_load_u(base + (3-(R)+16)));         \
+} while (0)
+
+// One CK (uniform chunk) window: SLOT's whole 6-pixel contribution in one go,
+// reading the 28-word plane_ck block (no per-alignment dimension - CK already
+// combines all 3 alignments, see gen_slot()). Same addressing shape again;
+// CK's real span is 19 words, so every R needs at least 5 loads, with a 6th
+// at R in {2,3} - again a simple threshold on R, derived internally.
+#define SNES_NTSC_VEC_CK(SLOT, V0, R) do {                                             \
+    const snes_ntsc_rgb_t* base = PCK + (size_t)(SLOT) * (size_t)snes_ntsc_ck_words;    \
+    A[(V0)+0] = snes_v4_add(A[(V0)+0], snes_v4_load_u(base + (3-(R)+0)));               \
+    A[(V0)+1] = snes_v4_add(A[(V0)+1], snes_v4_load_u(base + (3-(R)+4)));               \
+    A[(V0)+2] = snes_v4_add(A[(V0)+2], snes_v4_load_u(base + (3-(R)+8)));               \
+    A[(V0)+3] = snes_v4_add(A[(V0)+3], snes_v4_load_u(base + (3-(R)+12)));              \
+    A[(V0)+4] = snes_v4_add(A[(V0)+4], snes_v4_load_u(base + (3-(R)+16)));              \
+    if ((R) >= 2)                                                                      \
+        A[(V0)+5] = snes_v4_add(A[(V0)+5], snes_v4_load_u(base + (3-(R)+20)));         \
+} while (0)
+
+// Emit chunk C's (C = 4*g+n) 7 outputs as the FLAT constant for its slot,
+// unconditionally overwriting out_g+7*n..+6. Stage 3 review, change 1:
+// plane_flat now stores the clamp+converted-with-Alevel=0 word (see
+// gen_slot()), so this is just 2 unaligned loads + 2 ORs (to fold in the
+// real Alevel via the caller's precomputed alpha_vec) + 2 unaligned stores -
+// no clamp, no convert, versus the two full snes_ntsc_simd_clamp_convert
+// calls this used to cost. Needs PFLAT/out_g/alpha_vec from the caller.
+#define SNES_NTSC_VEC_EMIT_FLAT(C_, N_) do {                                           \
+    const snes_ntsc_rgb_t* flat_clamped = PFLAT + (size_t)CS(C_) * (size_t)snes_ntsc_flat_words; \
+    v4u32 out0 = snes_v4_or(snes_v4_load_u(flat_clamped + 0), alpha_vec);              \
+    v4u32 out1 = snes_v4_or(snes_v4_load_u(flat_clamped + 3), alpha_vec);              \
+    uint32_t* dst = out_g + 7 * (N_);                                                  \
+    snes_v4_store_u(dst, out0);                                                        \
+    snes_v4_store_u(dst + 3, out1);                                                    \
+} while (0)
+
+// Optional per-path instrumentation (off by default - #define SNES_NTSC_VEC_STATS
+// to enable, e.g. -DSNES_NTSC_VEC_STATS on the bench build). Chunk-granularity
+// counts for the "skip" (steady run) and "uniform" (CK) paths; pair-decision
+// granularity (each chunk has exactly 3) for "pair" (PK) vs "general" (K),
+// so g_stat_pair+g_stat_general == 3*(g_stat_total - g_stat_skip - g_stat_uniform).
+// atomics: the game runs the two half-frame render threads concurrently.
+#ifdef SNES_NTSC_VEC_STATS
+#include <atomic>
+static std::atomic<long> g_stat_total{ 0 }, g_stat_skip{ 0 }, g_stat_uniform{ 0 };
+static std::atomic<long> g_stat_pair{ 0 }, g_stat_general{ 0 };
+static void snes_ntsc_vec_stats_report()
+{
+    long total = g_stat_total.load(), skip = g_stat_skip.load(), uni = g_stat_uniform.load();
+    long pair = g_stat_pair.load(), gen = g_stat_general.load();
+    fprintf(stderr,
+        "snes_ntsc_vec ladder stats: chunks=%ld skip(steady)=%.1f%% uniform(CK)=%.1f%% "
+        "| pair-decisions: pair(PK)=%.1f%% general(K)=%.1f%% (of %ld)\n",
+        total, total ? 100.0 * skip / total : 0.0, total ? 100.0 * uni / total : 0.0,
+        (pair + gen) ? 100.0 * pair / (pair + gen) : 0.0,
+        (pair + gen) ? 100.0 * gen / (pair + gen) : 0.0, pair + gen);
+}
+static int g_stat_report_installed = (atexit(snes_ntsc_vec_stats_report), 0);
+#define SNES_NTSC_STAT(counter) (counter).fetch_add(1, std::memory_order_relaxed)
+#else
+#define SNES_NTSC_STAT(counter) ((void)0)
+#endif
+
+// One 6-pixel chunk, global chunk index C (a runtime value: C = 4*g + n where
+// g is the current group's runtime loop counter and n in 0..3 is baked into
+// which of the 4 macros below a call site uses - only the (align,v0,r)
+// constants need to be compile-time immediates, and they only depend on n).
+// CS/isFlat/isSkip come from the caller's row-wide classification pre-pass
+// (see snes_ntsc_blit_hires_vec below); both are mask-aware (isFlat folds in
+// SNES_NTSC_LADDER_MASK bit0, so isSkip - built on isFlat - inherits it), and
+// the CK/PK checks below are separately gated on bits 1/2. Each of the 3
+// pairs is given explicitly as (K, ALIGN, EV0,ER0, OV0,OR0): K is the even
+// pixel's index into slotv (the odd one is K+1); (ALIGN,EV0,ER0) is the even
+// pixel's own entry in the per-pixel K table above (SNES_NTSC_VEC_GROUP_BODY)
+// - which is also exactly the PK window's (align,v0,r), since an identical
+// pair's sum lands at the even pixel's own t0 - and (OV0,OR0) is the odd
+// pixel's entry in that same table (its (v0,r) is not simply the even one's
+// r+1: r wraps to 0 with v0+1 partway through this 24-pixel table, so both
+// are spelled out here rather than derived, to avoid re-deriving that carry
+// incorrectly).
+#define SNES_NTSC_VEC_CHUNK(C_EXPR, CK_V0, CK_R,                                       \
+                             K0, K0A, EV0,ER0, OV0,OR0,                                 \
+                             K2, K2A, EV2,ER2, OV2,OR2,                                 \
+                             K4, K4A, EV4,ER4, OV4,OR4) do {                            \
+    const int C = (C_EXPR);                                                            \
+    SNES_NTSC_STAT(g_stat_total);                                                      \
+    if (isSkip(C)) {                                                                   \
+        /* Steady run: this chunk's whole contribution (outputs 7C..7C+18) will be     \
+           overwritten by the FLAT pass below (this chunk's own emit_flat(C), and      \
+           chunks C+1/C+2's, whether those land in this group or spill into the        \
+           next main group) - see the design brief's "why skip_kernel is exact". */    \
+        SNES_NTSC_STAT(g_stat_skip);                                                   \
+    } else if ((SNES_NTSC_LADDER_MASK & 2) && CS(C) != 0xFFFFu) {                       \
+        SNES_NTSC_STAT(g_stat_uniform);                                                \
+        SNES_NTSC_VEC_CK((uint32_t)CS(C), CK_V0, CK_R);                                \
+    } else {                                                                           \
+        if ((SNES_NTSC_LADDER_MASK & 4) && slotv[K0] == slotv[(K0)+1]) { SNES_NTSC_STAT(g_stat_pair); SNES_NTSC_VEC_PK(K0, K0A, EV0, ER0); } \
+        else { SNES_NTSC_STAT(g_stat_general); SNES_NTSC_STAT(g_stat_general);         \
+               SNES_NTSC_VEC_PIXEL(K0,     K0A, EV0, ER0, (ER0)==3?4:3);               \
+               SNES_NTSC_VEC_PIXEL((K0)+1, K0A, OV0, OR0, (OR0)==3?4:3); }             \
+        if ((SNES_NTSC_LADDER_MASK & 4) && slotv[K2] == slotv[(K2)+1]) { SNES_NTSC_STAT(g_stat_pair); SNES_NTSC_VEC_PK(K2, K2A, EV2, ER2); } \
+        else { SNES_NTSC_STAT(g_stat_general); SNES_NTSC_STAT(g_stat_general);         \
+               SNES_NTSC_VEC_PIXEL(K2,     K2A, EV2, ER2, (ER2)==3?4:3);               \
+               SNES_NTSC_VEC_PIXEL((K2)+1, K2A, OV2, OR2, (OR2)==3?4:3); }             \
+        if ((SNES_NTSC_LADDER_MASK & 4) && slotv[K4] == slotv[(K4)+1]) { SNES_NTSC_STAT(g_stat_pair); SNES_NTSC_VEC_PK(K4, K4A, EV4, ER4); } \
+        else { SNES_NTSC_STAT(g_stat_general); SNES_NTSC_STAT(g_stat_general);         \
+               SNES_NTSC_VEC_PIXEL(K4,     K4A, EV4, ER4, (ER4)==3?4:3);               \
+               SNES_NTSC_VEC_PIXEL((K4)+1, K4A, OV4, OR4, (OR4)==3?4:3); }             \
+    } \
+} while (0)
+
+// The 4 chunk positions within a group (n = 0..3, global chunk index
+// C = 4*(G) + n), read directly off the per-pixel K table above: chunk n
+// owns pixels 6n..6n+5, pairs (6n,6n+1)/(6n+2,6n+3)/(6n+4,6n+5). CK's
+// (v0,r) are the ones derived in the design brief ("residues r = 0,3,2,1 for
+// c' = 0,1,2,3, first vector v0 = 0,1,3,5").
+#define SNES_NTSC_VEC_CHUNK0(G) SNES_NTSC_VEC_CHUNK(4*(G)+0, 0, 0,  \
+     0, 0, 0,0, 0,1,    2, 1, 0,2, 0,3,    4, 2, 1,0, 1,1)
+#define SNES_NTSC_VEC_CHUNK1(G) SNES_NTSC_VEC_CHUNK(4*(G)+1, 1, 3,  \
+     6, 0, 1,3, 2,0,    8, 1, 2,1, 2,2,   10, 2, 2,3, 3,0)
+#define SNES_NTSC_VEC_CHUNK2(G) SNES_NTSC_VEC_CHUNK(4*(G)+2, 3, 2,  \
+    12, 0, 3,2, 3,3,   14, 1, 4,0, 4,1,   16, 2, 4,2, 4,3)
+#define SNES_NTSC_VEC_CHUNK3(G) SNES_NTSC_VEC_CHUNK(4*(G)+3, 5, 1,  \
+    18, 0, 5,1, 5,2,   20, 1, 5,3, 6,0,   22, 2, 6,1, 6,2)
+
 void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
     int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel)
 {
     const int W = in_width;
     const int G = (W - 16) / 24; // number of full 24-pixel/28-output groups (26 for 640, 33 for 808)
     const uint32_t alevel_u = (uint32_t)Alevel;
+    // Stage 3 review, change 3: clamp_mask_vec/clamp_add_vec/alpha_vec are per-call
+    // constants (Alevel and the clamp constants never change within one blit call),
+    // so they are splatted once here instead of being re-splatted by every one of the
+    // thousands of snes_ntsc_simd_clamp_convert() calls a frame makes. alpha_vec is
+    // Alevel already positioned at bits 31:24 (see snes_ntsc_simd_clamp_convert's
+    // comment and gen_slot()'s FLAT computation) - Alevel must therefore fit in a
+    // byte (<=255, true for the game's Alevel=255), the same requirement the scalar
+    // clamp+convert macro already has.
+    const v4u32 clamp_mask_vec = snes_v4_splat((uint32_t)snes_ntsc_clamp_mask);
+    const v4u32 clamp_add_vec  = snes_v4_splat((uint32_t)snes_ntsc_clamp_add);
+    const v4u32 alpha_vec      = snes_v4_splat(alevel_u << 24);
 
     // Fixed value stored at the last 4 outputs of every row (N-4..N-1, N = 28G+24):
     // the clamp+convert sequence applied to a raw accumulator of zero, exactly
     // reproducing _fast's tail ("zero vector, clamped") - independent of phase and
     // of the row's actual pixel content, so it is computed once for the whole call.
-    const v4u32 fixed_tail = snes_ntsc_simd_clamp_convert(
-        snes_v4_zero(), (uint32_t)snes_ntsc_clamp_mask, (uint32_t)snes_ntsc_clamp_add, alevel_u);
+    const v4u32 fixed_tail = snes_ntsc_simd_clamp_convert(snes_v4_zero(), clamp_mask_vec, clamp_add_vec, alpha_vec);
+
+    // Part C classification buffer (see the SNES_NTSC_VEC_CHUNK* macros above):
+    // chunk_slot[C] for global chunk index C = -4 .. 4G+5 (main chunks are
+    // 0..4G-1; the extra -4..-1 covers lookback into the prologue and 4G..4G+5
+    // covers lookahead into the tail, both needed by isFlat()/skip_kernel() at
+    // the row's two ends). Sized once per call (W, hence G, is constant across
+    // every row of one snes_ntsc_blit_hires_vec() call) and refilled every row.
+    const int C_min = -4;
+    const int C_max = 4 * G + 5;
+    const size_t n_chunks = (size_t)(C_max - C_min + 1);
+    std::vector<uint16_t> chunk_slot_buf(n_chunks);
+    // flat_buf/r_buf (see isFlat's precompute below) are refilled every row but sized
+    // once here, outside the row loop - hoisted out of a per-row scope they were
+    // originally in, since a std::vector re-allocating on every one of a frame's 448
+    // rows (per render thread) was real, measurable heap-churn overhead on the Pi that
+    // had nothing to do with the ladder's own arithmetic (see README).
+    std::vector<uint8_t> flat_buf(n_chunks);
+    std::vector<uint8_t> r_buf(n_chunks);
 
     for (; in_height; --in_height)
     {
-        const snes_ntsc_rgb_t* restrict P = (const snes_ntsc_rgb_t*)ntsc->plane[burst_phase];
+        const snes_ntsc_rgb_t* restrict P     = (const snes_ntsc_rgb_t*)ntsc->plane[burst_phase];
+        const snes_ntsc_rgb_t* restrict PPK   = (const snes_ntsc_rgb_t*)ntsc->plane_pk[burst_phase];
+        const snes_ntsc_rgb_t* restrict PCK   = (const snes_ntsc_rgb_t*)ntsc->plane_ck[burst_phase];
+        const snes_ntsc_rgb_t* restrict PFLAT = (const snes_ntsc_rgb_t*)ntsc->plane_flat[burst_phase];
         SNES_NTSC_IN_T const* restrict line_in = input;
         uint32_t* restrict line_out = (uint32_t*)rgb_out;
+
+        // Row-wide classification pre-pass (design brief's "Classification"
+        // section): chunk C's 6 pixels are at row-positions 6C+2..6C+7 (this
+        // is the same numbering the group/pixel indexing above already uses -
+        // e.g. main group g's pixel k is at row-position 2+24g+k, and chunk
+        // C=4g+n owns k=6n..6n+5, i.e. positions 2+24g+6n..+5 = 6(4g+n)+2..+7).
+        // A position outside [0,W) is black-slot padding, exactly matching
+        // the prologue/tail's own black fill below. One compare per pixel.
+        //
+        // Every chunk this loop is ever asked about for a *main* group (C in
+        // 0..4G-1) always has its whole 6-pixel window inside [0,W) - only the
+        // handful of chunks classified purely for lookback/lookahead at the
+        // row's two ends (C < 0 or C > (W-8)/6) can poke outside it. So this
+        // is split into an unchecked fast path (no branch, no bounds-checked
+        // helper call, for the ~90%+ of chunks that are the common case on
+        // any row wide enough to have a full group) and a checked slow path
+        // for just those few edge chunks - avoiding a per-pixel bounds check
+        // and function-call indirection across the whole row, which measured
+        // as a real cost on the Pi's in-order core (see README).
+        auto pixel_slot = [&](int pos) -> uint32_t {
+            return (pos < 0 || pos >= W) ? (uint32_t)snes_ntsc_black_slot : (uint32_t)line_in[pos];
+        };
+        for (int C = C_min; C <= C_max; ++C) {
+            int pos0 = 6 * C + 2;
+            uint32_t s0; bool uniform;
+            if (pos0 >= 0 && pos0 + 5 < W) {
+                SNES_NTSC_IN_T const* restrict pp = line_in + pos0;
+                s0 = (uint32_t)pp[0];
+                uniform = (uint32_t)pp[1] == s0 && (uint32_t)pp[2] == s0 && (uint32_t)pp[3] == s0 &&
+                          (uint32_t)pp[4] == s0 && (uint32_t)pp[5] == s0;
+            } else {
+                s0 = pixel_slot(pos0);
+                uniform = true;
+                for (int i = 1; i < 6; ++i) {
+                    if (pixel_slot(pos0 + i) != s0) { uniform = false; break; }
+                }
+            }
+            chunk_slot_buf[(size_t)(C - C_min)] = uniform ? (uint16_t)s0 : (uint16_t)0xFFFFu;
+        }
+        // CS(C)/isFlat(C)/isSkip(C) are *macros*, not lambdas/functions, deliberately:
+        // they are called many times per chunk from inside SNES_NTSC_VEC_CHUNK,
+        // interleaved with A[]-touching code, and Stage 2 already found the hard way
+        // (see this file's "Register-allocation fix" note in the README) that a real,
+        // non-inlined call in that position forces the compiler to spill the live
+        // accumulators around every call even when the callee is trivial - a macro
+        // can't do that, it is textually inline by construction. isFlat folds in
+        // SNES_NTSC_LADDER_MASK bit0 (the flat/skip experiment level) so every
+        // consumer - isSkip, the group-level all-skip check, and the per-chunk
+        // covered-vector/FLAT-overwrite logic below - is automatically gated by it
+        // without separately testing the mask everywhere. Valid only inside
+        // snes_ntsc_blit_hires_vec, where chunk_slot_buf/flat_buf/C_min/G are in
+        // scope; #undef'd with the other Part B/C macros right after this function.
+#define CS(C) (chunk_slot_buf[(size_t)((C) - C_min)])
+#define isFlat(C) (((SNES_NTSC_LADDER_MASK) & 1) && (flat_buf[(size_t)((C) - C_min)] != 0))
+#define isSkip(C) (((C) + 2 <= 4 * G - 1) && isFlat(C) && isFlat((C)+1) && isFlat((C)+2))
+
+        // isFlat(C) (design brief) is queried many times per chunk (the skip
+        // test for chunks C, C-1 and C-2 all consult it, and the FLAT-
+        // overwrite pass consults it again for the same C) - precomputing it
+        // once per row into a plain array (flat_buf, declared once above the
+        // row loop and just refilled here) turns every one of those repeated
+        // queries into a single read instead of recomputing isR(C)/isR(C-1)
+        // (each itself 2 more CS() reads) from scratch every time, which was
+        // the other measurable chunk of the classification overhead. This
+        // precompute always evaluates the true flat property (mask bit0 is
+        // applied only by the isFlat accessor macro above, not here).
+        {
+            for (int C = C_min; C <= C_max; ++C) {
+                uint16_t sc = CS(C);
+                r_buf[(size_t)(C - C_min)] = (uint8_t)((sc != 0xFFFFu) && (C > C_min) && (sc == CS(C - 1)));
+            }
+#define Rbuf(C) ((C) >= C_min && r_buf[(size_t)((C) - C_min)] != 0)
+            for (int C = C_min; C <= C_max; ++C)
+                flat_buf[(size_t)(C - C_min)] = (uint8_t)(Rbuf(C) && Rbuf(C - 1));
+#undef Rbuf
+        }
 
         v4u32 A[10];
         for (int i = 0; i < 10; ++i) A[i] = snes_v4_zero();
 
         // Virtual group -1: pixels j = -22..1 (22 black slots then in[0], in[1]).
         // A[0..6] (outputs -28..-1) are discarded; only the spill A[7..9]
-        // (outputs 0..11, i.e. group 0's first three vectors) is kept.
+        // (outputs 0..11, i.e. group 0's first three vectors) is kept. Always
+        // the unmodified Stage-2 general kernel (see the Part C banner comment
+        // above for why the ladder is not applied to this virtual group).
         {
             uint32_t slotv[24];
             for (int k = 0; k < 22; ++k) slotv[k] = (uint32_t)snes_ntsc_black_slot;
@@ -886,19 +1292,89 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
 
         // Main groups 0..G-1: pixels j = 24g+2 .. 24g+25, all real (holds
         // whenever (W-16) % 24 == 0, true for both 640 and 808 - see the
-        // Stage 2 design brief).
+        // Stage 2 design brief). Part C's run-length ladder replaces the
+        // unconditional 24-pixel body here: each of the group's 4 chunks
+        // (global index C = 4g+n) independently picks the cheapest of
+        // skip/uniform-CK/pair-PK/general-K per the classification above.
+        //
+        // Stage 3 review, change 2: two group-level shortcuts on top of the
+        // per-chunk ladder, both there to stop a flat/steady chunk costing as
+        // much as (or more than) the general path once clamp+convert is
+        // accounted for:
+        //  - All 4 chunks skip_kernel (the common case well inside a sky/road
+        //    run): the whole group's 28 outputs are guaranteed covered by the
+        //    4 chunks' own emit_flat overwrites, so there is no need to
+        //    accumulate anything, nor to clamp/convert/store A[0..6] at all -
+        //    just the 4 FLAT emits. The carry into the next group (A[0..2])
+        //    is set to zero along with the rest of A[]: chunk 4g+3 being
+        //    skip_kernel guarantees emit_flat(4g+4) and emit_flat(4g+5) (the
+        //    next group's first two chunks), so whatever A[0..2] would have
+        //    fed there is going to be overwritten unconditionally anyway -
+        //    zero is exact, not just convenient.
+        //  - Otherwise (a "partially flat" group): run the chunk ladder as
+        //    before, then clamp/convert/store only the output vectors that
+        //    are not entirely covered by an emit_flat chunk (a 7-bit
+        //    coverage mask derived from the 4 chunks' own emit_flat flags -
+        //    vector v covers outputs 4v..4v+3, chunk c' covers 7c'..7c'+6;
+        //    v0 needs only chunk0 flat, v1 straddles chunk0/chunk1 and needs
+        //    both, v2 needs chunk1, v3 straddles chunk1/chunk2, v4 needs
+        //    chunk2, v5 straddles chunk2/chunk3, v6 needs chunk3) - any
+        //    vector left uncovered by this group's own flat chunks still
+        //    gets the normal clamp+convert+store, and the subsequent FLAT
+        //    overwrite pass (unchanged) still runs for every emit_flat chunk
+        //    regardless, so a vector that is only partially covered by one
+        //    of two straddling chunks is still stored normally and then has
+        //    the covered part correctly overwritten - never skipped, only
+        //    ever redundant in that one edge case.
         for (int g = 0; g < G; ++g) {
+            uint32_t* restrict out_g = line_out + (size_t)g * 28;
+
+            if (isSkip(4*g+0) && isSkip(4*g+1) && isSkip(4*g+2) && isSkip(4*g+3)) {
+                SNES_NTSC_STAT(g_stat_total); SNES_NTSC_STAT(g_stat_total);
+                SNES_NTSC_STAT(g_stat_total); SNES_NTSC_STAT(g_stat_total);
+                SNES_NTSC_STAT(g_stat_skip); SNES_NTSC_STAT(g_stat_skip);
+                SNES_NTSC_STAT(g_stat_skip); SNES_NTSC_STAT(g_stat_skip);
+                SNES_NTSC_VEC_EMIT_FLAT(4*g+0, 0);
+                SNES_NTSC_VEC_EMIT_FLAT(4*g+1, 1);
+                SNES_NTSC_VEC_EMIT_FLAT(4*g+2, 2);
+                SNES_NTSC_VEC_EMIT_FLAT(4*g+3, 3);
+                for (int i = 0; i < 10; ++i) A[i] = snes_v4_zero();
+                continue;
+            }
+
             uint32_t slotv[24];
             SNES_NTSC_IN_T const* restrict p = line_in + 2 + g * 24;
             for (int k = 0; k < 24; ++k) slotv[k] = (uint32_t)p[k];
-            SNES_NTSC_VEC_GROUP_BODY();
 
-            for (int v = 0; v < 7; ++v)
-                A[v] = snes_ntsc_simd_clamp_convert(A[v], (uint32_t)snes_ntsc_clamp_mask,
-                                                     (uint32_t)snes_ntsc_clamp_add, alevel_u);
-            uint32_t* restrict out_g = line_out + (size_t)g * 28;
-            for (int v = 0; v < 7; ++v)
-                snes_v4_store_a(out_g + v * 4, A[v]);
+            SNES_NTSC_VEC_CHUNK0(g);
+            SNES_NTSC_VEC_CHUNK1(g);
+            SNES_NTSC_VEC_CHUNK2(g);
+            SNES_NTSC_VEC_CHUNK3(g);
+
+            {
+                const bool f0 = isFlat(4*g+0), f1 = isFlat(4*g+1), f2 = isFlat(4*g+2), f3 = isFlat(4*g+3);
+                const bool covered[7] = { f0, f0 && f1, f1, f1 && f2, f2, f2 && f3, f3 };
+                for (int v = 0; v < 7; ++v) {
+                    if (covered[v]) continue;
+                    A[v] = snes_ntsc_simd_clamp_convert(A[v], clamp_mask_vec, clamp_add_vec, alpha_vec);
+                    snes_v4_store_a(out_g + v * 4, A[v]);
+                }
+
+                // FLAT overwrite pass: any of this group's 4 chunks whose isFlat(C)
+                // holds gets its 7 outputs (7n..7n+6, always inside this group's
+                // own 28) unconditionally replaced with the already clamp+converted
+                // FLAT constant for its slot (see gen_slot() and
+                // SNES_NTSC_VEC_EMIT_FLAT) - correct regardless of whether that
+                // chunk's own accumulation above ran skip/CK/PK/K, or whether the
+                // vector it lives in was even stored above (see the coverage mask
+                // just computed): skip_kernel(C) already guarantees every chunk it
+                // omits gets overwritten this way, either here or in this row's
+                // next group.
+                if (f0) SNES_NTSC_VEC_EMIT_FLAT(4*g+0, 0);
+                if (f1) SNES_NTSC_VEC_EMIT_FLAT(4*g+1, 1);
+                if (f2) SNES_NTSC_VEC_EMIT_FLAT(4*g+2, 2);
+                if (f3) SNES_NTSC_VEC_EMIT_FLAT(4*g+3, 3);
+            }
 
             A[0] = A[7]; A[1] = A[8]; A[2] = A[9];
             A[3] = A[4] = A[5] = A[6] = A[7] = A[8] = A[9] = snes_v4_zero();
@@ -917,8 +1393,7 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
             SNES_NTSC_VEC_GROUP_BODY();
 
             for (int v = 0; v < 5; ++v)
-                A[v] = snes_ntsc_simd_clamp_convert(A[v], (uint32_t)snes_ntsc_clamp_mask,
-                                                     (uint32_t)snes_ntsc_clamp_add, alevel_u);
+                A[v] = snes_ntsc_simd_clamp_convert(A[v], clamp_mask_vec, clamp_add_vec, alpha_vec);
             uint32_t* restrict out_g = line_out + (size_t)G * 28;
             for (int v = 0; v < 5; ++v)
                 snes_v4_store_a(out_g + v * 4, A[v]);
@@ -932,6 +1407,18 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
 }
 #undef SNES_NTSC_VEC_GROUP_BODY
 #undef SNES_NTSC_VEC_PIXEL
+#undef SNES_NTSC_VEC_PK
+#undef SNES_NTSC_VEC_CK
+#undef SNES_NTSC_VEC_EMIT_FLAT
+#undef SNES_NTSC_VEC_CHUNK
+#undef SNES_NTSC_VEC_CHUNK0
+#undef SNES_NTSC_VEC_CHUNK1
+#undef SNES_NTSC_VEC_CHUNK2
+#undef SNES_NTSC_VEC_CHUNK3
+#undef SNES_NTSC_STAT
+#undef CS
+#undef isFlat
+#undef isSkip
 
 /*
 * The following table attempts to depicts how the data is gathered and summed, showing

@@ -36,7 +36,7 @@ on NEON/SSE2-capable hardware, e.g. `run_host.sh WT snes_ntsc_blit_hires_vec_sca
 ## Usage
 
 ```sh
-./bench_fast2 [--pattern random|mixed] [--colours N] [--width W] [--height H] \
+./bench_fast2 [--pattern random|mixed|runs] [--colours N] [--width W] [--height H] \
               [--seconds S] [--threads T] [--palette random|contiguous] [--hugepages] \
               [--input <path>] [--lores] [--dump-output <file>]
 ```
@@ -47,6 +47,23 @@ The input frame is filled once with a deterministic xorshift32 RNG (fixed
 seed) from a palette of `--colours` distinct values, then reused unchanged
 every frame - unless `--input` is given (see below).
 
+- `--pattern runs` - deterministic (fixed-seed) reference pattern for Part C's
+  run-length ladder (Stage 3, `snes_ntsc_blit_hires_vec`'s uniform/pair/general
+  chunk classification - see "Stage 3" below). Each row is a sequence of runs
+  of random length 1-48 pixels and random colour; every 7th run is forced to a
+  single pixel (a lone differing pixel breaks both chunk-uniformity and
+  pair-equality right there, exercising the general per-pixel path and a
+  boundary transition); of the rest, half are "pair-doubled" - each successive
+  *pair* of pixels within the run gets its own fresh colour (`c0 c0 c1 c1 c2
+  c2 ...`) rather than one flat run of a single colour, so the run is never
+  chunk-uniform but every adjacent pair is identical, exercising the PK pair
+  path specifically instead of letting a cheaper uniform-chunk/steady-run
+  shortcut swallow it. The other half of non-single runs are flat, exercising
+  uniform chunks and steady runs. Run boundaries land at essentially every
+  phase relative to both the 6-pixel chunk grid and the 2-pixel pair grid over
+  many runs/rows, so every alignment and residue the ladder distinguishes gets
+  exercised at least once. Independent fixed-seed RNG stream from
+  random/mixed. `--colours`/`--palette` still select the colour pool.
 - `--palette random|contiguous` - `random` (default) keeps the original
   pseudo-random 16-bit palette values, bit-identical to the checksums above.
   `contiguous` instead sets the palette to values `0..N-1`, so the ntsc table
@@ -571,3 +588,332 @@ invocations exited 0 and produced 6 valid frames each, verified by `frame_stats.
 ./build/cannonball-se -cfgfile res/config-dump.xml -perftest -t 1 -dump .../frames_stage2    61 5   # exit 0
 ./build/cannonball-se -cfgfile res/config-dump.xml -perftest -t 4 -dump .../frames_stage2_t4 61 5   # exit 0
 ```
+
+## Stage 3: the run-length ladder (Part C)
+
+Part C of the re-architecture (`analysis/ARCHITECTURE.md` section 6): inside
+`snes_ntsc_blit_hires_vec`, a row-wide classification pre-pass (one compare per pixel)
+picks, for every 6-pixel chunk, the cheapest of four paths that all sum to exactly the
+same 32-bit wrap-around total the Stage 2 general kernel would have produced - so the
+result is still bit-identical to `_fast` on every input, gated by the same checksums as
+every earlier stage. The general kernel (Stage 2, `SNES_NTSC_VEC_GROUP_BODY`) is
+untouched and still handles every pixel the ladder doesn't shortcut, plus the row's
+prologue and tail groups in full (see "Scope" below).
+
+### Derived tables
+
+Three more tables per slot per phase, all exact integer sums of `plane`'s existing
+14-real-word alignment blocks (computed in `gen_slot()` right after the base scatter, so
+`snes_ntsc_update_slot(s)()` keeps them coherent automatically - no separate dirty
+tracking needed):
+
+| Table | Contents | Block shape | Size |
+|---|---|---|---|
+| `plane_pk` | `PK_a[n] = K_a[n] + K_a[n-1]`, n=0..14 (a matching even/odd pixel pair's exact sum) | 3 alignments x 24 words (3 lead + 15 real + 6 trail) | 7.08 MB |
+| `plane_ck` | `CK[n] = PK_0[n] + PK_1[n-2] + PK_2[n-4]`, n=0..18 (a uniform 6-pixel chunk's exact sum) | 1 x 28 words (3 lead + 19 real + 6 trail) | 2.75 MB |
+| `plane_flat` | `raw[x] = CK[x] + CK[x+7] + (x<=4 ? CK[x+14] : 0)`, x=0..6, stored **raw** (pre-clamp; Alevel is a blitter argument, not known at generation time) | 1 x 8 words (7 real + 1 pad) | 0.79 MB |
+
+`sizeof(snes_ntsc_t)` grows from Stage 2's 5,907,904 B to **16,527,360 B** (about 15.76
+MiB / 16.5 MB), matching the brief's estimate almost exactly (5.9 + 7.1 + 2.75 + 0.8 =
+16.5 MB); confirmed by the bench's own `sizeof_ntsc=` field. Both PK and CK use wider
+trailing padding than a K block (6 words, not 3) because a residue-2 window load reaches
+word 20 of a PK block and word 24 of a CK block - one word further each time the real-tap
+span grows, exactly as the brief predicted.
+
+**FLAT constancy check.** A debug-only check (`#ifndef NDEBUG`, so compiled out of the
+`-DNDEBUG` Release game build but present in every bench build here) verifies, every time
+`gen_slot()` regenerates a slot, that the 7 raw FLAT values it just computed are equal to
+each other and identical across all 3 burst phases - the property the whole FLAT
+shortcut depends on (`ARCHITECTURE.md` section 12, risk 1: "derived, not yet dumped").
+It held for **every slot checked across every test in this stage**: 8194/8194 on every
+synthetic-palette run (random/mixed/runs), and on the captured frames' actual per-frame
+palettes - 479,941 slot-generations on the host build's full `--input tools/ntsc_bench/frames`
+run, 457,059 after the fix below, and equivalent counts (29,903-37,552, fewer because the
+Pi runs used shorter `--seconds`) on the Pi. Zero failures anywhere. This is purely
+informational, exactly as specified - the blitter never reads these counters and does
+not rely on the check having run.
+
+### The ladder
+
+Per 6-pixel chunk `C` (classified via `chunk_slot[C]` = the common slot if all 6 pixels
+are equal, else a sentinel), with `R(C)` = "continues a uniform run" and `emit_flat(C) =
+R(C) && R(C-1)` (three uniform same-slot chunks in a row):
+
+| Path | Condition | Table | Cost |
+|---|---|---|---|
+| Steady run (skip) | `emit_flat(C) && emit_flat(C+1) && emit_flat(C+2)` | none - overwritten by FLAT | 0 loads |
+| Uniform chunk | `chunk_slot[C]` is one slot | `plane_ck` | 5-6 loads |
+| Pair | an even/odd pair is equal | `plane_pk` | 4-5 loads |
+| General | neither | `plane` (Stage 2 per-pixel) | unchanged |
+
+After a group's normal clamp/convert/store, every chunk with `emit_flat(C)` true gets its
+7 outputs unconditionally overwritten with the clamp+converted FLAT constant (two
+overlapping unaligned stores via the new `snes_v4_store_u` primitive added to
+`snes_ntsc_simd.h`) - correct regardless of which path that chunk's own accumulation took,
+which is what makes `skip_kernel` safe: everything a skipped chunk would have contributed
+lands in a 7-output range that one of these three overwrites (its own, or `C+1`'s, or
+`C+2`'s) covers unconditionally.
+
+**Scope decision (deviation from the brief).** The ladder is applied only to a row's `G`
+main groups, not to the virtual prologue group or the tail group, which keep Stage 2's
+unmodified general kernel verbatim. Those two groups are at most 2 of a row's `G+2` groups
+(26-33 for the widths this filter supports), so shortcutting them saves negligible time;
+excluding them removes a large class of edge-case risk (black-padding chunks, the tail's
+short/spill semantics interacting with `skip_kernel`'s cross-group safety argument).
+**This exact interaction is what the first implementation attempt got wrong**: `skip_kernel`
+for the last main group's final chunk can rely on `emit_flat` of chunks 1-2 positions
+ahead, and when those neighbours fall in the tail group, nothing ever overwrites them there
+- an unconditional 12-column (3-vector) corruption at the very start of the tail's output,
+found immediately by the `mixed`/`--input` checksums (random essentially never triggers the
+ladder, so it passed throughout and gave no warning). The fix adds one extra guard,
+`C + 2 <= 4*G - 1`, to `skip_kernel` so the last two chunks of the last main group never
+skip (they still use the cheaper uniform/pair paths when applicable, just never the
+zero-cost skip) - see the `SNES_NTSC_VEC_CHUNK` macro in `snes_ntsc.cpp`. Diagnosed with
+`--dump-output` + `diff_output.py` exactly as the brief prescribes: the diff was 12
+columns wide, starting at column `28*G` (the tail's first column) in every affected row,
+with rows restricted to the mixed pattern's flat "sky" band - both facts pinpointed the
+missing spill into the tail's seed immediately.
+
+### Bench: `--pattern runs`
+
+A deterministic (fixed-seed) sequence of runs of random length 1-48 pixels: every 7th run
+is a single pixel (exercises the general path and a boundary transition at every
+alignment/residue); half the rest are "pair-doubled" (`c0 c0 c1 c1 c2 c2 ...`, exercising
+the pair path specifically rather than letting a longer flat run's cheaper uniform/steady
+path swallow it); the other half are flat runs (uniform chunks, steady runs). See
+`ntsc_bench.cpp`/README "Usage" above for the exact algorithm. `snes_ntsc_blit_hires_fast`
+(WT) reference: **`0x0f9860292b10dd73`**.
+
+### Checksums (all match; host and Pi)
+
+| Build | random 256 | mixed | `--input` frames | 808x448 random | threads 2 | `--pattern runs` |
+|---|---|---|---|---|---|---|
+| `_fast` (WT, reference) | 0x95f5c92e642a686f | 0x2921e1e8ab232056 | 0xe3557fa06310379d | 0xea6c5d4426a031f3 | 0x95f5c92e642a686f | 0x0f9860292b10dd73 |
+| Host `_vec`, `-march=native` (SSE2 layer) | 0x95f5c92e642a686f | 0x2921e1e8ab232056 | 0xe3557fa06310379d | 0xea6c5d4426a031f3 | 0x95f5c92e642a686f | 0x0f9860292b10dd73 |
+| Host `_vec`, `-march=x86-64` | 0xc928ffe2395b1fa7\* | 0x0616580b4a8a3d6e\* | 0xe3557fa06310379d | - | - | - |
+| Host `_vec_scalar` (plain-C layer) | 0x95f5c92e642a686f | 0x2921e1e8ab232056 | 0xe3557fa06310379d | - | - | 0x0f9860292b10dd73 |
+| Pi `_vec`, NEON | 0x95f5c92e642a686f | 0x2921e1e8ab232056 | 0xe3557fa06310379d | 0xea6c5d4426a031f3 | 0x95f5c92e642a686f | 0x0f9860292b10dd73 |
+| Pi `_vec_scalar` | 0x95f5c92e642a686f | 0x2921e1e8ab232056 | 0xe3557fa06310379d | - | - | 0x0f9860292b10dd73 |
+
+\* Same pre-existing `-march=x86-64` (no FMA) table-generation float-rounding difference
+documented in Stage 2 - reproduced bit-for-bit by the unmodified `_fast` under the same
+flag there, not a Stage 3 regression (see Stage 2's checksum table above). `--input`
+frames are unaffected on either blitter/flag, as in Stage 2.
+
+### Pi timings, first attempt (sl-d303, `--seconds 5`, median of 3, performance governor, pinned core 3)
+
+| Function | random 256, ms | mixed, ms | `--pattern runs`, ms | `--input` (24 frames), ms | update_ms |
+|---|---|---|---|---|---|
+| `snes_ntsc_blit_hires_vec` (Stage 3, first attempt) | 15.65 | 13.54 | 18.80 | 12.10 | 2.51 |
+| `snes_ntsc_blit_hires_fast` | 17.00 | 13.23 | 13.85 | 8.55 | 2.51 |
+| `snes_ntsc_blit_hires` (scalar) | 18.28 | 14.13 | 15.13 | 13.88 | 2.52 |
+
+Filter-only (`ms - update_ms`) on `--input`: `vec` 9.59 ms, `_fast` 6.04 ms, scalar 11.36 ms.
+
+The first attempt missed the brief's target ("real frames well under Stage 2's 9.65 ms
+total / about 7.5 ms filter-only", `ARCHITECTURE.md`'s gate "at or under 6 ms"): `vec` on
+`--input` measured 12.10 ms - slower than both Stage 2's own 9.65 ms baseline and `_fast`'s
+8.55 ms - despite being fully bit-exact and despite the per-path statistics confirming the
+ladder was exercising exactly the shortcuts it was designed to exercise (77% of chunks on
+the free/cheap skip-or-uniform paths). Diagnosis at the time named `ARCHITECTURE.md`
+section 12's own risk ("branchy classification on an in-order core") and two fixes were
+tried (hoisting the classification buffers out of the per-row loop; converting `CS`/
+`isFlat` from lambdas to macros to rule out accumulator spills) - both real, correct
+improvements (re-verified against every checksum), both measurable on the host's x86/SSE2
+build, but neither moved the Pi/NEON number outside noise. That result is superseded below.
+
+### Stage 3 review: three fixes that closed the gap
+
+Root cause, found on review: `snes_ntsc_simd_clamp_convert` is roughly half of the Stage 2
+kernel's per-output cost (a clamp plus a 20-op ABGR-build-then-`bswap32` convert), and the
+first-attempt ladder made a flat/steady chunk pay it *twice* - once when the group's normal
+path clamped/converted/stored all 7 accumulators, and again when the FLAT overwrite pass
+clamped/converted 2 more vectors on top - so a steady-run chunk, the ladder's whole reason
+to exist, cost at least as much as the general path it was meant to avoid. Three changes:
+
+1. **FLAT stored pre-clamped/converted.** `gen_slot()` now runs the same
+   `SNES_NTSC_CLAMP_AND_CONVERT_SCALAR` sequence on each of the 7 raw FLAT values with
+   `Alevel` forced to 0, storing the finished little-endian RGBA word (alpha byte zero)
+   instead of the raw pre-clamp sum. At emit time the real Alevel is folded in as a plain
+   `snes_v4_or` against a precomputed `snes_v4_splat((uint32_t)Alevel << 24)` - exact
+   because Alevel only ever contributes to bits 31:24 of the final word and clamp+convert-
+   with-Alevel=0 leaves those bits zero, *provided* Alevel fits in a byte (<=255, true for
+   the game's 255 and already an implicit requirement of the unmasked scalar macro). A
+   flat chunk's overwrite is now 2 unaligned loads + 2 ORs + 2 unaligned stores - no clamp,
+   no convert.
+2. **Group-level fast path.** Classify all 4 chunks of a 24-pixel group before touching
+   any accumulator. If all 4 are `skip_kernel` (common well inside a sky/road run), the
+   group's entire 28 outputs are guaranteed covered by the 4 chunks' own FLAT overwrites,
+   so there is no accumulation and no clamp/convert/store at all - just 4 FLAT emits, and
+   `A[0..9]` (the carry into the next group) is set to zero: chunk `4g+3` being
+   `skip_kernel` guarantees `emit_flat(4g+4)` and `emit_flat(4g+5)` (the next group's first
+   two chunks), so whatever the carry would have fed there is overwritten unconditionally
+   regardless - zero is exact, not just convenient. Otherwise, the chunk ladder runs as
+   before, but only the output vectors *not* entirely covered by an `emit_flat` chunk get
+   clamped/converted/stored (a 7-bit coverage mask from the 4 chunks' flags: vector `v0`
+   needs chunk0 flat, `v1` straddles chunk0/chunk1 and needs both, `v2` needs chunk1, `v3`
+   straddles chunk1/chunk2, `v4` needs chunk2, `v5` straddles chunk2/chunk3, `v6` needs
+   chunk3) - a straddled vector that is only partially covered is still stored normally,
+   then correctly overwritten in the covered part, never skipped.
+3. **Cheaper clamp+convert everywhere.** `snes_ntsc_simd_clamp_convert` now produces the
+   final word directly from the clamped value: `rgba = ((io>>21)&0xFF) | ((io>>3)&0xFF00) |
+   ((io<<15)&0xFF0000) | alpha_vec` - 3 shifts, 3 ands, 3 ors instead of the previous ~20
+   (build ABGR, then 4 masked shifts/ands/ors to `bswap32` it). Verified bit-for-bit
+   equivalent by tracing each byte through the old route: the R byte after the old
+   bswap equals bits 21:28 of the clamped value, G equals bits 11:18 shifted to 15:8, B
+   equals bits 1:8 shifted to 23:16 - exactly the three terms above. `clamp_mask_vec`/
+   `clamp_add_vec`/`alpha_vec` are also now splatted once per blit call and passed in,
+   instead of every one of the thousands of per-call invocations re-splatting them.
+
+All three were verified against the full checksum set below before being kept.
+
+### Pi timings, after the review fixes (same methodology)
+
+| Function | random 256, ms | mixed, ms | `--pattern runs`, ms | `--input` (24 frames), ms | update_ms |
+|---|---|---|---|---|---|
+| `snes_ntsc_blit_hires_vec` (Stage 3, after review) | 14.84 | 11.29 | 15.81 | **9.26** | 2.49 |
+| `snes_ntsc_blit_hires_fast` (unchanged) | 17.00 | 13.23 | 13.85 | **8.55** | 2.51 |
+| `snes_ntsc_blit_hires` (scalar, unchanged) | 18.28 | 14.13 | 15.13 | 13.88 | 2.52 |
+
+Filter-only on `--input`: `vec` **6.77 ms**, `_fast` 6.04 ms, scalar 11.36 ms. `vec` on
+`--input` improved 23% (12.10 -> 9.26 ms total, 9.59 -> 6.77 ms filter-only), now **beats**
+Stage 2's own 9.65 ms baseline and sits inside the brief's "about 7.5 ms filter-only"
+target and right at `ARCHITECTURE.md`'s "at or under 6 ms" gate (6.77 ms, close but not
+quite under); it still trails `_fast` on real content (9.26 vs 8.55 ms, a much narrower gap
+than the first attempt's 12.10 vs 8.55) rather than beating it, so Part C's promise of
+"faster than `_fast` on real content by exploiting the same redundancy" is nearly but not
+fully realised on this hardware. `mixed` and `random 256` also both improved substantially
+(13.54->11.29 ms, 15.65->14.84 ms) even though neither exercises the ladder as heavily as
+`--input`, confirming changes 1 and 3 (cheaper FLAT emit, cheaper convert everywhere) help
+independently of how often the ladder fires. `--pattern runs` improved too (18.80->15.81 ms)
+but far less, and the mask experiment below explains why.
+
+### Ladder-level experiment (`SNES_NTSC_LADDER_MASK`, sl-d303, `--seconds 5`, median of 3)
+
+`run_pi.sh` now passes `BENCH_CXXFLAGS` through exactly like `run_host.sh`
+(e.g. `BENCH_CXXFLAGS=-DSNES_NTSC_LADDER_MASK=1 tools/ntsc_bench/run_pi.sh WT
+snes_ntsc_blit_hires_vec ...`), forcing a rebuild whenever it is set. Bit0 = flat/skip,
+bit1 = CK (uniform chunk), bit2 = PK (pair); a cleared bit routes that case to the next
+path down rather than deleting it (mask 0 = pure general path via the ladder's own
+fallback, mask 7 = the full ladder, the shipped default). Checksums matched the full
+reference set at every mask value (all four below reproduce `0xe3557fa06310379d` on
+`--input` and `0x0f9860292b10dd73` on `--pattern runs`):
+
+| Mask | Levels enabled | `--input`, ms | `--pattern runs`, ms |
+|---|---|---|---|
+| 0 | none (general path only) | 12.36 | 12.06 |
+| 1 | flat/skip | 9.92 | 12.40 |
+| 3 | flat/skip + CK | **9.26** | **11.99** |
+| 7 | flat/skip + CK + PK (shipped default) | **9.26** | 15.81 |
+
+Flat/skip (bit0) is almost the whole win on `--input` (12.36 -> 9.92 ms, 20%); CK (bit1)
+adds a further 7% (9.92 -> 9.26 ms). **PK (bit2, pairs) adds nothing measurable on
+`--input`** (9.26 ms either way) **and actively regresses `--pattern runs` by 32%** (11.99
+-> 15.81 ms): `runs` deliberately has a large share of chunks that are neither flat nor
+uniform (every 7th run a lone pixel, half the rest pair-doubled with a fresh colour every 2
+pixels), so the extra pair-equality branch and `plane_pk` table lookup is frequently
+attempted and wasted, whereas mask 3 sends those chunks straight to the general path with
+no extra branch. On real game content specifically (`--input`, the corpus the whole ladder
+is designed around) PK is simply not pulling its weight on the Cortex-A53 - it is free to
+leave enabled for correctness (it never costs anything on `--input`) but is not delivering
+the "~5 loads instead of ~9" benefit the design brief predicted once dispatch overhead on
+an in-order core is accounted for; a build tuned specifically for content resembling
+`--pattern runs` (busy, low-redundancy scenes) would be measurably better off with mask 3.
+
+### Register-spill check (`objdump`, Pi binary, default mask)
+
+`objdump -d --disassemble=snes_ntsc_blit_hires_vec` on the Pi binary: the function
+(unmangled symbol, as expected for `extern "C"`) is 1483 instructions. Searching for
+NEON/ASIMD 128-bit register (`q0`-`q31`) loads/stores addressed off `sp` (the stack
+pointer, i.e. genuine spills - as opposed to the many `str qN, [x0, #...]` stores to the
+output-buffer pointer, which are the kernel's actual pixel output, not spills) found
+exactly **3 `str` + 3 `ldr`**, all in two small clusters (`0xde00`-`0xde7c` and
+`0xe5d4`-`0xe874`). That is consistent with the 3 per-call hoisted constants
+(`clamp_mask_vec`, `clamp_add_vec`, `alpha_vec`/`fixed_tail`) being spilled once each near
+the top of this very large, heavily-inlined function and reloaded a handful of times where
+needed - not the "every accumulator round-trips through the stack on every pixel" pattern
+Stage 2's own register-allocation fix diagnosed and fixed (see above): 6 spill-related
+instructions out of 1483 (0.4%) is a rounding error, confirming the `CS`/`isFlat`
+macro-not-lambda design is not reintroducing that problem at this larger function size.
+
+Measurement note: the Pi (`sl-d303`) was found to be shared with another concurrent SSH
+session during part of this stage's testing (a second `sysadmin` login independently
+running the same kind of NTSC benchmark, visible via `ps`/`who` mid-session) - readings
+taken during that window were discarded and re-measured with the machine otherwise idle;
+every table in this file is from idle-machine runs.
+
+### Per-path statistics (host, `-O3 -march=native`, `-DSNES_NTSC_VEC_STATS`)
+
+Chunk-granularity for skip/uniform, pair-decision-granularity (3 per non-skip/non-uniform
+chunk) for pair/general:
+
+| Input | Steady run (skip) | Uniform chunk (CK) | Pair (PK) | General (K) |
+|---|---|---|---|---|
+| `--input` frames (24 captured, all 3 phases) | 59.2% of chunks | 17.8% of chunks | 69.5% of remaining pair-decisions | 30.5% of remaining pair-decisions |
+| `--pattern runs` | 5.5% of chunks | 22.3% of chunks | 40.4% of remaining pair-decisions | 59.6% of remaining pair-decisions |
+
+On real content, skip+uniform already cover 77% of all chunks before pairs are even
+considered, and of the chunks that do fall through, 69.5% of pairs still match - both
+numbers are consistent with `frame_stats.py`'s "65% flat chunks, 91% identical pairs"
+(counted differently: per-6-pixel-chunk here vs `frame_stats.py`'s own methodology) and
+confirm the ladder is exercising exactly the shortcut real game content was designed
+around. `--pattern runs` is deliberately far more balanced across all four paths, as
+intended - it is a ladder *stress test*, not a real-content simulation. Re-run after the
+Stage 3 review's group-level fast path (which bypasses the per-chunk `SNES_NTSC_VEC_CHUNK`
+macro's own stat counters for an all-skip group, compensated with equivalent counter
+increments in that fast path - see `snes_ntsc.cpp`): both percentages above are unchanged
+to one decimal place, confirming the fast path classifies the same chunks the same way,
+just processes them more cheaply.
+
+### FLAT constancy check debug output
+
+Every checksum run above prints a line like:
+
+```
+snes_ntsc: FLAT constancy check: 8194/8194 slot-generations held (7 stored values equal within each phase, and equal across all 3 phases)
+```
+
+from the debug-only (`#ifndef NDEBUG`) check added to `gen_slot()`. Since the Stage 3
+review's first change, the 7 values it compares are the stored, already clamped+converted
+(Alevel=0) FLAT words rather than raw pre-clamp sums - the property under test (would the
+blitter emit the same output at every position) is unchanged, and checking it on the
+values actually stored is, if anything, more direct. It held on every one of the thousands
+of slot-generations run across every synthetic pattern and every captured frame's actual
+palette in this stage - 8194/8194 on every synthetic-palette run, and up to
+853,125/853,125 on a single `--input` checksum+timed run (each palette-table diff during
+that run regenerates the changed slots, so the count reflects total regenerations over the
+run, not just the 8192 distinct slots). Zero failures observed anywhere, before or after
+the review's changes. `-DNDEBUG` (the game's Release build) compiles this check out
+entirely, exactly as specified; the game build below reproduces the game's actual flags
+and therefore does not print it.
+
+### Game build and run (WSL, `/home/pearc/cannonball-se-dump`)
+
+`cmake --build build -j16` with `CPATH=~/localdeps/usr/include/x86_64-linux-gnu:~/localdeps/usr/include`
+produced no new warnings after one fix: `snes_ntsc_pk_slot_words`'s enum-times-enum
+multiplication initially triggered `-Wdeprecated-enum-enum-conversion` (two different
+unnamed enum types), fixed by casting both operands to `int` before multiplying. After that
+fix, the only warnings are the same pre-existing ones Stage 2 already documented
+(`-Wcomment` on the commented-out dead code block in `snes_ntsc.h`, now at line 474; a
+handful of unrelated warnings elsewhere in `gl_backend.hpp`/`video.cpp`/`rendersurface.cpp`
+untouched by this stage).
+
+Both perftest+dump invocations exited 0 and produced 5 valid frames each, verified by
+`frame_stats.py` (`verify=OK` on all 5, 0 FAILED), re-run a third time after the Stage 3
+review's three changes (FLAT stored pre-clamped, the group-level fast path, the cheaper
+clamp+convert) to confirm they changed nothing observable - identical stats and `verify=OK`
+every time:
+
+```
+SDL_VIDEODRIVER=offscreen ./build/cannonball-se -cfgfile res/config-dump.xml -perftest -t 1 -dump .../frames_stage3_t1 61 5   # exit 0
+SDL_VIDEODRIVER=offscreen ./build/cannonball-se -cfgfile res/config-dump.xml -perftest -t 4 -dump .../frames_stage3_t4 61 5   # exit 0
+```
+
+`SDL_VIDEODRIVER=offscreen` was needed in this WSL session specifically (the default
+driver hung waiting on a compositor with no frames ever produced; `dummy` failed outright
+needing OpenGL the dummy driver doesn't provide) - an environment quirk of this sandbox,
+unrelated to the NTSC filter change; `wayland`/the default driver is what a real desktop
+session should use per the game's own startup hint. Frame stats on the 5 dumped frames
+(both `-t 1` and `-t 4`, identical): avg 200 distinct raw slots, 91 distinct colours, 83.5%
+flat 6-pixel chunks, 95.7% identical even/odd pairs, 89.6% vertical repetition - consistent
+with the `frames/` corpus statistics this filter is designed around.

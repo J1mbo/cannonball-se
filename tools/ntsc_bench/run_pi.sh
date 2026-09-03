@@ -159,9 +159,18 @@ need_build=0
 for f in ntsc_bench.cpp snes_ntsc.cpp snes_ntsc.h snes_ntsc_config.h snes_ntsc_impl.h snes_ntsc_simd.h; do
     [ "\$f" -nt "$BIN" ] 2>/dev/null && need_build=1
 done
+# BENCH_CXXFLAGS: extra compiler flags appended after -mcpu=cortex-a53 (last flag
+# wins), e.g. BENCH_CXXFLAGS=-DSNES_NTSC_LADDER_MASK=1 tools/ntsc_bench/run_pi.sh WT
+# snes_ntsc_blit_hires_vec to build the Stage 3 ladder-level experiment (see
+# snes_ntsc.cpp / README.md) - mirrors run_host.sh's BENCH_CXXFLAGS handling.
+# \$BENCH_CXXFLAGS below is expanded here, locally, into the heredoc text before it
+# is sent over ssh, so only its value (fixed when run_pi.sh was invoked) need exist,
+# not the variable itself on the Pi side. Also forces a rebuild whenever set/
+# changed, since it is not reflected in any staged file's mtime.
+if [ -n "${BENCH_CXXFLAGS:-}" ]; then need_build=1; fi
 if [ "\$need_build" = "1" ]; then
     echo "building $BIN ..."
-    time g++ -O3 -mcpu=cortex-a53 -std=c++17 -DBENCH_FN=$FN -DBENCH_REV=$REV $SCALAR_FLAG $SLOT_API_FLAG $FORCE_SCALAR_FLAG \\
+    time g++ -O3 -mcpu=cortex-a53 -std=c++17 ${BENCH_CXXFLAGS:-} -DBENCH_FN=$FN -DBENCH_REV=$REV $SCALAR_FLAG $SLOT_API_FLAG $FORCE_SCALAR_FLAG \\
         ntsc_bench.cpp snes_ntsc.cpp -o $BIN -lpthread
 else
     echo "$BIN up to date, skipping build"

@@ -18,6 +18,19 @@ Updates Sep-26: slot-indexed, phase-major kernel table (Part A of the NTSC filte
                 constant 16-byte window the vector kernel needs - including ones that
                 start before the first real tap or end after the last - stays inside
                 one block without a bounds check.
+                Stage 3: added the run-length ladder (Part C, see
+                tools/ntsc_bench/analysis/ARCHITECTURE.md section 6) inside
+                snes_ntsc_blit_hires_vec(): three more derived tables per slot per phase
+                (plane_pk, plane_ck, plane_flat - exact integer sums of plane's base
+                blocks, kept coherent by gen_slot()/snes_ntsc_update_slot(s)()) let a
+                row classify each 6-pixel chunk once and skip most of the general
+                per-pixel kernel on real content (uniform chunks -> one chunk-kernel
+                load, identical pairs -> one pair-kernel load, steady runs of 3+
+                uniform same-slot chunks -> a precomputed constant, clamped and
+                stored). Still bit-identical to _fast on every input; the general path
+                (Part B) remains exactly as Stage 2 left it and is still what handles
+                the row's prologue/tail edge groups and any pixel the ladder can't
+                shortcut.
 
 Note: SIMD dependent functions e.g. snes_ntsc_blit_hires_fast() require buffers aligned at
       a 64-byte boundary. The per-slot kernel blocks inside snes_ntsc_t are 4-byte-word
@@ -320,6 +333,33 @@ extern "C" {
 	enum { snes_ntsc_block_words = 20 };    // 3 lead zeros + 14 real kernel words + 3 trail zeros
 	enum { snes_ntsc_block_lead  = 3 };     // zero pad words before the first real tap of a block
 	enum { snes_ntsc_slot_words  = 60 };    // 3 alignment blocks x 20 words, per slot per phase
+	enum { snes_ntsc_alignment_count = 3 }; // number of alignment blocks per slot per phase
+
+	// ---- Part C derived tables: the run-length ladder (Stage 3 of the re-architecture,
+	// see tools/ntsc_bench/analysis/ARCHITECTURE.md section 6). All three are exact
+	// integer sums of the base `plane` blocks above, recomputed for a slot every time
+	// gen_slot() (re)generates it, so snes_ntsc_update_slot(s)() keep them coherent
+	// automatically. Same 3-lead-zero-words convention as `plane`'s blocks so every
+	// compile-time-constant 16-byte window the ladder needs lands inside the block
+	// without a bounds check.
+	//
+	// Pair kernel: PK_a[n] = K_a[n] + K_a[n-1], n = 0..14 (15 real words), the exact
+	// contribution of an identical even/odd pixel pair sharing alignment block a. 3 lead
+	// + 15 real + 6 trail = 24 words (wider trailing pad than a K block: a residue-2
+	// window load reaches word 20).
+	enum { snes_ntsc_pk_block_words = 24 };
+	enum { snes_ntsc_pk_slot_words  = (int)snes_ntsc_alignment_count * (int)snes_ntsc_pk_block_words }; // 72
+	// Chunk kernel: CK[n] = PK_0[n] + PK_1[n-2] + PK_2[n-4], n = 0..18 (19 real words),
+	// the exact contribution of a uniform 6-pixel chunk, combining all 3 alignments (one
+	// block per slot per phase, not per-alignment). 3 lead + 19 real + 6 trail = 28 words
+	// (a residue-2 window load reaches word 24).
+	enum { snes_ntsc_ck_words = 28 };
+	// Flat pattern: the RAW (pre-clamp/convert) 7 output words produced by a 12-pixel
+	// window that is all one slot (steady run of 3+ uniform same-slot chunks), plus one
+	// padding word (unused) so the block is 2 vectors' worth. Stored raw, not clamped,
+	// because Alevel is a per-call blitter argument, not known at generation time; the
+	// blitter clamps+converts these 2 vectors cheaply per steady-run chunk it emits.
+	enum { snes_ntsc_flat_words = 8 };
 
 	typedef uint32_t snes_ntsc_rgb_t;           // JJP - was unsigned long
 
@@ -335,6 +375,13 @@ extern "C" {
 		// (plane[b]) is a contiguous, 64-byte-aligned block covering every slot, so a whole
 		// row (which reads one phase throughout) touches one contiguous region of memory.
 		alignas(64) snes_ntsc_rgb_t plane[snes_ntsc_burst_count][snes_ntsc_slot_total][snes_ntsc_slot_words];
+		// Part C run-length ladder derived tables (see the enums above and
+		// tools/ntsc_bench/analysis/ARCHITECTURE.md section 6): pair kernel, chunk kernel,
+		// and flat (steady-run) pattern, phase-major like `plane` for the same row-locality
+		// reason. About 10.6 MB combined, on top of `plane`'s ~5.9 MB.
+		alignas(64) snes_ntsc_rgb_t plane_pk[snes_ntsc_burst_count][snes_ntsc_slot_total][snes_ntsc_alignment_count][snes_ntsc_pk_block_words];
+		alignas(64) snes_ntsc_rgb_t plane_ck[snes_ntsc_burst_count][snes_ntsc_slot_total][snes_ntsc_ck_words];
+		alignas(64) snes_ntsc_rgb_t plane_flat[snes_ntsc_burst_count][snes_ntsc_slot_total][snes_ntsc_flat_words];
 		// Opaque copy of the generator state (decoder matrices, gamma table, rescale
 		// kernels, etc. - see init_t in snes_ntsc_impl.h) plus the merge_fields flag,
 		// captured by snes_ntsc_init() so that snes_ntsc_update_slot(s)() can regenerate

@@ -29,9 +29,20 @@
  * Links only against snes_ntsc.cpp: no SDL, no CMake, no game headers.
  *
  * Runtime flags (see also README.md):
- *   --pattern random|mixed       pixel pattern used to fill the input frame
- *                                 (default random). Ignored when --input is
- *                                 given.
+ *   --pattern random|mixed|runs  pixel pattern used to fill the input frame
+ *                                 (default random). "runs" is a deterministic
+ *                                 (fixed-seed) sequence of runs of random
+ *                                 length 1-48 pixels and random colour; half
+ *                                 the (non-single) runs are pair-doubled
+ *                                 (each successive pair of pixels gets its
+ *                                 own fresh colour, so the run is never
+ *                                 chunk-uniform but every pair is identical)
+ *                                 and every 7th run is forced to one pixel -
+ *                                 see README.md for why this is the reference
+ *                                 pattern for Part C's run-length ladder
+ *                                 (snes_ntsc_blit_hires_vec's uniform/pair/
+ *                                 general classification). Ignored when
+ *                                 --input is given.
  *   --colours N / --colors N     size of the fixed-seed palette, 1-65536
  *                                 (default 256). Ignored when --input is given.
  *   --palette random|contiguous  how palette *values* map onto ntsc table
@@ -236,7 +247,7 @@ static void build_palette(std::vector<uint16_t>& pal, int n, Palette mode) {
     }
 }
 
-enum class Pattern { Random, Mixed };
+enum class Pattern { Random, Mixed, Runs };
 
 // Fills the input frame once; reused unchanged every timed/checksum frame.
 // `palette` selects the *values* stored in the palette (see build_palette);
@@ -265,6 +276,90 @@ static void fill_input(uint16_t* in, int w, int h, Pattern pattern, int colours,
         }
     }
 }
+
+// --pattern runs: deterministic fixed-seed sequence of runs (see README.md and the
+// Stage 3 design brief - Part C's run-length ladder in snes_ntsc_blit_hires_vec). Each
+// row is built as a sequence of runs of random length 1-48 pixels: every 7th run is
+// forced to a single pixel (a lone differing pixel breaks both chunk-uniformity and
+// pair-equality right there, exercising the general per-pixel path and a boundary
+// transition); of the rest, half are "pair-doubled" - instead of one flat run of a
+// single colour (which would just be a longer uniform/steady-run chunk), each
+// successive *pair* of pixels within the run gets its own fresh random colour
+// (c0 c0 c1 c1 c2 c2 ...), so the run is never chunk-uniform but every adjacent pair is
+// identical, exercising the PK pair path specifically rather than letting a cheaper
+// uniform-chunk/steady-run shortcut swallow it. The other half of non-single runs are
+// flat (one colour for the whole run), exercising uniform chunks and steady runs. Run
+// boundaries land at essentially every phase relative to both the 6-pixel chunk grid
+// and the 2-pixel pair grid over many runs/rows, so every alignment and residue the
+// ladder distinguishes gets exercised. Independent fixed-seed RNG stream (not shared
+// with Random/Mixed's 0xA5A5A5A5u) since this is a wholly different generation scheme.
+static void fill_input_runs(uint16_t* in, int w, int h, int colours, Palette palette) {
+    std::vector<uint16_t> pal;
+    build_palette(pal, colours, palette);
+    uint32_t rng = 0x52554e53u; // "RUNS"
+    for (int y = 0; y < h; ++y) {
+        uint16_t* row = in + (size_t)y * w;
+        int x = 0;
+        long run_index = 0;
+        while (x < w) {
+            ++run_index;
+            int run_len = 1 + (int)(xorshift32(rng) % 48u); // 1..48
+            bool single = (run_index % 7) == 0;
+            bool pair_doubled = !single && ((xorshift32(rng) & 1u) == 0u);
+            if (single) {
+                row[x++] = pal[xorshift32(rng) % (uint32_t)colours];
+            } else if (pair_doubled) {
+                for (int i = 0; i < run_len && x < w; ++i) {
+                    uint16_t c = pal[xorshift32(rng) % (uint32_t)colours];
+                    row[x++] = c;
+                    if (x < w) row[x++] = c;
+                }
+            } else {
+                uint16_t c = pal[xorshift32(rng) % (uint32_t)colours];
+                for (int i = 0; i < run_len && x < w; ++i) row[x++] = c;
+            }
+        }
+    }
+}
+
+#ifdef BENCH_SLOT_API
+// Slot-mode counterpart of fill_input_runs(): same run-length algorithm and the same
+// RNG stream/decisions, writing slot indices (0..colours-1) instead of colour values,
+// with colours_out[s] = pal[s] for s<colours so slot s renders the same colour
+// fill_input_runs() would have written directly (mirrors fill_input_slots() above).
+static void fill_input_slots_runs(uint16_t* in, int w, int h, int colours, Palette palette,
+                                   std::vector<uint16_t>& colours_out) {
+    std::vector<uint16_t> pal;
+    build_palette(pal, colours, palette);
+    colours_out.assign((size_t)snes_ntsc_slot_count, (uint16_t)0);
+    for (int s = 0; s < colours; ++s) colours_out[(size_t)s] = pal[(size_t)s];
+
+    uint32_t rng = 0x52554e53u; // "RUNS"
+    for (int y = 0; y < h; ++y) {
+        uint16_t* row = in + (size_t)y * w;
+        int x = 0;
+        long run_index = 0;
+        while (x < w) {
+            ++run_index;
+            int run_len = 1 + (int)(xorshift32(rng) % 48u);
+            bool single = (run_index % 7) == 0;
+            bool pair_doubled = !single && ((xorshift32(rng) & 1u) == 0u);
+            if (single) {
+                row[x++] = (uint16_t)(xorshift32(rng) % (uint32_t)colours);
+            } else if (pair_doubled) {
+                for (int i = 0; i < run_len && x < w; ++i) {
+                    uint16_t s = (uint16_t)(xorshift32(rng) % (uint32_t)colours);
+                    row[x++] = s;
+                    if (x < w) row[x++] = s;
+                }
+            } else {
+                uint16_t s = (uint16_t)(xorshift32(rng) % (uint32_t)colours);
+                for (int i = 0; i < run_len && x < w; ++i) row[x++] = s;
+            }
+        }
+    }
+}
+#endif
 
 #ifdef BENCH_SLOT_API
 // Slot-mode counterpart of fill_input(): the RNG streams (build_palette()'s and this
@@ -526,7 +621,9 @@ int main(int argc, char** argv) {
     const int width  = args.lores ? 320 : (using_input ? (int)in_frames.front().width  : args.width);
     const int height = args.lores ? 224 : (using_input ? (int)in_frames.front().height : args.height);
     const int threads = args.threads;
-    Pattern pattern = (args.pattern == "mixed") ? Pattern::Mixed : Pattern::Random;
+    Pattern pattern = (args.pattern == "mixed") ? Pattern::Mixed
+                     : (args.pattern == "runs") ? Pattern::Runs
+                     : Pattern::Random;
     Palette palette = (args.palette == "contiguous") ? Palette::Contiguous : Palette::Random;
 
 #ifdef BENCH_SLOT_API
@@ -655,10 +752,16 @@ int main(int argc, char** argv) {
         if (!input) { std::printf("alloc buffers failed\n"); return 1; }
 #ifdef BENCH_SLOT_API
         std::vector<uint16_t> colours;
-        fill_input_slots(input, width, height, pattern, args.colours, palette, colours);
+        if (pattern == Pattern::Runs)
+            fill_input_slots_runs(input, width, height, args.colours, palette, colours);
+        else
+            fill_input_slots(input, width, height, pattern, args.colours, palette, colours);
         snes_ntsc_init(ntsc, &setup, colours.data());
 #else
-        fill_input(input, width, height, pattern, args.colours, palette);
+        if (pattern == Pattern::Runs)
+            fill_input_runs(input, width, height, args.colours, palette);
+        else
+            fill_input(input, width, height, pattern, args.colours, palette);
         snes_ntsc_init(ntsc, &setup);
 #endif
     }
