@@ -581,6 +581,15 @@ static void main_loop() {
         totalRenderedFramesForCheck++;  // For performance evaluation
 
         if (using_threading) {
+            // Both render threads and the prepare thread are idle here: the previous
+            // iteration's renderDone0/1 and prepareDone have already been acquired (below,
+            // at the end of the previous iteration), so no render thread is inside
+            // draw_frame()/blargg_filter() reading the NTSC kernel table, and no thread is
+            // currently inside tick()/prepare_frame() calling convert_palette() to mark
+            // slots dirty. This is therefore a safe point to rewrite the table's dirty
+            // slots without locking against a concurrent reader or writer.
+            video.flush_ntsc_palette();
+
             // Set NTSC filter to work on the last complete frame immediately
             renderReady0.release();
             if (render_threads==2) renderReady1.release();
@@ -607,6 +616,13 @@ static void main_loop() {
             tick();
             audio.tick();
             video.prepare_frame();
+
+            // No worker threads exist in this configuration, so this point (after game
+            // logic/convert_palette() calls have finished for this frame, before
+            // render_frame() reads the NTSC kernel table) is always a safe, lock-free
+            // point to rewrite the table's dirty slots.
+            video.flush_ntsc_palette();
+
             video.render_frame(-1);
             video.present_frame();
         }

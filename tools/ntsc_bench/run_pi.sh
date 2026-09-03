@@ -114,6 +114,13 @@ fi
 SCALAR_FLAG=""
 [ "$FN" = "snes_ntsc_blit_hires" ] && SCALAR_FLAG="-DBENCH_SCALAR"
 
+# Auto-detect the slot-indexed API (Part A of the NTSC filter re-architecture): if the
+# staged snes_ntsc.h declares snes_ntsc_update_slot, build ntsc_bench.cpp's
+# -DBENCH_SLOT_API branch to match; older revisions (e.g. 086591c) don't have the symbol,
+# so they build against the classic colour-indexed table unchanged.
+SLOT_API_FLAG=""
+grep -q "snes_ntsc_update_slot" "$STAGE_DIR/snes_ntsc.h" 2>/dev/null && SLOT_API_FLAG="-DBENCH_SLOT_API"
+
 # Pick cores ending at 3 (away from resident services), one per thread, e.g.
 # --threads 2 -> "2,3", to actually exercise multi-core scaling.
 THREADS=1
@@ -144,7 +151,7 @@ for f in ntsc_bench.cpp snes_ntsc.cpp snes_ntsc.h snes_ntsc_config.h snes_ntsc_i
 done
 if [ "\$need_build" = "1" ]; then
     echo "building $BIN ..."
-    time g++ -O3 -mcpu=cortex-a53 -std=c++17 -DBENCH_FN=$FN -DBENCH_REV=$REV $SCALAR_FLAG \\
+    time g++ -O3 -mcpu=cortex-a53 -std=c++17 -DBENCH_FN=$FN -DBENCH_REV=$REV $SCALAR_FLAG $SLOT_API_FLAG \\
         ntsc_bench.cpp snes_ntsc.cpp -o $BIN -lpthread
 else
     echo "$BIN up to date, skipping build"

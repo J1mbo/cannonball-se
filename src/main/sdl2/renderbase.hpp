@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstddef> // For std::size_t
+#include <atomic>
 constexpr std::size_t ALIGNMENT = 16; // 16 for SSE, 32 for AVX
 constexpr std::size_t LOOKUP_SIZE = (32 * 32 * 32 * 2); // 32 colours per channel plus shadow bit
 
@@ -32,6 +33,12 @@ public:
     virtual bool supports_window() { return true; }
     virtual bool supports_vsync() { return false; }
 
+    // Regenerates any NTSC filter kernel slots marked dirty by convert_palette() since the
+    // last call. Called from the main loop at a point where no render thread is active (see
+    // main.cpp), so implementations may rewrite their kernel table without locking. Default
+    // no-op for renderers without an NTSC filter table (e.g. non-Blargg paths).
+    virtual void flush_ntsc_palette() {}
+
     // S16 video hardware ladder DAC values
     alignas(ALIGNMENT) uint32_t rgb_lookup[LOOKUP_SIZE];
 
@@ -43,6 +50,14 @@ protected:
     alignas(ALIGNMENT) uint16_t s16_rgb555[S16_PALETTE_ENTRIES * 2];
     // This palette avoids re-calculating for the Blargg filter for every pixel
     alignas(ALIGNMENT) uint16_t rgb_blargg[S16_PALETTE_ENTRIES * 2];
+
+    // Dirty-slot tracking for incremental NTSC filter kernel regeneration (Part A of the
+    // NTSC filter re-architecture). Set by convert_palette() (called synchronously on the
+    // game-logic thread for every palette RAM write); drained by flush_ntsc_palette() at a
+    // point in the main loop where no render thread is active. One byte per slot rather
+    // than a bitset so convert_palette()'s hot path is a plain flag test-and-set.
+    alignas(ALIGNMENT) uint8_t ntsc_slot_dirty[S16_PALETTE_ENTRIES * 2];
+    std::atomic<uint32_t> ntsc_dirty_count{0};
 
     uint32_t *screen_pixels;
 

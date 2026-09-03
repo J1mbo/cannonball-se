@@ -13,6 +13,18 @@
  *                         reference; also switches the output width formula
  *                         to match the non-SIMD game build.
  * -DBENCH_REV=<token>     free-form revision tag, printed in the RESULT line.
+ * -DBENCH_SLOT_API        build against the slot-indexed snes_ntsc_init(3-arg)/
+ *                         snes_ntsc_update_slot(s)() API (Part A of the NTSC filter
+ *                         re-architecture) instead of the classic 65536-row,
+ *                         colour-indexed table. Pixel buffers hold palette *slots*
+ *                         (0..8191) rather than looked-up colour values; a synthetic
+ *                         colours[8192] array (or, under --input, each captured
+ *                         frame's own table) is generated to snes_ntsc_init()/
+ *                         snes_ntsc_update_slots() instead. run_host.sh/run_pi.sh add
+ *                         this automatically when the staged snes_ntsc.h defines
+ *                         snes_ntsc_update_slot. Without it, this file builds and
+ *                         behaves exactly as it did before the re-architecture
+ *                         (e.g. against revision 086591c).
  *
  * Links only against snes_ntsc.cpp: no SDL, no CMake, no game headers.
  *
@@ -253,6 +265,46 @@ static void fill_input(uint16_t* in, int w, int h, Pattern pattern, int colours,
     }
 }
 
+#ifdef BENCH_SLOT_API
+// Slot-mode counterpart of fill_input(): the RNG streams (build_palette()'s and this
+// function's own xorshift32 sequence) and every spatial decision are byte-for-byte
+// identical to fill_input() above, so the *placement* of each palette entry is
+// unchanged - only what gets written differs. Where fill_input() would write pal[k]
+// (a colour value, looked up directly in the old 65536-row table), this instead writes
+// k itself (a slot index, 0..colours-1) and returns colours_out[8192] with
+// colours_out[s] = pal[s] for s<colours and 0 elsewhere, so that slot k's kernel -
+// generated from colours_out[k] - renders exactly the colour pal[k] the old mode used,
+// keeping the two modes' rendered output (and hence checksums) identical.
+static void fill_input_slots(uint16_t* in, int w, int h, Pattern pattern, int colours,
+                              Palette palette, std::vector<uint16_t>& colours_out) {
+    std::vector<uint16_t> pal;
+    build_palette(pal, colours, palette);
+
+    colours_out.assign((size_t)snes_ntsc_slot_count, (uint16_t)0);
+    for (int s = 0; s < colours; ++s) colours_out[(size_t)s] = pal[(size_t)s];
+
+    uint32_t rng = 0xA5A5A5A5u;
+    for (int y = 0; y < h; ++y) {
+        uint16_t* row = in + (size_t)y * w;
+        bool noisy_third = (pattern == Pattern::Random) ||
+                            (y >= 2 * h / 3);          // mixed: bottom third
+        bool gradient_third = (pattern == Pattern::Mixed) &&
+                               (y >= h / 3) && (y < 2 * h / 3);
+        for (int x = 0; x < w; ++x) {
+            if (noisy_third) {
+                uint32_t r = xorshift32(rng);
+                row[x] = (uint16_t)(r % (uint32_t)colours); // slot index, not pal[]
+            } else if (gradient_third) {
+                int idx = (x * colours / w) % colours;
+                row[x] = (uint16_t)idx;
+            } else {
+                row[x] = 0; // flat "sky" band -> slot 0 (colours_out[0] == pal[0])
+            }
+        }
+    }
+}
+#endif
+
 // 64-bit FNV-1a, run cumulatively across the three checksum frames.
 static uint64_t fnv1a(const void* data, size_t len, uint64_t h) {
     const uint8_t* p = (const uint8_t*)data;
@@ -458,11 +510,34 @@ int main(int argc, char** argv) {
                     (int)in_frames.size(), in_frames.front().width, in_frames.front().height);
     }
 
+#ifdef BENCH_SLOT_API
+    // The slot-indexed table has exactly snes_ntsc_slot_count addressable live slots
+    // (standard + shadow), matching S16_PALETTE_ENTRIES*2 in the game - every captured
+    // frame's table must be exactly that size for frame.table to be usable as the
+    // colours array snes_ntsc_init()/snes_ntsc_update_slot(s)() expect.
+    if (using_input && (int)in_frames.front().palette_entries != snes_ntsc_slot_count) {
+        std::printf("error: --input frame(s) have palette_entries=%u, expected %d under BENCH_SLOT_API\n",
+                    in_frames.front().palette_entries, (int)snes_ntsc_slot_count);
+        return 1;
+    }
+#endif
+
     const int width  = args.lores ? 320 : (using_input ? (int)in_frames.front().width  : args.width);
     const int height = args.lores ? 224 : (using_input ? (int)in_frames.front().height : args.height);
     const int threads = args.threads;
     Pattern pattern = (args.pattern == "mixed") ? Pattern::Mixed : Pattern::Random;
     Palette palette = (args.palette == "contiguous") ? Palette::Contiguous : Palette::Random;
+
+#ifdef BENCH_SLOT_API
+    // The slot-indexed table only has snes_ntsc_slot_count addressable live slots (see
+    // above), a hard cap the old 65536-row table did not have - clamp and warn rather
+    // than silently misbehaving (colours beyond the cap would alias to slot 0 = black).
+    if (!using_input && args.colours > (int)snes_ntsc_slot_count) {
+        std::printf("warning: --colours %d exceeds the slot-indexed table's capacity (%d); clamping\n",
+                    args.colours, (int)snes_ntsc_slot_count);
+        args.colours = (int)snes_ntsc_slot_count;
+    }
+#endif
 
 #ifdef BENCH_SCALAR
     const int out_width = args.lores ? SNES_NTSC_OUT_WIDTH(320) : SNES_NTSC_OUT_WIDTH(width >> 1); // matches non-SIMD game build
@@ -496,7 +571,8 @@ int main(int argc, char** argv) {
         "none";
 #endif
 
-    std::printf("ntsc_bench fn=%s rev=%s simd=%s\n", fn_name, STR(BENCH_REV), simd);
+    std::printf("ntsc_bench fn=%s rev=%s simd=%s sizeof_ntsc=%zu\n",
+                fn_name, STR(BENCH_REV), simd, sizeof(snes_ntsc_t));
     if (args.lores) {
         std::printf("geometry: in %dx%d -> out_width=%d out_pitch=%ld  lores=1 pattern=%s colours=%d threads=%d\n",
                     width, height, out_width, out_pitch, args.pattern.c_str(), args.colours, threads);
@@ -525,7 +601,57 @@ int main(int argc, char** argv) {
     // Mimic RenderSurface::init_blargg_filter(): composite preset with merge_fields cleared.
     snes_ntsc_setup_t setup = snes_ntsc_composite;
     setup.merge_fields = 0;
-    snes_ntsc_init(ntsc, &setup);
+
+    // ---- input buffers -----------------------------------------------------
+    // Synthetic (default / --lores) modes fill one buffer once and reuse it every frame,
+    // as before. --input instead needs one 64-byte-aligned copy of each loaded frame's
+    // pixel data - the SIMD blitters require 64-byte alignment (see the note atop
+    // snes_ntsc.h) and std::vector's allocator gives no such guarantee, so the
+    // file-loaded data can't be handed to them directly.
+    //
+    // Under BENCH_SLOT_API the pixel buffers hold slot indices (not colour values), and
+    // snes_ntsc_init() is fed a colours[] array separately: fill_input_slots()'s
+    // colours_out for synthetic/--lores, or the first loaded frame's table for --input
+    // (current_table tracks what the ntsc object's slots currently reflect, so later
+    // frames with a different table can be applied incrementally - see sync_to_frame()
+    // below).
+    uint16_t* input = nullptr;
+    std::vector<uint16_t*> input_aligned; // one per loaded frame, --input only
+    const size_t pixel_bytes = (size_t)width * height * sizeof(uint16_t);
+#ifdef BENCH_SLOT_API
+    std::vector<uint16_t> current_table; // --input only; snapshot of what ntsc holds now
+#endif
+
+    if (using_input) {
+        input_aligned.assign(in_frames.size(), nullptr);
+        for (size_t i = 0; i < in_frames.size(); ++i) {
+            uint16_t* buf = (uint16_t*)aligned_alloc64(pixel_bytes);
+            if (!buf) { std::printf("alloc input buffer failed\n"); return 1; }
+#ifdef BENCH_SLOT_API
+            std::memcpy(buf, in_frames[i].raw.data(), pixel_bytes);
+#else
+            std::memcpy(buf, in_frames[i].colour.data(), pixel_bytes);
+#endif
+            input_aligned[i] = buf;
+        }
+#ifdef BENCH_SLOT_API
+        current_table = in_frames.front().table;
+        snes_ntsc_init(ntsc, &setup, current_table.data());
+#else
+        snes_ntsc_init(ntsc, &setup);
+#endif
+    } else {
+        input = (uint16_t*)aligned_alloc64(pixel_bytes);
+        if (!input) { std::printf("alloc buffers failed\n"); return 1; }
+#ifdef BENCH_SLOT_API
+        std::vector<uint16_t> colours;
+        fill_input_slots(input, width, height, pattern, args.colours, palette, colours);
+        snes_ntsc_init(ntsc, &setup, colours.data());
+#else
+        fill_input(input, width, height, pattern, args.colours, palette);
+        snes_ntsc_init(ntsc, &setup);
+#endif
+    }
 
 #if defined(__linux__)
     if (args.hugepages) {
@@ -535,30 +661,34 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    // ---- input buffers ---------------------------------------------------
-    // Synthetic (default / --lores) modes fill one buffer once and reuse it
-    // every frame, as before. --input instead needs one 64-byte-aligned copy
-    // of each loaded frame's colour[] - the SIMD blitters require 64-byte
-    // alignment (see the note atop snes_ntsc.h) and std::vector's allocator
-    // gives no such guarantee, so the file-loaded colour[] can't be handed
-    // to them directly.
-    uint16_t* input = nullptr;
-    std::vector<uint16_t*> input_aligned; // one per loaded frame, --input only
-    const size_t pixel_bytes = (size_t)width * height * sizeof(uint16_t);
-
+    // Regenerates whichever slots differ between in_frames[idx].table and the ntsc
+    // object's current contents (tracked in current_table), applying only the diff via
+    // snes_ntsc_update_slots(). No-op (returns 0) outside --input. See the call sites
+    // in the timed and checksum loops below.
+#ifdef BENCH_SLOT_API
+    std::vector<int> upd_slots;
+    std::vector<unsigned short> upd_colours;
     if (using_input) {
-        input_aligned.assign(in_frames.size(), nullptr);
-        for (size_t i = 0; i < in_frames.size(); ++i) {
-            uint16_t* buf = (uint16_t*)aligned_alloc64(pixel_bytes);
-            if (!buf) { std::printf("alloc input buffer failed\n"); return 1; }
-            std::memcpy(buf, in_frames[i].colour.data(), pixel_bytes);
-            input_aligned[i] = buf;
-        }
-    } else {
-        input = (uint16_t*)aligned_alloc64(pixel_bytes);
-        if (!input) { std::printf("alloc buffers failed\n"); return 1; }
-        fill_input(input, width, height, pattern, args.colours, palette);
+        upd_slots.reserve((size_t)snes_ntsc_slot_count);
+        upd_colours.reserve((size_t)snes_ntsc_slot_count);
     }
+    auto sync_to_frame = [&](size_t idx) -> int {
+        if (!using_input) return 0;
+        upd_slots.clear();
+        upd_colours.clear();
+        const std::vector<uint16_t>& tbl = in_frames[idx].table;
+        for (int s = 0; s < (int)snes_ntsc_slot_count; ++s) {
+            if (tbl[(size_t)s] != current_table[(size_t)s]) {
+                upd_slots.push_back(s);
+                upd_colours.push_back(tbl[(size_t)s]);
+                current_table[(size_t)s] = tbl[(size_t)s];
+            }
+        }
+        if (!upd_slots.empty())
+            snes_ntsc_update_slots(ntsc, upd_slots.data(), (int)upd_slots.size(), upd_colours.data());
+        return (int)upd_slots.size();
+    };
+#endif
 
     uint32_t* out = (uint32_t*)aligned_alloc64((size_t)out_width * height * sizeof(uint32_t));
     if (!out) { std::printf("alloc buffers failed\n"); return 1; }
@@ -593,29 +723,48 @@ int main(int argc, char** argv) {
     // from before). --input: frame (i % N) in loaded order, at *that frame's
     // own recorded* phase - mirrors what the game hands the blitter frame to
     // frame, rather than a fixed 3-phase cycle.
-    auto pick = [&](long i) -> std::pair<const uint16_t*, int> {
+    auto pick = [&](long i) -> std::tuple<const uint16_t*, int, size_t> {
         if (using_input) {
             size_t idx = (size_t)(i % (long)in_frames.size());
-            return { input_aligned[idx], (int)in_frames[idx].phase };
+            return { input_aligned[idx], (int)in_frames[idx].phase, idx };
         }
-        return { input, (int)(i % 3) };
+        return { input, (int)(i % 3), (size_t)0 };
     };
 
-    // Warm-up
+    // Warm-up. Deliberately does not call sync_to_frame(): its output is discarded and
+    // not timed, so a --input run may render a handful of warm-up frames against a
+    // slightly stale table (harmless) rather than spend untimed work keeping it current.
+    // The timed and checksum loops below each sync before their own use of a frame, so
+    // correctness never depends on what warm-up leaves behind.
     for (long i = 0; i < 10; ++i) {
-        auto picked = pick(i);
-        run_frame(picked.first, picked.second);
+        auto [buf, ph, idx] = pick(i);
+        (void)idx;
+        run_frame(buf, ph);
     }
 
-    // Timed loop
+    // Timed loop. Each iteration's wall time (t0..t1, "ms" below) covers both the
+    // per-frame slot-table sync (sync_to_frame(), which calls snes_ntsc_update_slots() in
+    // bulk for whatever slots differ - never per-slot) and the blit itself; update_ms is
+    // sync_to_frame()'s own share of that, timed separately with steady_clock so
+    // filter-only time can be recovered as ms - update_ms. 0.00/0 outside --input +
+    // BENCH_SLOT_API, where sync_to_frame() is a no-op.
     using clk = std::chrono::steady_clock;
-    double min_ms = 1e18, max_ms = 0.0, total_ms = 0.0;
+    double min_ms = 1e18, max_ms = 0.0, total_ms = 0.0, total_update_ms = 0.0;
     long frames = 0;
+    long slot_updates = 0; // --input + BENCH_SLOT_API only; 0 otherwise
     auto run_start = clk::now();
     while (std::chrono::duration<double>(clk::now() - run_start).count() < args.seconds) {
-        auto picked = pick(frames);
+        auto [buf, ph, idx] = pick(frames);
         auto t0 = clk::now();
-        run_frame(picked.first, picked.second);
+#ifdef BENCH_SLOT_API
+        auto tu0 = clk::now();
+        slot_updates += sync_to_frame(idx);
+        auto tu1 = clk::now();
+        total_update_ms += std::chrono::duration<double, std::milli>(tu1 - tu0).count();
+#else
+        (void)idx;
+#endif
+        run_frame(buf, ph);
         auto t1 = clk::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         if (ms < min_ms) min_ms = ms;
@@ -625,6 +774,7 @@ int main(int argc, char** argv) {
     }
     double mean_ms = (frames > 0) ? total_ms / (double)frames : 0.0;
     double fps = (mean_ms > 0.0) ? 1000.0 / mean_ms : 0.0;
+    double update_ms = (frames > 0) ? total_update_ms / (double)frames : 0.0;
 
     // Correctness checksum.
     // Default / --lores: 3 more frames at phases 0,1,2, FNV-1a accumulated
@@ -660,6 +810,13 @@ int main(int argc, char** argv) {
 
     if (using_input) {
         for (size_t i = 0; i < in_frames.size(); ++i) {
+            // Untimed: bring the ntsc object's slots to exactly this frame's table before
+            // blitting it at all three phases, the same way the timed loop does per frame
+            // (but not counted towards the printed slot_updates, which is a timed-loop
+            // metric only) - see sync_to_frame() above. No-op under the old API.
+#ifdef BENCH_SLOT_API
+            sync_to_frame(i);
+#endif
             for (int phase = 0; phase < 3; ++phase) {
                 run_frame(input_aligned[i], phase);
                 checksum = fnv1a(out, out_bytes, checksum);
@@ -681,7 +838,7 @@ int main(int argc, char** argv) {
 
     std::printf("RESULT fn=%s rev=%s simd=%s w=%d h=%d pattern=%s colours=%d threads=%d "
                 "frames=%ld ms=%.2f fps=%.1f min=%.1f max=%.1f checksum=0x%016llx "
-                "palette=%s hugepages=%d inputs=%d lores=%d\n",
+                "palette=%s hugepages=%d inputs=%d lores=%d slot_updates=%ld update_ms=%.2f\n",
                 fn_name, STR(BENCH_REV), simd, width, height,
                 using_input ? "input" : args.pattern.c_str(),
                 using_input ? 0 : args.colours, threads, frames, mean_ms, fps, min_ms, max_ms,
@@ -689,7 +846,9 @@ int main(int argc, char** argv) {
                 using_input ? "n/a" : args.palette.c_str(),
                 args.hugepages ? 1 : 0,
                 using_input ? (int)in_frames.size() : 0,
-                args.lores ? 1 : 0);
+                args.lores ? 1 : 0,
+                slot_updates,
+                update_ms);
 
     if (input) aligned_free64(input);
     for (auto* p : input_aligned) aligned_free64(p);

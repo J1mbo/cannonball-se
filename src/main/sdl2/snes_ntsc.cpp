@@ -103,7 +103,72 @@ static void correct_errors(snes_ntsc_rgb_t color, snes_ntsc_rgb_t* out)
 }
 
 
-void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup)
+// ---------------------------------------------------------------------------
+// Slot-indexed, phase-major kernel table (Part A of the NTSC re-architecture,
+// see tools/ntsc_bench/analysis/ARCHITECTURE.md section 4).
+//
+// Opaque copy of the generator state that snes_ntsc_update_slot(s)() needs to
+// regenerate an individual slot later, without the caller having to keep its
+// own snes_ntsc_setup_t around. Stored inside snes_ntsc_t::gen_state, whose
+// size is fixed by the public header, so its fit is checked here.
+struct snes_ntsc_gen_state_t
+{
+    init_t impl;
+    int merge_fields;
+};
+static_assert(sizeof(snes_ntsc_gen_state_t) <= sizeof(snes_ntsc_t::gen_state),
+    "snes_ntsc_gen_state_t must fit inside snes_ntsc_t::gen_state");
+
+// Generates one slot's kernel (all three burst phases) from a packed S16
+// colour value, running exactly the float/YIQ/gen_kernel/merge/correct_errors
+// sequence the old whole-table snes_ntsc_init() ran per colour entry, into a
+// temporary flat buffer shaped like the old table row, then scatters that
+// into the slot-indexed, phase-major, block-padded layout of ntsc->plane
+// (see SNES_NTSC_KW in snes_ntsc.h for the inverse of this scatter, used by
+// the blitters to read it back).
+static void gen_slot(snes_ntsc_t* ntsc, int slot, unsigned short colour,
+    init_t* impl, int merge_fields)
+{
+    unsigned int red_index   = (colour >> 10 & 0x1F) + ((colour >> 15) * 32);
+    unsigned int green_index = (colour >> 5  & 0x1F) + ((colour >> 15) * 32);
+    unsigned int blue_index  = (colour >> 0  & 0x1F) + ((colour >> 15) * 32);
+
+    unsigned int ir = S16_rgbVals[red_index];
+    unsigned int ig = S16_rgbVals[green_index];
+    unsigned int ib = S16_rgbVals[blue_index];
+
+    float rr = impl->to_float[ir];
+    float gg = impl->to_float[ig];
+    float bb = impl->to_float[ib];
+
+    float y, i, q = RGB_TO_YIQ(rr, gg, bb, y, i);
+    int r, g, b = YIQ_TO_RGB(y, i, q, impl->to_rgb, int, r, g);
+    snes_ntsc_rgb_t rgb = PACK_RGB(r, g, b);
+
+    snes_ntsc_rgb_t tmp[snes_ntsc_entry_size]; // classic flat layout: 3 x 42 words
+    gen_kernel(impl, y, i, q, tmp);
+    if (merge_fields) merge_kernel_fields(tmp);
+    correct_errors(rgb, tmp);
+
+    // Scatter tmp[burst_size*b + rgb_kernel_size*a + n] (b<3 bursts, a<3
+    // alignments, n<14 words) into plane[b][slot][block_words*a + n], zeroing
+    // the two pad words of every 16-word alignment block.
+    for (int bidx = 0; bidx < snes_ntsc_burst_count; ++bidx) {
+        snes_ntsc_rgb_t const* src_burst = tmp + burst_size * bidx;
+        snes_ntsc_rgb_t* dst_slot = ntsc->plane[bidx][slot];
+        for (int a = 0; a < alignment_count; ++a) {
+            snes_ntsc_rgb_t const* src = src_burst + rgb_kernel_size * a;
+            snes_ntsc_rgb_t* dst = dst_slot + snes_ntsc_block_words * a;
+            for (int n = 0; n < rgb_kernel_size; ++n)
+                dst[n] = src[n];
+            dst[14] = 0;
+            dst[15] = 0;
+        }
+    }
+}
+
+void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup,
+    unsigned short const* slot_colours)
 {
     int merge_fields;
     init_t impl;
@@ -115,57 +180,65 @@ void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup)
     if (setup->artifacts <= -1 && setup->fringing <= -1)
         merge_fields = 1;
 
+    // Persist the generator state so snes_ntsc_update_slot(s)() can later
+    // regenerate individual slots without needing the setup again.
+    {
+        snes_ntsc_gen_state_t* gs = reinterpret_cast<snes_ntsc_gen_state_t*>(ntsc->gen_state);
+        gs->impl = impl;
+        gs->merge_fields = merge_fields;
+    }
+
 #ifdef _OPENMP
 #pragma omp parallel
     {
         init_t impl_local = impl; // or use firstprivate(impl)
         int merge_fields_local = merge_fields;
-        int entry;
+        int slot;
 
 #pragma omp for schedule(static)
-        for (entry = 0; entry < snes_ntsc_palette_size; ++entry) {
-            unsigned int red_index = (entry >> 10 & 0x1F) + ((entry >> 15) * 32);
-            unsigned int green_index = (entry >> 5 & 0x1F) + ((entry >> 15) * 32);
-            unsigned int blue_index = (entry >> 0 & 0x1F) + ((entry >> 15) * 32);
-
-            unsigned int ir = S16_rgbVals[red_index];
-            unsigned int ig = S16_rgbVals[green_index];
-            unsigned int ib = S16_rgbVals[blue_index];
-
-            float rr = impl_local.to_float[ir];
-            float gg = impl_local.to_float[ig];
-            float bb = impl_local.to_float[ib];
-
-            float y, i, q = RGB_TO_YIQ(rr, gg, bb, y, i);
-            int r, g, b = YIQ_TO_RGB(y, i, q, impl_local.to_rgb, int, r, g);
-            snes_ntsc_rgb_t rgb = PACK_RGB(r, g, b);
-
-            snes_ntsc_rgb_t* out = ntsc->table[entry];
-            gen_kernel(&impl_local, y, i, q, out);
-            if (merge_fields_local) merge_kernel_fields(out);
-            correct_errors(rgb, out);
+        for (slot = 0; slot < snes_ntsc_slot_total; ++slot) {
+            // Slots 0..snes_ntsc_slot_count-1 are live palette entries (standard +
+            // shadow); the black slot and the spare slot beyond it are always black.
+            unsigned short colour = (slot < snes_ntsc_slot_count)
+                ? (slot_colours ? slot_colours[slot] : (unsigned short)0)
+                : (unsigned short)0;
+            gen_slot(ntsc, slot, colour, &impl_local, merge_fields_local);
         }
     }
     #else
-        for (unsigned int entry = 0; entry < snes_ntsc_palette_size; entry++) {
-            unsigned int red_index   = (entry >> 10 & 0x1F) + ((entry >> 15) * 32);
-            unsigned int green_index = (entry >> 5  & 0x1F) + ((entry >> 15) * 32);
-            unsigned int blue_index  = (entry >> 0  & 0x1F) + ((entry >> 15) * 32);
-            unsigned int ir = S16_rgbVals[red_index];
-            unsigned int ig = S16_rgbVals[green_index];
-            unsigned int ib = S16_rgbVals[blue_index];
-            float rr = impl.to_float[ir];
-            float gg = impl.to_float[ig];
-            float bb = impl.to_float[ib];
-            float y, i, q = RGB_TO_YIQ(rr, gg, bb, y, i);
-            int r, g, b = YIQ_TO_RGB(y, i, q, impl.to_rgb, int, r, g);
-            snes_ntsc_rgb_t rgb = PACK_RGB(r, g, b);
-            snes_ntsc_rgb_t* out = ntsc->table[entry];
-            gen_kernel(&impl, y, i, q, out);
-            if (merge_fields) merge_kernel_fields(out);
-            correct_errors(rgb, out);
+        for (int slot = 0; slot < snes_ntsc_slot_total; slot++) {
+            unsigned short colour = (slot < snes_ntsc_slot_count)
+                ? (slot_colours ? slot_colours[slot] : (unsigned short)0)
+                : (unsigned short)0;
+            gen_slot(ntsc, slot, colour, &impl, merge_fields);
         }
     #endif
+}
+
+void snes_ntsc_update_slot(snes_ntsc_t* ntsc, int slot, unsigned short colour)
+{
+    snes_ntsc_gen_state_t* gs = reinterpret_cast<snes_ntsc_gen_state_t*>(ntsc->gen_state);
+    gen_slot(ntsc, slot, colour, &gs->impl, gs->merge_fields);
+}
+
+void snes_ntsc_update_slots(snes_ntsc_t* ntsc, int const* slots, int count,
+    unsigned short const* slot_colours)
+{
+    snes_ntsc_gen_state_t* gs = reinterpret_cast<snes_ntsc_gen_state_t*>(ntsc->gen_state);
+    init_t* impl = &gs->impl;
+    int merge_fields = gs->merge_fields;
+
+#ifdef _OPENMP
+    if (count > 64) {
+        int i;
+#pragma omp parallel for schedule(static)
+        for (i = 0; i < count; ++i)
+            gen_slot(ntsc, slots[i], slot_colours[i], impl, merge_fields);
+        return;
+    }
+#endif
+    for (int i = 0; i < count; ++i)
+        gen_slot(ntsc, slots[i], slot_colours[i], impl, merge_fields);
 }
 
 #ifndef SNES_NTSC_NO_BLITTERS
@@ -178,7 +251,7 @@ void snes_ntsc_blit(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long i
     {
         SNES_NTSC_IN_T const* line_in = input;
         SNES_NTSC_BEGIN_ROW(ntsc, burst_phase,
-            snes_ntsc_black, snes_ntsc_black, SNES_NTSC_ADJ_IN(*line_in));
+            snes_ntsc_black_slot, snes_ntsc_black_slot, SNES_NTSC_ADJ_IN(*line_in));
         snes_ntsc_out_t* restrict line_out = (snes_ntsc_out_t*)rgb_out;
         int n;
         ++line_in;
@@ -204,15 +277,15 @@ void snes_ntsc_blit(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long i
         }
 
         /* finish final pixels */
-        SNES_NTSC_COLOR_IN(0, snes_ntsc_black);
+        SNES_NTSC_COLOR_IN(0, snes_ntsc_black_slot);
         SNES_NTSC_RGB_OUT(0, line_out[0], SNES_NTSC_OUT_DEPTH, Alevel);
         SNES_NTSC_RGB_OUT(1, line_out[1], SNES_NTSC_OUT_DEPTH, Alevel);
 
-        SNES_NTSC_COLOR_IN(1, snes_ntsc_black);
+        SNES_NTSC_COLOR_IN(1, snes_ntsc_black_slot);
         SNES_NTSC_RGB_OUT(2, line_out[2], SNES_NTSC_OUT_DEPTH, Alevel);
         SNES_NTSC_RGB_OUT(3, line_out[3], SNES_NTSC_OUT_DEPTH, Alevel);
 
-        SNES_NTSC_COLOR_IN(2, snes_ntsc_black);
+        SNES_NTSC_COLOR_IN(2, snes_ntsc_black_slot);
         SNES_NTSC_RGB_OUT(4, line_out[4], SNES_NTSC_OUT_DEPTH, Alevel);
         SNES_NTSC_RGB_OUT(5, line_out[5], SNES_NTSC_OUT_DEPTH, Alevel);
         SNES_NTSC_RGB_OUT(6, line_out[6], SNES_NTSC_OUT_DEPTH, Alevel);
@@ -234,7 +307,7 @@ void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, 
     {
         SNES_NTSC_IN_T const* line_in = input;
         SNES_NTSC_HIRES_ROW(ntsc, burst_phase,
-            snes_ntsc_black, snes_ntsc_black, snes_ntsc_black,
+            snes_ntsc_black_slot, snes_ntsc_black_slot, snes_ntsc_black_slot,
             SNES_NTSC_ADJ_IN(line_in[0]),
             SNES_NTSC_ADJ_IN(line_in[1]));
         snes_ntsc_out_t* restrict line_out = (snes_ntsc_out_t*)rgb_out;
@@ -268,22 +341,22 @@ void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, 
             line_out += 7;
         }
 
-        SNES_NTSC_COLOR_IN(0, snes_ntsc_black);
+        SNES_NTSC_COLOR_IN(0, snes_ntsc_black_slot);
         SNES_NTSC_HIRES_OUT(0, line_out[0], SNES_NTSC_OUT_DEPTH, Alevel);
 
-        SNES_NTSC_COLOR_IN(1, snes_ntsc_black);
+        SNES_NTSC_COLOR_IN(1, snes_ntsc_black_slot);
         SNES_NTSC_HIRES_OUT(1, line_out[1], SNES_NTSC_OUT_DEPTH, Alevel);
 
-        SNES_NTSC_COLOR_IN(2, snes_ntsc_black);
+        SNES_NTSC_COLOR_IN(2, snes_ntsc_black_slot);
         SNES_NTSC_HIRES_OUT(2, line_out[2], SNES_NTSC_OUT_DEPTH, Alevel);
 
-        SNES_NTSC_COLOR_IN(3, snes_ntsc_black);
+        SNES_NTSC_COLOR_IN(3, snes_ntsc_black_slot);
         SNES_NTSC_HIRES_OUT(3, line_out[3], SNES_NTSC_OUT_DEPTH, Alevel);
 
-        SNES_NTSC_COLOR_IN(4, snes_ntsc_black);
+        SNES_NTSC_COLOR_IN(4, snes_ntsc_black_slot);
         SNES_NTSC_HIRES_OUT(4, line_out[4], SNES_NTSC_OUT_DEPTH, Alevel);
 
-        SNES_NTSC_COLOR_IN(5, snes_ntsc_black);
+        SNES_NTSC_COLOR_IN(5, snes_ntsc_black_slot);
         SNES_NTSC_HIRES_OUT(5, line_out[5], SNES_NTSC_OUT_DEPTH, Alevel);
 
         SNES_NTSC_HIRES_OUT(6, line_out[6], SNES_NTSC_OUT_DEPTH, Alevel);
@@ -435,7 +508,7 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
 
         // and use the first two pixels for this initial block
         SNES_NTSC_HIRES_ROW(ntsc, burst_phase,
-            snes_ntsc_black, snes_ntsc_black, snes_ntsc_black,
+            snes_ntsc_black_slot, snes_ntsc_black_slot, snes_ntsc_black_slot,
             SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 0)),
             SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 1)));
         snes_ntsc_out_t* restrict line_out = (snes_ntsc_out_t*)rgb_out;
@@ -642,16 +715,16 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
             SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm3, 3)));
             xmm13 = INSERT_SIMD_REGISTER_VALUE(xmm13, SNES_NTSC_HIRES_OUT_SIMD(1), 3);
 
-            SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(snes_ntsc_black));
+            SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(snes_ntsc_black_slot));
             xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(2), 0);
 
-            SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(snes_ntsc_black));
+            SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(snes_ntsc_black_slot));
             xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(3), 1);
 
-            SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(snes_ntsc_black));
+            SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(snes_ntsc_black_slot));
             xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(4), 2);
 
-            SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(snes_ntsc_black));
+            SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(snes_ntsc_black_slot));
             xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(5), 3);
 
             xmm15 = ZERO_SIMD_REGISTER; // 7th output of this block is black, and 3 pixels padding to retain alignment

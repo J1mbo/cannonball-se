@@ -210,6 +210,11 @@ void Video::render_frame(int fastpass)
     renderer->draw_frame(renderer_pixels, fastpass);
 }
 
+void Video::flush_ntsc_palette()
+{
+    renderer->flush_ntsc_palette();
+}
+
 void Video::present_frame()
 {
 	renderer->finalize_frame();

@@ -50,6 +50,7 @@ public:
     void prepare_frame();
     void render_frame(int fastpass);
     void present_frame();
+    void flush_ntsc_palette();
     bool supports_window();
     bool supports_vsync();
 

@@ -5,9 +5,17 @@
 Updates for CannonBall-SE are Copyright (c) 2025, James Pearce:
 - to provide S16 emulation at 24-bit output depth,
 - to provide SIMD optimised processing for clamp and RGB conversion.
+Updates Sep-26: slot-indexed, phase-major kernel table (Part A of the NTSC filter
+                re-architecture). The table is now addressed by palette *slot*
+                (0..4095 standard, 4096..8191 shadow, plus one reserved black slot),
+                not by a 16-bit packed colour value, and is generated/regenerated one
+                slot at a time via snes_ntsc_update_slot()/snes_ntsc_update_slots()
+                so a palette RAM write no longer requires a full table rebuild.
 
 Note: SIMD dependent functions e.g. snes_ntsc_blit_hires_fast() require buffers aligned at
-      a 64-byte boundary.
+      a 64-byte boundary. The per-slot kernel blocks inside snes_ntsc_t are separately
+      64-byte aligned (see snes_ntsc_block_words below) so that no blitter load crosses
+      a cache line within one alignment block.
 */
 
 #ifndef SNES_NTSC_H
@@ -121,10 +129,25 @@ extern "C" {
 	extern snes_ntsc_setup_t const snes_ntsc_rgb;       /* crisp image */
 	extern snes_ntsc_setup_t const snes_ntsc_monochrome;/* desaturated + artifacts */
 
-	/* Initializes and adjusts parameters. Can be called multiple times on the same
-	snes_ntsc_t object. Can pass NULL for either parameter. */
+	/* Initializes and adjusts parameters, generating every slot's kernel from
+	slot_colours[0..snes_ntsc_slot_count-1] (packed S16 colour values, same encoding as
+	SNES_NTSC_S16 below). Can be called multiple times on the same snes_ntsc_t object.
+	setup NULL means composite video; slot_colours NULL means every slot is black. */
 	typedef struct snes_ntsc_t snes_ntsc_t;
-	void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup);
+	void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup,
+		unsigned short const* slot_colours);
+
+	/* Regenerates the kernel for one slot (0..snes_ntsc_slot_count-1) from a new packed
+	S16 colour value, without touching any other slot. Must be called with the same
+	setup that was last passed to snes_ntsc_init() (the setup/decoder state is cached
+	inside *ntsc). Safe to call repeatedly as individual palette RAM entries change. */
+	void snes_ntsc_update_slot(snes_ntsc_t* ntsc, int slot, unsigned short colour);
+
+	/* Bulk form of snes_ntsc_update_slot(): regenerates 'count' slots, given as parallel
+	arrays of slot indices and their new colour values. Parallelised with OpenMP when
+	count is large (see snes_ntsc.cpp) and the build has OpenMP available. */
+	void snes_ntsc_update_slots(snes_ntsc_t* ntsc, int const* slots, int count,
+		unsigned short const* slot_colours);
 
 	/* Filters one or more rows of pixels. Input pixel format is set by SNES_NTSC_IN_FORMAT
 	and output RGB depth is set by SNES_NTSC_OUT_DEPTH. Both default to 16-bit RGB.
@@ -165,15 +188,16 @@ extern "C" {
 
 	enum { snes_ntsc_in_chunk = 3 }; /* number of input pixels read per chunk */
 	enum { snes_ntsc_out_chunk = 7 }; /* number of output pixels generated per chunk */
-	enum { snes_ntsc_black = 0 }; /* palette index for black */
+	enum { snes_ntsc_black = 0 }; /* legacy colour value for black; unused by the slot-indexed
+	                                  blitters below, which pad rows with snes_ntsc_black_slot
+	                                  instead (see the slot-indexed table section further down) */
 	enum { snes_ntsc_burst_count = 3 }; /* burst phase cycles through 0, 1, and 2 */
 
 	/* Begins outputting row and starts three pixels. First pixel will be cut off a bit.
-	Use snes_ntsc_black for unused pixels. Declares variables, so must be before first
+	Use snes_ntsc_black_slot for unused pixels. Declares variables, so must be before first
 	statement in a block (unless you're using C++). */
 #define SNES_NTSC_BEGIN_ROW( ntsc, burst, pixel0, pixel1, pixel2 ) \
-	char const* ktable = \
-		(char const*) (ntsc)->table + burst * (snes_ntsc_burst_size * sizeof (snes_ntsc_rgb_t));\
+	char const* ktable = (char const*) (ntsc)->plane[burst];\
 	SNES_NTSC_BEGIN_ROW_6_( pixel0, pixel1, pixel2, SNES_NTSC_IN_FORMAT, ktable )
 
 	/* Begins input pixel */
@@ -193,8 +217,7 @@ extern "C" {
 
 /* Hires equivalents */
 #define SNES_NTSC_HIRES_ROW( ntsc, burst, pixel1, pixel2, pixel3, pixel4, pixel5 ) \
-	char const* ktable = \
-		(char const*) (ntsc)->table + burst * (snes_ntsc_burst_size * sizeof (snes_ntsc_rgb_t));\
+	char const* ktable = (char const*) (ntsc)->plane[burst];\
 	unsigned const snes_ntsc_pixel1_ = (pixel1);\
 	snes_ntsc_rgb_t const* kernel1  = SNES_NTSC_IN_FORMAT( ktable, snes_ntsc_pixel1_ );\
 	unsigned const snes_ntsc_pixel2_ = (pixel2);\
@@ -216,10 +239,10 @@ extern "C" {
 
 #define SNES_NTSC_HIRES_OUT( x, rgb_out, bits, Alevel ) {\
 	snes_ntsc_rgb_t raw_ =\
-		kernel0  [ x       ] + kernel2  [(x+5)%7+14] + kernel4  [(x+3)%7+28] +\
-		kernelx0 [(x+7)%7+7] + kernelx2 [(x+5)%7+21] + kernelx4 [(x+3)%7+35] +\
-		kernel1  [(x+6)%7  ] + kernel3  [(x+4)%7+14] + kernel5  [(x+2)%7+28] +\
-		kernelx1 [(x+6)%7+7] + kernelx3 [(x+4)%7+21] + kernelx5 [(x+2)%7+35];\
+		kernel0  [SNES_NTSC_KW( x       )] + kernel2  [SNES_NTSC_KW((x+5)%7+14)] + kernel4  [SNES_NTSC_KW((x+3)%7+28)] +\
+		kernelx0 [SNES_NTSC_KW((x+7)%7+7)] + kernelx2 [SNES_NTSC_KW((x+5)%7+21)] + kernelx4 [SNES_NTSC_KW((x+3)%7+35)] +\
+		kernel1  [SNES_NTSC_KW((x+6)%7  )] + kernel3  [SNES_NTSC_KW((x+4)%7+14)] + kernel5  [SNES_NTSC_KW((x+2)%7+28)] +\
+		kernelx1 [SNES_NTSC_KW((x+6)%7+7)] + kernelx3 [SNES_NTSC_KW((x+4)%7+21)] + kernelx5 [SNES_NTSC_KW((x+2)%7+35)];\
 	SNES_NTSC_CLAMP_AND_CONVERT_SCALAR( raw_, Alevel );\
 	rgb_out = raw_;\
 }
@@ -227,10 +250,10 @@ extern "C" {
 // this version ONLY does the maths on each pixel. Clamp and RGB_OUT are skipped,
 // since this can be done in parallel across all outputs later
 #define SNES_NTSC_HIRES_OUT_SIMD_( x ) (\
-		kernel0  [ x       ] + kernel2  [(x+5)%7+14] + kernel4  [(x+3)%7+28] +\
-		kernelx0 [(x+7)%7+7] + kernelx2 [(x+5)%7+21] + kernelx4 [(x+3)%7+35] +\
-		kernel1  [(x+6)%7  ] + kernel3  [(x+4)%7+14] + kernel5  [(x+2)%7+28] +\
-		kernelx1 [(x+6)%7+7] + kernelx3 [(x+4)%7+21] + kernelx5 [(x+2)%7+35]\
+		kernel0  [SNES_NTSC_KW( x       )] + kernel2  [SNES_NTSC_KW((x+5)%7+14)] + kernel4  [SNES_NTSC_KW((x+3)%7+28)] +\
+		kernelx0 [SNES_NTSC_KW((x+7)%7+7)] + kernelx2 [SNES_NTSC_KW((x+5)%7+21)] + kernelx4 [SNES_NTSC_KW((x+3)%7+35)] +\
+		kernel1  [SNES_NTSC_KW((x+6)%7  )] + kernel3  [SNES_NTSC_KW((x+4)%7+14)] + kernel5  [SNES_NTSC_KW((x+2)%7+28)] +\
+		kernelx1 [SNES_NTSC_KW((x+6)%7+7)] + kernelx3 [SNES_NTSC_KW((x+4)%7+21)] + kernelx5 [SNES_NTSC_KW((x+2)%7+35)]\
 )
 
 // this version attempts to encourage instruction level parrallelism on ARMv7
@@ -238,25 +261,62 @@ extern "C" {
 #define SNES_NTSC_HIRES_OUT_SIMD(x)                                               \
 ([&]() noexcept -> uint32_t {                                                     \
     uint32_t a0 = 0, a1 = 0, a2 = 0;                                              \
-    a0 += kernel0 [ (x)              ] + kernelx0 [ ((x)+7)%7 +  7 ];             \
-    a1 += kernel2 [ ((x)+5)%7 + 14   ] + kernelx2 [ ((x)+5)%7 + 21 ];             \
-    a2 += kernel4 [ ((x)+3)%7 + 28   ] + kernelx4 [ ((x)+3)%7 + 35 ];             \
-    a0 += kernel1 [ ((x)+6)%7        ] + kernelx1 [ ((x)+6)%7 +  7 ];             \
-    a1 += kernel3 [ ((x)+4)%7 + 14   ] + kernelx3 [ ((x)+4)%7 + 21 ];             \
-    a2 += kernel5 [ ((x)+2)%7 + 28   ] + kernelx5 [ ((x)+2)%7 + 35 ];             \
+    a0 += kernel0 [ SNES_NTSC_KW((x)             ) ] + kernelx0 [ SNES_NTSC_KW(((x)+7)%7 +  7) ]; \
+    a1 += kernel2 [ SNES_NTSC_KW(((x)+5)%7 + 14  ) ] + kernelx2 [ SNES_NTSC_KW(((x)+5)%7 + 21) ]; \
+    a2 += kernel4 [ SNES_NTSC_KW(((x)+3)%7 + 28  ) ] + kernelx4 [ SNES_NTSC_KW(((x)+3)%7 + 35) ]; \
+    a0 += kernel1 [ SNES_NTSC_KW(((x)+6)%7       ) ] + kernelx1 [ SNES_NTSC_KW(((x)+6)%7 +  7) ]; \
+    a1 += kernel3 [ SNES_NTSC_KW(((x)+4)%7 + 14  ) ] + kernelx3 [ SNES_NTSC_KW(((x)+4)%7 + 21) ]; \
+    a2 += kernel5 [ SNES_NTSC_KW(((x)+2)%7 + 28  ) ] + kernelx5 [ SNES_NTSC_KW(((x)+2)%7 + 35) ]; \
     return a0 + a1 + a2;                                                          \
 }())
 
 /* private */
 #include <stdint.h>
-	enum { snes_ntsc_entry_size = 128 };
-	enum { snes_ntsc_palette_size = 0x10000 };  // JJP - S16 is 5 bits per channel and two tables (std/shadow).
-	                                            // Hilite not use in Outun so support removed.
+	enum { snes_ntsc_entry_size = 128 }; // JJP - size (words) of the temporary, flat per-colour
+	                                     // kernel entry used only during slot generation (see
+	                                     // gen_slot() in snes_ntsc.cpp); not a table dimension
+	                                     // any more, kept purely as scratch-buffer sizing.
+
+	// ---- Slot-indexed, phase-major kernel table (Part A of the NTSC re-architecture) ----
+	// The table is addressed by *slot*, not by a 16-bit packed colour value: slots 0..4095
+	// are standard palette entries, 4096..8191 are their shadow counterparts (exactly the
+	// range of values already present in the emulator's S16 pixel buffer), slot 8192 is
+	// reserved for black (used by the blitters to pad the start/end of each row) and slot
+	// 8193 is a spare, also always black, kept only for layout symmetry/future use. Each
+	// slot holds one burst-phase's kernel as three 16-word "alignment blocks" (64 bytes
+	// each): the first 14 words are real kernel taps (see SNES_NTSC_KW below for how a
+	// classic 0..41 kernel-word index maps into this padded layout), the last 2 words of
+	// every block are always zero so that no blitter load can read past real data. This
+	// costs about 14% extra memory (48 words allocated per slot per phase versus 42
+	// actually used) in exchange for every load an output group needs staying inside one
+	// 64-byte line.
+	enum { snes_ntsc_slot_count  = 8192 };  // std (0..4095) + shadow (4096..8191)
+	enum { snes_ntsc_black_slot  = 8192 };  // reserved slot for black; used as row padding
+	enum { snes_ntsc_slot_total  = 8194 };  // slot_count + black_slot + one spare slot
+	enum { snes_ntsc_block_words = 16 };    // 14 real kernel words + 2 zero pad words
+	enum { snes_ntsc_slot_words  = 48 };    // 3 alignment blocks x 16 words, per slot per phase
+
 	typedef uint32_t snes_ntsc_rgb_t;           // JJP - was unsigned long
+
+	// Maps a classic kernel-word index (0..41, i.e. 3 alignment blocks of 14 words: block b
+	// occupies words 14b..14b+13) into the padded, 16-word-block layout used by `plane`
+	// below (block b now occupies words 16b..16b+13, with words 16b+14/16b+15 always zero).
+	// Every caller passes a compile-time-constant `w`, so this folds away entirely.
+#define SNES_NTSC_KW( w ) (((w) / 14) * 16 + ((w) % 14))
+
 	struct snes_ntsc_t {
-		snes_ntsc_rgb_t table[snes_ntsc_palette_size][snes_ntsc_entry_size];
+		// plane[burst phase][slot][word within slot's 3x16-word kernel]. One phase's plane
+		// (plane[b]) is a contiguous, 64-byte-aligned block covering every slot, so a whole
+		// row (which reads one phase throughout) touches one contiguous region of memory.
+		alignas(64) snes_ntsc_rgb_t plane[snes_ntsc_burst_count][snes_ntsc_slot_total][snes_ntsc_slot_words];
+		// Opaque copy of the generator state (decoder matrices, gamma table, rescale
+		// kernels, etc. - see init_t in snes_ntsc_impl.h) plus the merge_fields flag,
+		// captured by snes_ntsc_init() so that snes_ntsc_update_slot(s)() can regenerate
+		// an individual slot's kernel later without needing the original snes_ntsc_setup_t.
+		// Sized generously (init_t is about 3 KB); actual size is static_assert-checked
+		// against snes_ntsc_gen_state_t in snes_ntsc.cpp.
+		alignas(16) unsigned char gen_state[8192];
 	};
-	enum { snes_ntsc_burst_size = snes_ntsc_entry_size / snes_ntsc_burst_count };
 
 #define SNES_NTSC_RGB16( ktable, n ) \
 	(snes_ntsc_rgb_t const*) (ktable + ((n & 0x001E) | (n >> 1 & 0x03E0) | (n >> 2 & 0x3C00)) * \
@@ -267,13 +327,17 @@ extern "C" {
 	(snes_ntsc_rgb_t const*) (ktable + ((n & 0x001F) | (n & 0x07E0) | (n & 0xF800)) * \
 			(snes_ntsc_entry_size / 1 * sizeof (snes_ntsc_rgb_t)))
 
-// following input expects S16 palette entries (5 bits per channel),
-// organised as
-// R - bit 14-10, G - bit 9-5, B - bit 0-4
-// Bits 15-16: 00b = standard, 01b = shadow, 10b = highlight
+// Slot-indexed input: 'n' is a direct slot number (0..snes_ntsc_slot_count-1 for a live
+// palette entry - standard in 0..4095, shadow in 4096..8191 - or snes_ntsc_black_slot /
+// the spare slot for padding), exactly the value already carried by the emulator's S16
+// pixel buffer. 'ktable' is the current burst phase's plane base, as set up by
+// SNES_NTSC_BEGIN_ROW/SNES_NTSC_HIRES_ROW (ntsc->plane[burst]); no bit shuffling of 'n'
+// is performed, unlike SNES_NTSC_RGB16 above. The 5-bit-per-channel packed colour value
+// this slot corresponds to (R bit 14-10, G bit 9-5, B bit 0-4, bit 15 = shadow) is only
+// consulted at *generation* time (snes_ntsc_init/snes_ntsc_update_slot(s)), not here.
 #define SNES_NTSC_S16( ktable, n ) \
-	(snes_ntsc_rgb_t const*) (ktable + (n * \
-			(snes_ntsc_entry_size / 1 * sizeof (snes_ntsc_rgb_t))))
+	(snes_ntsc_rgb_t const*) (ktable + ((n) * \
+			(snes_ntsc_slot_words * sizeof (snes_ntsc_rgb_t))))
 
 #define SNES_NTSC_BGR15( ktable, n ) \
 	(snes_ntsc_rgb_t const*) (ktable + ((n << 9 & 0x3C00) | (n & 0x03E0) | (n >> 10 & 0x001E)) * \
@@ -293,8 +357,8 @@ extern "C" {
 
 #define SNES_NTSC_RGB_OUT_14_( x, rgb_out, bits, shift, Alevel ) {\
     snes_ntsc_rgb_t raw_ =\
-        kernel0  [x       ] + kernel1  [(x+12)%7+14] + kernel2  [(x+10)%7+28] +\
-        kernelx0 [(x+7)%14] + kernelx1 [(x+ 5)%7+21] + kernelx2 [(x+ 3)%7+35];\
+        kernel0  [SNES_NTSC_KW(x       )] + kernel1  [SNES_NTSC_KW((x+12)%7+14)] + kernel2  [SNES_NTSC_KW((x+10)%7+28)] +\
+        kernelx0 [SNES_NTSC_KW((x+7)%14)] + kernelx1 [SNES_NTSC_KW((x+ 5)%7+21)] + kernelx2 [SNES_NTSC_KW((x+ 3)%7+35)];\
         SNES_NTSC_CLAMP_( raw_, shift );                                      \
         SNES_NTSC_RGB_OUT_( rgb_out, bits, shift, Alevel );                   \
 }

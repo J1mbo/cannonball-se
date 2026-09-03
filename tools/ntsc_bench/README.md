@@ -276,10 +276,31 @@ the 24 captured frames above, gating every later stage's real-content claims.
 --seconds 5`, median of three runs; `vcgencmd get_throttled` read `0x0`
 before and after every run below (no thermal throttling, all runs).
 
-| Function (rev) | ms/frame (median of 3) | fps | checksum (24 frames x 3 phases) |
-|---|---|---|---|
-| snes_ntsc_blit_hires_fast (086591c) | 5.43 | 184.1 | 0xe3557fa06310379d |
-| snes_ntsc_blit_hires scalar (086591c) | 11.33 | 88.3 | 0xa01757db54ee3c6f |
+| Function (rev) | ms/frame (median of 3) | fps | checksum (24 frames x 3 phases) | update_ms | filter-only (ms - update_ms) |
+|---|---|---|---|---|---|
+| snes_ntsc_blit_hires_fast (086591c) | 5.43 | 184.1 | 0xe3557fa06310379d | n/a | n/a |
+| snes_ntsc_blit_hires scalar (086591c) | 11.33 | 88.3 | 0xa01757db54ee3c6f | n/a | n/a |
+| snes_ntsc_blit_hires_fast (WT, slot-indexed table - Stage 1) | 7.72 | 129.5 | 0xe3557fa06310379d | 2.09 | 5.63 |
+| snes_ntsc_blit_hires scalar (WT, slot-indexed table - Stage 1) | 13.41 | 74.6 | 0xa01757db54ee3c6f | 2.10 | 11.31 |
+
+The Stage 1 rows are `run_pi.sh WT`, same host/settings, `--seconds 5`, median of 3.
+`ms` is unchanged in meaning (t0..t1 around `sync_to_frame()` + the blit, per frame);
+`update_ms` is `sync_to_frame()`'s own share of that, timed separately with
+`steady_clock` and printed by the bench as `update_ms=<avg ms/frame>`
+(`snes_ntsc_update_slots()` in bulk for whatever slots differ between one loaded
+frame's table and the next - never per-slot); `filter-only` is `ms - update_ms`,
+comparable to the 086591c baseline since it excludes the table-regeneration work
+that baseline never had to do. Filter-only lands within 0.2 ms of the 086591c
+baseline for both blitters (5.63 vs 5.43, 11.31 vs 11.33 ms) - the blit itself is
+unaffected by the slot-indexed table, as expected. `update_ms` (~2.1 ms) is the
+cost of `sync_to_frame()` diffing all 8192 slots and regenerating the ones that
+differ every time the timed loop switches to a different loaded frame
+(`slot_updates` in the RESULT line is 100k-180k over a 5 s run, i.e. hundreds of
+slots per frame); this is a worst case of the mechanism, not of real gameplay -
+the 24 files are frames sampled far apart from one attract-mode capture, so
+consecutive *loaded* frames differ far more than consecutive *in-game* frames
+ever would (ARCHITECTURE.md section 4 estimates under 1 ms for the worst
+per-frame case actually seen in the game, e.g. sky-cycling).
 
 **The scalar checksum matches the host (WSL/SSE4) figure in the
 reference-checksums table above bit-for-bit, as expected - but the `_fast`

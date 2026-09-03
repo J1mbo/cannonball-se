@@ -148,28 +148,16 @@ void RenderSurface::disable()
 
 
 void RenderSurface::create_buffers() {
-    uint32_t pixels;
-	uint16_t* t32p;
-
-    // keep 64-byte alignment for SIMD/cache friendliness
-    constexpr std::size_t alignment = CB_PIXEL_ALIGNMENT;
-
-    // allocates pixel buffers
-    pixels = src_width * src_height;
-    std::size_t size = pixels *sizeof(uint16_t);
-
-    rgb_pixels = static_cast<uint16_t*>(::operator new(size, std::align_val_t(alignment)));
-    t32p = rgb_pixels;
-
-	while (pixels--) *(t32p++) = 0x0000; // fill with black
+    // Historically allocated the rgb_pixels scratch buffer used to hold the S16-slot ->
+    // colour conversion of the game image before handing it to the Blargg blitters. Under
+    // the slot-indexed NTSC filter table, blargg_filter() hands the game's S16 pixel buffer
+    // straight to the blitters (see SNES_NTSC_S16 in snes_ntsc.h), so there is no longer a
+    // conversion buffer to allocate here. Kept as a no-op call site for symmetry with
+    // destroy_buffers() and in case a future working buffer is needed again.
 }
 
 void RenderSurface::destroy_buffers() {
-    // deallocates the pixel buffers
-    if (rgb_pixels) {
-        ::operator delete(rgb_pixels, std::align_val_t(CB_PIXEL_ALIGNMENT));
-    }
-    rgb_pixels = nullptr;
+    // See create_buffers() above - nothing to release any more.
 }
 
 void RenderSurface::init_blargg_filter()
@@ -220,9 +208,51 @@ void RenderSurface::init_blargg_filter()
         setup.gamma = double(config.video.gamma) / 10;
         setup.resolution = double(config.video.resolution) / 100;
 
-        snes_ntsc_init(ntsc, &setup); // configure the library
+        // (Re)generate every slot's kernel from the current rgb_blargg colour table, then
+        // mark the dirty set clean - a full init already reflects every live palette entry,
+        // so there is nothing left for flush_ntsc_palette() to redo for this table.
+        snes_ntsc_init(ntsc, &setup, rgb_blargg);
+        memset(ntsc_slot_dirty, 0, sizeof(ntsc_slot_dirty));
+        ntsc_dirty_count.store(0, std::memory_order_relaxed);
     }
     else snes_src_width = src_width; // provides constraint to buffer allocation
+}
+
+
+void RenderSurface::flush_ntsc_palette()
+{
+    // Regenerates every NTSC filter kernel slot marked dirty since the last flush. Called
+    // from main.cpp at a point in the main loop where both render threads (and the prepare
+    // thread) are idle, so the table can be rewritten without locking against a concurrent
+    // reader - see the call sites in main.cpp for why that is safe.
+    if (!blargg) return;
+    uint32_t dirty_count = ntsc_dirty_count.load(std::memory_order_relaxed);
+    if (dirty_count == 0) return;
+
+    // Small, fixed-size batches: gather up to this many dirty slots at a time and hand them
+    // to snes_ntsc_update_slots() (which parallelises internally via OpenMP once a batch is
+    // large enough). Sized comfortably above the worst per-frame case seen in the game
+    // (~128 slots during the sky-cycling Easter egg; see GRAPHICS_SETUP.md section 5).
+    constexpr int kBatchSize = 512;
+    int slots[kBatchSize];
+    unsigned short colours[kBatchSize];
+    int n = 0;
+
+    const int total_slots = static_cast<int>(S16_PALETTE_ENTRIES) * 2;
+    for (int slot = 0; slot < total_slots; ++slot) {
+        if (!ntsc_slot_dirty[slot]) continue;
+        ntsc_slot_dirty[slot] = 0;
+        slots[n] = slot;
+        colours[n] = rgb_blargg[slot];
+        ++n;
+        if (n == kBatchSize) {
+            snes_ntsc_update_slots(ntsc, slots, n, colours);
+            n = 0;
+        }
+    }
+    if (n > 0) snes_ntsc_update_slots(ntsc, slots, n, colours);
+
+    ntsc_dirty_count.fetch_sub(dirty_count, std::memory_order_relaxed);
 }
 
 
@@ -975,49 +1005,36 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
         this_section = 0;
     }
 
-    uint16_t* spix = gamePixels + (this_section * src_pixel_count); // S16 Output
-    uint16_t* bpix = rgb_pixels + (this_section * src_pixel_count); // converted colour buffer
+    uint16_t* spix = gamePixels + (this_section * src_pixel_count); // S16 Output (slot indices)
 
     if (blargg) {
-        // convert pixel data to format used by Blarrg filtering code
-
-        // translate game image to lookup format that Blargg filter will use
-        long pixel_count = (src_pixel_count) >> 2; // unroll 4:1
-		while (pixel_count--) {
-            // translate game image to lookup format that Blargg filter will use to
-            // convert to RGB output levels in one step based on pre-defined S16-correct DAC output values
-            *(bpix+0) = rgb_blargg[*(spix+0)];
-            *(bpix+1) = rgb_blargg[*(spix+1)];
-            *(bpix+2) = rgb_blargg[*(spix+2)];
-            *(bpix+3) = rgb_blargg[*(spix+3)];
-            bpix += 4;
-            spix += 4;
-        }
-
+        // Under the slot-indexed NTSC filter table, the emulator's S16 pixel buffer already
+        // holds exactly the values the filter table is addressed by (palette slot 0..4095,
+        // +S16_PALETTE_ENTRIES for shadow) - see SNES_NTSC_S16 in snes_ntsc.h - so it is
+        // handed straight to the blitter; there is no per-pixel colour lookup to do here any
+        // more (that conversion now happens once per dirty slot in flush_ntsc_palette()).
         long output_pitch = (snes_src_width << 2); // 4 bytes-per-pixel (8/8/8/8)
 
-        // Set pointers
-        bpix = rgb_pixels + (this_section * src_pixel_count);
         uint32_t* tpix = outputPixels + (this_section * dst_pixel_count);
 
         // Calculated alpha mask
         uint32_t Ashifted = uint32_t(Alevel);// << Ashift;
 
-        // Now call the blargg code, to do the work of translating S16 output to RGB
+        // Now call the blargg code, to do the work of translating S16 slots to RGB
         if (config.video.hires) {
             // hi-res
             #if SNES_NTSC_HAVE_SIMD
                 // Only compiled when the fast function exists
-                snes_ntsc_blit_hires_fast(ntsc, bpix, long(src_width), phase, src_width,
+                snes_ntsc_blit_hires_fast(ntsc, spix, long(src_width), phase, src_width,
                                           block_height, tpix, output_pitch, Ashifted);
             #else
-                snes_ntsc_blit_hires(ntsc, bpix, long(src_width), phase, src_width,
+                snes_ntsc_blit_hires(ntsc, spix, long(src_width), phase, src_width,
                                      block_height, tpix, output_pitch, Ashifted);
             #endif
         }
         else {
             // standard res processing
-            snes_ntsc_blit(ntsc, bpix, long(src_width), phase,
+            snes_ntsc_blit(ntsc, spix, long(src_width), phase,
                 src_width, block_height, tpix, output_pitch, Ashifted);
         }
     }

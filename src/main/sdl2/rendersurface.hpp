@@ -37,6 +37,7 @@ public:
     bool start_frame() {return true;};
     bool finalize_frame();
     void draw_frame(uint16_t* pixels, int fastpass);
+    void flush_ntsc_palette();
 
 private:
     // SDL2 window
@@ -99,7 +100,6 @@ private:
 
     // working buffers for video processing
     uint32_t* game_pixels = 0;
-    uint16_t* rgb_pixels = 0;            // used by Blargg filter
 
 	// Locks due to threaded activity
 	std::mutex drawFrameMutex, finalizeFrameMutex, gpuMutex;

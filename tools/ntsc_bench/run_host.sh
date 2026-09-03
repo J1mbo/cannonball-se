@@ -41,6 +41,13 @@ cp -p "$REPO_ROOT/tools/ntsc_bench/ntsc_bench.cpp" "$STAGE_DIR/ntsc_bench.cpp"
 SCALAR_FLAG=""
 [ "$FN" = "snes_ntsc_blit_hires" ] && SCALAR_FLAG="-DBENCH_SCALAR"
 
+# Auto-detect the slot-indexed API (Part A of the NTSC filter re-architecture): if the
+# staged snes_ntsc.h declares snes_ntsc_update_slot, build ntsc_bench.cpp's
+# -DBENCH_SLOT_API branch to match; older revisions (e.g. 086591c) don't have the symbol,
+# so they build against the classic colour-indexed table unchanged.
+SLOT_API_FLAG=""
+grep -q "snes_ntsc_update_slot" "$STAGE_DIR/snes_ntsc.h" 2>/dev/null && SLOT_API_FLAG="-DBENCH_SLOT_API"
+
 need_build=0
 [ -x "$BIN" ] || need_build=1
 for f in $FILES ntsc_bench.cpp; do
@@ -48,7 +55,7 @@ for f in $FILES ntsc_bench.cpp; do
 done
 if [ "$need_build" = "1" ]; then
     echo "building $BIN ..."
-    g++ -O3 -march=native -std=c++17 -DBENCH_FN="$FN" -DBENCH_REV="$REV" $SCALAR_FLAG \
+    g++ -O3 -march=native -std=c++17 -DBENCH_FN="$FN" -DBENCH_REV="$REV" $SCALAR_FLAG $SLOT_API_FLAG \
         "$STAGE_DIR/ntsc_bench.cpp" "$STAGE_DIR/snes_ntsc.cpp" -o "$BIN" -lpthread
 else
     echo "$BIN up to date, skipping build"
