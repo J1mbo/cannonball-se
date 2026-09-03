@@ -24,6 +24,7 @@ Updates for CannonBall-SE are Copyright (c) 2025-2026 James Pearce:
 #include "snes_ntsc_simd.h" // portable v4u32 SIMD layer for snes_ntsc_blit_hires_vec (Stage 2)
 #include <cstdlib>  // atexit (debug-only FLAT constancy report, see gen_slot())
 #include <atomic>   // debug-only counters below; snes_ntsc_init() regenerates slots under OpenMP
+#include <cstring>  // memset (width-guard fallback in snes_ntsc_blit_hires_vec, see below)
 
 
 /* Copyright (C) 2006-2007 Shay Green. This module is free software; you
@@ -385,7 +386,7 @@ void snes_ntsc_blit(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long i
         SNES_NTSC_IN_T const* line_in = input;
         SNES_NTSC_BEGIN_ROW(ntsc, burst_phase,
             snes_ntsc_black_slot, snes_ntsc_black_slot, SNES_NTSC_ADJ_IN(*line_in));
-        snes_ntsc_out_t* restrict line_out = (snes_ntsc_out_t*)rgb_out;
+        snes_ntsc_out_t* SNES_NTSC_RESTRICT line_out = (snes_ntsc_out_t*)rgb_out;
         int n;
         ++line_in;
 
@@ -800,11 +801,48 @@ static int g_stat_report_installed = (atexit(snes_ntsc_vec_stats_report), 0);
 #define SNES_NTSC_VEC_CHUNK3() SNES_NTSC_VEC_CHUNK_N(3, 5,1, 3,2, 1,3,  \
     18, 0, 5,1, 5,2,   20, 1, 5,3, 6,0,   22, 2, 6,1, 6,2)
 
-void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
-    int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel)
+void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* SNES_NTSC_RESTRICT input, long in_row_width,
+    int burst_phase, int in_width, int in_height, void* SNES_NTSC_RESTRICT rgb_out, long out_pitch, long Alevel)
 {
     const int W = in_width;
+
+    // Kernel invariant: the row must decompose into G whole 24-pixel/28-output groups
+    // (pixels 2..24G+1) plus a fixed 14-pixel tail (pixels W-14..W-1) - i.e. W >= 16 and
+    // W == 16 (mod 24). Every caller in this codebase only ever passes 640 or 808 (both
+    // satisfy this: G = 26 / 33), but nothing upstream actually enforces it, and a custom
+    // or corrupt width would not merely mis-render - the tail's `line_in + (W - 14)`
+    // pointer would land before the start of the row (out-of-bounds read) for any W < 14,
+    // and any non-conforming W leaves the last couple of output columns never written by
+    // either the group loop or the tail. Guard once per call (not per pixel, so free on
+    // the 640/808 path) and fall back to blanking the row rather than reading out of
+    // bounds or leaving stale/uninitialised pixels on screen; every per-row pointer/
+    // counter below is still advanced exactly as the real path does, so a multi-row call
+    // and the caller's own row-advance bookkeeping stay consistent.
+    if (W < 16 || (W - 16) % 24 != 0) {
+        for (; in_height; --in_height) {
+            std::memset(rgb_out, 0, (size_t)out_pitch);
+            burst_phase = (burst_phase + 1) % snes_ntsc_burst_count;
+            input += in_row_width;
+            rgb_out = (char*)rgb_out + out_pitch;
+        }
+        return;
+    }
+
     const int G = (W - 16) / 24; // number of full 24-pixel/28-output groups (26 for 640, 33 for 808)
+
+#ifndef NDEBUG
+    // Debug-only alignment check (see the contract note above this function's declaration
+    // in snes_ntsc.h): the SSE2 backend's aligned store (snes_v4_store_a) faults on a
+    // misaligned rgb_out, and out_pitch not being a multiple of 16 would desync every row
+    // after the first even if row 0 happened to be aligned. One-time-per-call check, not
+    // per-pixel, so it costs nothing in a release (NDEBUG) build.
+    if (((uintptr_t)rgb_out % 16) != 0 || (out_pitch % 16) != 0) {
+        fprintf(stderr, "snes_ntsc_blit_hires_vec: rgb_out (%p) and/or out_pitch (%ld) not "
+            "16-byte aligned - the SSE2 backend's aligned output stores require this.\n",
+            rgb_out, out_pitch);
+    }
+#endif
+
     const uint32_t alevel_u = (uint32_t)Alevel;
     // Stage 3 review, change 3: clamp_mask_vec/clamp_add_vec/alpha_vec are per-call
     // constants (Alevel and the clamp constants never change within one blit call),
@@ -826,12 +864,12 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
 
     for (; in_height; --in_height)
     {
-        const snes_ntsc_rgb_t* restrict P     = (const snes_ntsc_rgb_t*)ntsc->plane[burst_phase];
-        const snes_ntsc_rgb_t* restrict PPK   = (const snes_ntsc_rgb_t*)ntsc->plane_pk[burst_phase];
-        const snes_ntsc_rgb_t* restrict PCK   = (const snes_ntsc_rgb_t*)ntsc->plane_ck[burst_phase];
-        const snes_ntsc_rgb_t* restrict PFLAT = (const snes_ntsc_rgb_t*)ntsc->plane_flat[burst_phase];
-        SNES_NTSC_IN_T const* restrict line_in = input;
-        uint32_t* restrict line_out = (uint32_t*)rgb_out;
+        const snes_ntsc_rgb_t* SNES_NTSC_RESTRICT P     = (const snes_ntsc_rgb_t*)ntsc->plane[burst_phase];
+        const snes_ntsc_rgb_t* SNES_NTSC_RESTRICT PPK   = (const snes_ntsc_rgb_t*)ntsc->plane_pk[burst_phase];
+        const snes_ntsc_rgb_t* SNES_NTSC_RESTRICT PCK   = (const snes_ntsc_rgb_t*)ntsc->plane_ck[burst_phase];
+        const snes_ntsc_rgb_t* SNES_NTSC_RESTRICT PFLAT = (const snes_ntsc_rgb_t*)ntsc->plane_flat[burst_phase];
+        SNES_NTSC_IN_T const* SNES_NTSC_RESTRICT line_in = input;
+        uint32_t* SNES_NTSC_RESTRICT line_out = (uint32_t*)rgb_out;
 
         // Part C classifier state, carried across chunks in processing order for the
         // whole row (see the fused-classifier design comment above
@@ -900,10 +938,10 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
         //    the covered part correctly overwritten - never skipped, only
         //    ever redundant in that one edge case.
         for (int g = 0; g < G; ++g) {
-            uint32_t* restrict out_g = line_out + (size_t)g * 28;
+            uint32_t* SNES_NTSC_RESTRICT out_g = line_out + (size_t)g * 28;
 
             uint32_t slotv[24];
-            SNES_NTSC_IN_T const* restrict p = line_in + 2 + g * 24;
+            SNES_NTSC_IN_T const* SNES_NTSC_RESTRICT p = line_in + 2 + g * 24;
             for (int k = 0; k < 24; ++k) slotv[k] = (uint32_t)p[k];
 
             // Classify this group's 4 chunks from the slots just loaded (see the
@@ -999,14 +1037,14 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
             if (skip2) SNES_NTSC_VEC_CK(skip2_slot, -4, 2);
 
             uint32_t slotv[24];
-            SNES_NTSC_IN_T const* restrict p = line_in + (W - 14);
+            SNES_NTSC_IN_T const* SNES_NTSC_RESTRICT p = line_in + (W - 14);
             for (int k = 0; k < 14; ++k) slotv[k] = (uint32_t)p[k];
             for (int k = 14; k < 24; ++k) slotv[k] = (uint32_t)snes_ntsc_black_slot;
             SNES_NTSC_VEC_GROUP_BODY();
 
             for (int v = 0; v < 5; ++v)
                 A[v] = snes_ntsc_simd_clamp_convert(A[v], clamp_mask_vec, clamp_add_vec, alpha_vec);
-            uint32_t* restrict out_g = line_out + (size_t)G * 28;
+            uint32_t* SNES_NTSC_RESTRICT out_g = line_out + (size_t)G * 28;
             for (int v = 0; v < 5; ++v)
                 snes_v4_store_a(out_g + v * 4, A[v]);
             snes_v4_store_a(out_g + 5 * 4, fixed_tail);

@@ -1179,3 +1179,29 @@ its backend choice never changes output).
   algorithm exactly once the double-counting bug above was fixed; `SNES_NTSC_OUT_WIDTH_HIRES`
   rename with a one-release alias; `RenderSurface`'s unconditional hires dispatch; the
   bench's default `BENCH_FN` and usage text.
+
+## Final measurements after the review pass (sl-d303, 2026-09-03, median of 3, --seconds 5, throttled=0x0 throughout)
+
+Working tree = branch ntsc-rearch after the review fixes. The retired functions were built
+from revision a6dfa98 (stage 3, the last revision that still contained them) in the same
+session. All checksums matched their references.
+
+| Input (640x448, 1 thread) | snes_ntsc_blit_hires_vec | retired _fast | retired scalar |
+|---|---|---|---|
+| random, 256 colours | 14.4 ms | 16.7 ms | 18.6 ms |
+| --pattern mixed | 9.2 ms | 13.5 ms | 14.1 ms |
+| --pattern runs | 11.7 ms | 14.2 ms | 14.6 ms |
+| 24 captured frames, total (incl. 2.5 ms slot regeneration between frames) | 7.8 ms | 8.6 ms | 13.9 ms |
+| 24 captured frames, filter only | 5.3 ms | 6.1 ms | 11.4 ms |
+| random, 16 colours (L1-resident) | 8.1 ms (24 cycles/output) | | |
+| 24 captured frames, 2 threads, total | 6.4 ms | | |
+
+The slot regeneration figure is an artefact of the sparse capture (consecutive samples are
+61 game frames apart); in the game only palette RAM writes trigger it.
+
+MSVC 14.51 (x64, SSE2 backend) builds the bench and reproduces the captured-frame checksum
+0xe3557fa06310379d exactly. Its synthetic-pattern and lores checksums equal those of a GCC
+build with -ffp-contract=off (random 0xc928ffe2395b1fa7, mixed 0x0616580b4a8a3d6e, runs
+0xfead91f93878fb60, lores 0x4724ed67ed2ddebb): the difference from the -march=native
+references is FMA contraction inside the float table generation for a few borderline
+palette entries, which predates this work and does not affect the kernel.

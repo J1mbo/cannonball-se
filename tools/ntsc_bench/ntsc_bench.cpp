@@ -113,6 +113,13 @@
  *                                 addition - does not alter timing, the
  *                                 checksum, or any RESULT field.
  *****************************************************************************/
+
+// MSVC flags fopen() et al as deprecated in favour of the _s variants; this harness is a
+// portable dev tool built with plain fopen(), so silence the warning rather than fork the
+// code path. Must precede every include (including snes_ntsc.h's own <stdlib.h>), since the
+// deprecation attributes live on the CRT declarations pulled in transitively.
+#define _CRT_SECURE_NO_WARNINGS
+
 #include "snes_ntsc.h"
 #include "snes_ntsc_simd.h" // for SNES_NTSC_SIMD_BACKEND_NAME - see the simd= override below
 

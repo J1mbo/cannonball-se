@@ -60,14 +60,16 @@ extern "C" {
 #endif
 
 /* Whether this target has *some* native SIMD ISA available - consulted only by
-   tools/ntsc_bench/ntsc_bench.cpp (to decide whether an explicitly-requested
-   pre-Stage-4 reference function like snes_ntsc_blit_hires_fast can exist at
-   all when built against an older revision's header) and by RenderSurface's
-   invExpandX shader-uniform choice. The engine's own hires blitter,
-   snes_ntsc_blit_hires_vec(), does not consult this: its portable v4u32 layer
-   (snes_ntsc_simd.h) resolves its own backend independently, all the way down
-   to a plain-C fallback, so it is available and correct regardless of this
-   value. */
+   tools/ntsc_bench/ntsc_bench.cpp, to decide whether an explicitly-requested
+   pre-Stage-4 reference function like snes_ntsc_blit_hires_fast can exist at all when
+   built against an older revision's header. Nothing in the engine itself consults this
+   any more as of Stage 4: RenderSurface's invExpandX shader-uniform choice used to
+   branch on it (to pick a different value for the retired non-SIMD hires path) but is
+   now unconditional, since snes_ntsc_blit_hires_vec()'s output width formula
+   (SNES_NTSC_OUT_WIDTH_HIRES) is the same on every platform. snes_ntsc_blit_hires_vec()
+   itself never consulted this either: its portable v4u32 layer (snes_ntsc_simd.h)
+   resolves its own backend independently, all the way down to a plain-C fallback, so it
+   is available and correct regardless of this value. */
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
     #define SNES_NTSC_HAVE_SIMD 1
 #elif defined(_M_X64) || defined(__x86_64__)
@@ -92,26 +94,36 @@ extern "C" {
 #endif
 
 
-// Portable 'restrict' for C and C++. Note - moved from snes_ntsc_impl.h so that the blitters
-// can be defined with 'restrict' parameters
-#ifndef restrict
-  #if defined(__GNUC__) || defined(__clang__)
-    #define restrict __restrict__
-  #elif defined(_MSC_VER) && _MSC_VER > 1300
-    #define restrict __restrict
-  #else
-    /* no support: leave empty */
-    #define restrict
-  #endif
-#endif
-
-// Portable byteswap primitive
+// Portable byteswap primitive. Included before the SNES_NTSC_RESTRICT macro below so that a
+// bare 'restrict' token defined by us never shadows a CRT header pulled in transitively (see
+// SNES_NTSC_RESTRICT's comment for why that matters on MSVC).
 #if defined(_MSC_VER)  // MSVC (Windows)
     #include <stdlib.h>
     #define bswap32(x) _byteswap_ulong(x)
 #else                  // glibc / Linux / other GCC-like
     #include <byteswap.h>
     #define bswap32(x) bswap_32(x)
+#endif
+
+// Portable 'restrict' for C and C++, used on the hires blitter's pointer parameters/locals.
+// Deliberately NOT named 'restrict': a macro with that exact name, if it is in scope when a
+// CRT header is parsed later (e.g. <stdlib.h>/<malloc.h> on MSVC, which declare some
+// allocation functions with '__declspec(restrict)'), text-replaces the 'restrict' token
+// inside '__declspec(restrict)' too, turning it into '__declspec(__restrict)' - not a
+// recognised declspec - and fails with error C2485. This bit the ntsc_bench harness (which
+// parses this header before any CRT header) and would bite snes_ntsc.cpp itself if its own
+// <cstdlib> happened to be reached first; the game build only avoided it because
+// rendersurface.cpp includes the CRT before this header. Named SNES_NTSC_RESTRICT instead so
+// it can never collide with a CRT-declared identifier.
+#ifndef SNES_NTSC_RESTRICT
+  #if defined(__GNUC__) || defined(__clang__)
+    #define SNES_NTSC_RESTRICT __restrict__
+  #elif defined(_MSC_VER) && _MSC_VER > 1300
+    #define SNES_NTSC_RESTRICT __restrict
+  #else
+    /* no support: leave empty */
+    #define SNES_NTSC_RESTRICT
+  #endif
 #endif
 
 	/* Image parameters, ranging from -1.0 to 1.0. Actual internal values shown
@@ -180,9 +192,23 @@ extern "C" {
 	(src/main/sdl2/snes_ntsc_simd.h), with NEON, SSE2 and RVV backends plus a plain-C
 	scalar fallback - so, unlike the retired snes_ntsc_blit_hires_fast(), it is available
 	and correct unconditionally on every build (SNES_NTSC_HAVE_SIMD 0 or 1). Same
-	signature the two retired functions shared. */
-	void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
-		int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel);
+	signature the two retired functions shared.
+
+	Alignment contract (carried forward from the note this replaced - the requirement is
+	smaller now, 16 bytes rather than 64, since a v4u32 lane is a 128-bit SSE2/NEON/RVV
+	register rather than a 64-byte cache line): 'rgb_out' must be 16-byte aligned on every
+	call, and every row after the first inherits that alignment automatically because
+	'out_pitch' is always a multiple of 16 for every width this function accepts (its own
+	width guard enforces out_width = 28*G + 24, always a multiple of 4 pixels). The SSE2
+	backend's aligned store (snes_v4_store_a -> _mm_store_si128) faults on a misaligned
+	pointer; NEON/RVV/the plain-C fallback do not enforce this, but every caller must still
+	satisfy it for portability. In practice this already held for the retired
+	snes_ntsc_blit_hires_fast(), which made the same requirement of the same buffer -
+	RenderSurface's output buffer is malloc-backed (or an SDL surface's own pixel buffer),
+	which is 16-byte aligned on every ABI this engine targets, but this is not asserted
+	anywhere; a debug build that changes the output buffer's allocation should re-check it. */
+	void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* SNES_NTSC_RESTRICT input, long in_row_width,
+		int burst_phase, int in_width, int in_height, void* SNES_NTSC_RESTRICT rgb_out, long out_pitch, long Alevel);
 
 	/* Number of output pixels written by low-res blitter for given input width. Width
 	might be rounded down slightly; use SNES_NTSC_IN_WIDTH() on result to find rounded

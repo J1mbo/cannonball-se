@@ -56,7 +56,17 @@ RenderSurface::~RenderSurface()
 bool RenderSurface::init(int source_width, int source_height,
                          int source_scale, int video_mode_requested, int scanlines_requested)
 {
-    ntsc = (snes_ntsc_t*) malloc( sizeof(snes_ntsc_t) );
+    // snes_ntsc_t (see snes_ntsc.h) has several alignas(64) array members - the NTSC
+    // filter re-architecture's phase-major kernel table - so alignof(snes_ntsc_t) is 64,
+    // not the ~16 bytes plain malloc() guarantees (glibc/ucrt malloc only promise
+    // alignment suitable for std::max_align_t). Placing a 64-byte-aligned type at a
+    // malloc'd address is undefined behaviour regardless of how the table is later
+    // accessed (the blitter happens to use only unaligned SIMD loads/stores on this
+    // table, but the UB is in the object's placement, not in any particular access).
+    // Use aligned ::operator new/delete (standard C++17, portable to MSVC) instead;
+    // sizeof(snes_ntsc_t) is guaranteed a multiple of its own alignment by the language,
+    // so no padding/size adjustment is needed here.
+    ntsc = static_cast<snes_ntsc_t*>(::operator new(sizeof(snes_ntsc_t), std::align_val_t(alignof(snes_ntsc_t))));
     // Can only be called from the thread with the SDL context (usuablly the main thread)
     src_width  = source_width;
     src_height = source_height;
@@ -141,7 +151,10 @@ void RenderSurface::disable()
 
     // Release any additional buffers.
     destroy_buffers();
-    free(ntsc);
+    // Must match the aligned ::operator new(size, align_val_t) used in init() above -
+    // plain free() on a pointer from the aligned overload is undefined behaviour.
+    ::operator delete(ntsc, std::align_val_t(alignof(snes_ntsc_t)));
+    ntsc = nullptr;
 
     initialised = false;
 }
@@ -222,6 +235,28 @@ void RenderSurface::flush_ntsc_palette()
     // from main.cpp at a point in the main loop where both render threads (and the prepare
     // thread) are idle, so the table can be rewritten without locking against a concurrent
     // reader - see the call sites in main.cpp for why that is safe.
+
+    // Apply any change to the Blargg filter settings (those that do not need a full video
+    // restart) here, for the same reason: init_blargg_filter() rewrites the whole kernel
+    // table and resets the dirty-slot state, which must not happen while a render thread
+    // may be reading either. Previously this ran inside draw_frame() on a render thread.
+    if (!config.videoRestartRequired) {
+        int this_blargg_config = get_blargg_config();
+        if (this_blargg_config != last_blargg_config) {
+            // The filter uses doubles internally, so convert the config values to doubles.
+            last_blargg_config =  this_blargg_config;
+            blargg             =  config.video.blargg;
+            setup.saturation   =  double(config.video.saturation) / 100;
+            setup.contrast     =  double(config.video.contrast) / 100;
+            setup.brightness   =  double(config.video.brightness) / 100;
+            setup.sharpness    =  double(config.video.sharpness) / 100;
+            setup.resolution   =  double(config.video.resolution) / 100;
+            setup.gamma        =  double(config.video.gamma) / 10;
+            setup.hue          =  double(config.video.hue) / 100;
+            init_blargg_filter(); // regenerates every slot and clears the dirty set
+        }
+    }
+
     if (!blargg) return;
     uint32_t dirty_count = ntsc_dirty_count.load(std::memory_order_relaxed);
     if (dirty_count == 0) return;
@@ -1444,31 +1479,11 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
         }
     }
 
-    if ((fastpass!=1) && (!config.videoRestartRequired)) {
-        // Check for any changes to the configured video settings (that don't require full SDL restart)
-        // Blargg filter settings. Changing these requires Blargg filter re-initialisation.
-        int this_blargg_config = get_blargg_config();
-        if (this_blargg_config != last_blargg_config) {
-            // Settings have been changed; capture new setting & re-initiatise the Blargg filter library
-            // The filter uses doubles internally, so we need to convert the config values to doubles.
-            last_blargg_config =  this_blargg_config;
-            blargg             =  config.video.blargg;
-            setup.saturation   =  double(config.video.saturation) / 100;
-            setup.contrast     =  double(config.video.contrast) / 100;
-            setup.brightness   =  double(config.video.brightness) / 100;
-            setup.sharpness    =  double(config.video.sharpness) / 100;
-            setup.resolution   =  double(config.video.resolution) / 100;
-            setup.gamma        =  double(config.video.gamma) / 10;
-            setup.hue          =  double(config.video.hue) / 100;
-
-            // pause video whilst this is re-calculated
-            drawFrameMutex.lock();
-            //destroy_buffers();
-            init_blargg_filter();
-            //create_buffers();
-            drawFrameMutex.unlock();
-        }
-    }
+    // Blargg filter settings changes are no longer applied here. Re-initialising the
+    // kernel table from a render thread raced the other render thread's reads of it
+    // (and, since the table became incrementally regenerated, the dirty-slot state that
+    // flush_ntsc_palette() maintains). The check now lives in flush_ntsc_palette(), which
+    // the main loop calls at a point where every worker thread is idle.
 
     // notify disable() that we're done
     activity_counter.fetch_sub(1, std::memory_order_acq_rel);
