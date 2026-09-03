@@ -23,7 +23,18 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STAGE_DIR="$REPO_ROOT/tools/ntsc_bench/stage/host-$REV"
 SRC_DIR="$REPO_ROOT/src/main/sdl2"
 BIN="$STAGE_DIR/bench_$FN"
-FILES="snes_ntsc.cpp snes_ntsc.h snes_ntsc_config.h snes_ntsc_impl.h"
+FILES="snes_ntsc.cpp snes_ntsc.h snes_ntsc_config.h snes_ntsc_impl.h snes_ntsc_simd.h"
+
+# <function>=..._vec_scalar is not a real symbol: it means "build the Stage 2 vector
+# kernel (snes_ntsc_blit_hires_vec) with its portable v4u32 layer forced to the
+# plain-C fallback" (SNES_NTSC_FORCE_SCALAR_SIMD - see snes_ntsc_simd.h), so the
+# fallback backend can be exercised and checksummed on a machine that also has real
+# SIMD. The binary name keeps the _vec_scalar suffix so it doesn't collide with the
+# plain vec build's cache.
+FORCE_SCALAR_FLAG=""
+case "$FN" in
+    *_vec_scalar) FORCE_SCALAR_FLAG="-DSNES_NTSC_FORCE_SCALAR_SIMD"; FN="${FN%_vec_scalar}_vec" ;;
+esac
 
 # See run_pi.sh for why timestamps are handled this way (keeps the
 # "rebuild only if stale" check from re-triggering on every invocation).
@@ -53,9 +64,17 @@ need_build=0
 for f in $FILES ntsc_bench.cpp; do
     [ "$STAGE_DIR/$f" -nt "$BIN" ] 2>/dev/null && need_build=1
 done
+# BENCH_CXXFLAGS: extra compiler flags appended after -march=native, e.g.
+#   BENCH_CXXFLAGS=-march=x86-64 tools/ntsc_bench/run_host.sh WT snes_ntsc_blit_hires_vec
+# lets a later, more specific -march override -march=native (last flag wins with GCC/
+# Clang) so the vec kernel's SSE2-only v4u32 layer can be built and checksummed on a
+# strictly-SSE2 target line even though the host itself is SSE4-capable. Also forces a
+# rebuild whenever set/changed, since it isn't reflected in any staged file's mtime.
+[ -n "${BENCH_CXXFLAGS:-}" ] && need_build=1
 if [ "$need_build" = "1" ]; then
     echo "building $BIN ..."
-    g++ -O3 -march=native -std=c++17 -DBENCH_FN="$FN" -DBENCH_REV="$REV" $SCALAR_FLAG $SLOT_API_FLAG \
+    g++ -O3 -march=native -std=c++17 ${BENCH_CXXFLAGS:-} \
+        -DBENCH_FN="$FN" -DBENCH_REV="$REV" $SCALAR_FLAG $SLOT_API_FLAG $FORCE_SCALAR_FLAG \
         "$STAGE_DIR/ntsc_bench.cpp" "$STAGE_DIR/snes_ntsc.cpp" -o "$BIN" -lpthread
 else
     echo "$BIN up to date, skipping build"

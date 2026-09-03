@@ -34,7 +34,17 @@ SRC_DIR="$REPO_ROOT/src/main/sdl2"
 PI_HOST="sl-d303"
 PI_DIR="ntsc_bench/$REV"
 BIN="bench_$FN"
-FILES="snes_ntsc.cpp snes_ntsc.h snes_ntsc_config.h snes_ntsc_impl.h"
+FILES="snes_ntsc.cpp snes_ntsc.h snes_ntsc_config.h snes_ntsc_impl.h snes_ntsc_simd.h"
+
+# <function>=..._vec_scalar is not a real symbol: see run_host.sh - it means "build
+# snes_ntsc_blit_hires_vec with SNES_NTSC_FORCE_SCALAR_SIMD", exercising the v4u32
+# layer's plain-C fallback on hardware (here, NEON-capable) that would otherwise pick
+# a real backend. $BIN keeps the _vec_scalar-suffixed name (set above) so its build
+# doesn't collide with the plain vec build's cache; $FN is remapped for -DBENCH_FN.
+FORCE_SCALAR_FLAG=""
+case "$FN" in
+    *_vec_scalar) FORCE_SCALAR_FLAG="-DSNES_NTSC_FORCE_SCALAR_SIMD"; FN="${FN%_vec_scalar}_vec" ;;
+esac
 
 # ---- 1. stage the four filter files + the bench source --------------------
 # Timestamps matter here: the Pi-side build is skipped when the binary is
@@ -146,12 +156,12 @@ set -e
 cd "$PI_DIR"
 need_build=0
 [ -x "$BIN" ] || need_build=1
-for f in ntsc_bench.cpp snes_ntsc.cpp snes_ntsc.h snes_ntsc_config.h snes_ntsc_impl.h; do
+for f in ntsc_bench.cpp snes_ntsc.cpp snes_ntsc.h snes_ntsc_config.h snes_ntsc_impl.h snes_ntsc_simd.h; do
     [ "\$f" -nt "$BIN" ] 2>/dev/null && need_build=1
 done
 if [ "\$need_build" = "1" ]; then
     echo "building $BIN ..."
-    time g++ -O3 -mcpu=cortex-a53 -std=c++17 -DBENCH_FN=$FN -DBENCH_REV=$REV $SCALAR_FLAG $SLOT_API_FLAG \\
+    time g++ -O3 -mcpu=cortex-a53 -std=c++17 -DBENCH_FN=$FN -DBENCH_REV=$REV $SCALAR_FLAG $SLOT_API_FLAG $FORCE_SCALAR_FLAG \\
         ntsc_bench.cpp snes_ntsc.cpp -o $BIN -lpthread
 else
     echo "$BIN up to date, skipping build"

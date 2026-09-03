@@ -95,6 +95,7 @@
  *                                 checksum, or any RESULT field.
  *****************************************************************************/
 #include "snes_ntsc.h"
+#include "snes_ntsc_simd.h" // for SNES_NTSC_SIMD_BACKEND_NAME - see the simd= override below
 
 #include <cstdio>
 #include <cstdlib>
@@ -556,7 +557,7 @@ int main(int argc, char** argv) {
     const BlitFn blit_fn = args.lores ? (BlitFn)&snes_ntsc_blit : (BlitFn)&BENCH_FN;
     const char* fn_name  = args.lores ? "snes_ntsc_blit" : STR(BENCH_FN);
 
-    const char* simd =
+    const char* simd_isa =
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
         "NEON";
 #elif defined(SNES_NTSC_HAVE_RVV)
@@ -570,6 +571,15 @@ int main(int argc, char** argv) {
 #else
         "none";
 #endif
+
+    // snes_ntsc_blit_hires_vec() (Stage 2) is built on its own portable v4u32 SIMD
+    // layer (snes_ntsc_simd.h), whose backend selection is independent of - and can
+    // differ from - the compile-time ISA detected above: SNES_NTSC_FORCE_SCALAR_SIMD
+    // (the "_vec_scalar" bench target mapped by run_host.sh/run_pi.sh) forces the
+    // layer to its plain-C fallback even on a NEON/SSE2 host. Whenever the function
+    // under test is the vec kernel (fn_name contains "_vec"), report what the layer
+    // actually resolved to (NEON/SSE2/RVV/scalar) instead of simd_isa.
+    const char* simd = (std::strstr(fn_name, "_vec") != nullptr) ? SNES_NTSC_SIMD_BACKEND_NAME : simd_isa;
 
     std::printf("ntsc_bench fn=%s rev=%s simd=%s sizeof_ntsc=%zu\n",
                 fn_name, STR(BENCH_REV), simd, sizeof(snes_ntsc_t));

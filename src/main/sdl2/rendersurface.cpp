@@ -1024,8 +1024,10 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
         if (config.video.hires) {
             // hi-res
             #if SNES_NTSC_HAVE_SIMD
-                // Only compiled when the fast function exists
-                snes_ntsc_blit_hires_fast(ntsc, spix, long(src_width), phase, src_width,
+                // Stage 2 of the NTSC filter re-architecture: the portable vector kernel
+                // (snes_ntsc_blit_hires_vec, src/main/sdl2/snes_ntsc.cpp) replaces the
+                // per-ISA _fast blitter here; bit-identical output, see snes_ntsc_simd.h.
+                snes_ntsc_blit_hires_vec(ntsc, spix, long(src_width), phase, src_width,
                                           block_height, tpix, output_pitch, Ashifted);
             #else
                 snes_ntsc_blit_hires(ntsc, spix, long(src_width), phase, src_width,

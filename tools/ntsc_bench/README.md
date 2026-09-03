@@ -20,7 +20,18 @@ g++ -O3 -mcpu=cortex-a53 -std=c++17 \
 - `-DBENCH_REV=<token>` - free-form revision tag, printed in the `RESULT` line.
 
 The same source builds unmodified against commit `086591c` (`_fast` only),
-the working tree (`_fast` + `_fast2`), or a future rewrite.
+the working tree (`_fast` + `_fast2` + Stage 2's `_vec`), or a future rewrite.
+
+`run_host.sh` also honours a `BENCH_CXXFLAGS` environment variable, appended after
+`-march=native` (last flag wins), so a more specific `-march` can override it - e.g.
+`BENCH_CXXFLAGS=-march=x86-64 tools/ntsc_bench/run_host.sh WT snes_ntsc_blit_hires_vec`
+builds and runs the vector kernel against a strictly-SSE2 target line even on an
+SSE4/AVX2-capable host, to check its v4u32 layer really only needs SSE2. Both driver
+scripts also recognise `<function>` ending in `_vec_scalar` as shorthand for "build
+`snes_ntsc_blit_hires_vec` with `-DSNES_NTSC_FORCE_SCALAR_SIMD`" (see
+`snes_ntsc_simd.h`), which forces the portable SIMD layer to its plain-C fallback even
+on NEON/SSE2-capable hardware, e.g. `run_host.sh WT snes_ntsc_blit_hires_vec_scalar` or
+`run_pi.sh WT snes_ntsc_blit_hires_vec_scalar`.
 
 ## Usage
 
@@ -106,7 +117,11 @@ RESULT fn=snes_ntsc_blit_hires_fast rev=086591c simd=NEON w=640 h=448 \
 ```
 
 `fn`/`rev` identify what was built; `simd` is the ISA actually compiled in
-(`NEON`/`SSE2`/`SSE4`/`RVV`/`none`). `w`/`h`/`pattern`/`colours`/`threads`
+(`NEON`/`SSE2`/`SSE4`/`RVV`/`none`). When `fn` is Stage 2's `snes_ntsc_blit_hires_vec`
+(any name containing `_vec`), `simd` instead reports the backend the portable v4u32
+layer (`snes_ntsc_simd.h`) actually resolved to (`NEON`/`SSE2`/`RVV`/`scalar`), which
+can differ from the host's own ISA under `SNES_NTSC_FORCE_SCALAR_SIMD` - see the
+`_vec_scalar` convention above. `w`/`h`/`pattern`/`colours`/`threads`
 echo the input configuration. `frames`/`ms`/`fps`/`min`/`max` summarize the
 timed loop (mean frame time, derived fps, and the fastest/slowest single
 frame) after a 10-frame warm-up. `checksum` is a 64-bit FNV-1a accumulated
@@ -408,3 +423,151 @@ most of this gap is real content touching far fewer distinct table rows,
 i.e. a smaller working set, than the synthetic 256-colour fill. This is
 exactly the gap Part C of the re-architecture (the run-length ladder,
 `analysis/ARCHITECTURE.md` section 6) is designed to widen further.
+
+## Stage 2: `snes_ntsc_blit_hires_vec` and the portable v4u32 SIMD layer
+
+Part B and Part D of the re-architecture (`analysis/ARCHITECTURE.md` sections 5 and 7):
+a new blitter, `snes_ntsc_blit_hires_vec`, computing four adjacent output pixels per
+128-bit register from contiguous 16-byte window loads, bit-identical to
+`snes_ntsc_blit_hires_fast` on every input. Unlike `_fast`, it is built on a small
+portable SIMD header (`src/main/sdl2/snes_ntsc_simd.h`, type `v4u32`) with NEON, SSE2
+and RVV backends plus a plain-C fallback, so it compiles - and is bit-exact - on every
+target, including ones with no `_fast` at all. The game (`RenderSurface::blargg_filter`)
+now calls it in place of `_fast` under the existing `SNES_NTSC_HAVE_SIMD` branch.
+
+### Layout change (prerequisite, landed before any new kernel code)
+
+`snes_ntsc.h`'s per-slot alignment block grew from 16 to 20 words: `snes_ntsc_block_words
+= 20`, a new `snes_ntsc_block_lead = 3` (leading zero pad words; the block is now 3 lead +
+14 real taps + 3 trailing zero words), `snes_ntsc_slot_words = 60` (3 blocks x 20 words),
+and `SNES_NTSC_KW(w) = ((w)/14)*20 + 3 + ((w)%14)`. This gives the vector kernel's
+compile-time-constant 16-byte window loads - some of which start before the first real
+tap or end after the last - somewhere valid to land without a bounds check, in exchange
+for more padding (60 words allocated per slot per phase vs 42 used, table now
+`sizeof(snes_ntsc_t)` = 5,907,904 B, about 5.9 MB). `_fast` and the scalar blitter are
+unaffected: both address every word through `SNES_NTSC_KW`, which folds to the new
+physical offsets transparently. The full Stage 1 checksum set (`_fast` and scalar,
+random/mixed/`--input`/lores) was re-run against the layout change alone, before writing
+any kernel code, and reproduced every reference value unchanged.
+
+### The kernel
+
+One row is processed in groups of 24 input pixels / 28 output pixels, using 10
+accumulator vectors `A[0..9]`: `A[0..6]` are the group's own 28 outputs, `A[7..9]`
+accumulate the "spill" into the next group's first 12 outputs (a pixel's 14-tap
+contribution can reach up to 3 vectors past its own group's 7). Each group seeds
+`A[0..2]` from the previous group's spill, runs its 24-pixel body (a per-pixel table of
+`{alignment, first accumulator index v0, intra-block residue r}`, `M = (r==3) ? 4 : 3`
+extra loads, fully unrolled via macro so every load offset is a compile-time immediate),
+then clamps/converts/stores `A[0..6]` and rotates `A[7..9]` into the next group's
+`A[0..2]`. A virtual group -1 (22 black pixels then `in[0]`, `in[1]`, from zeroed
+accumulators) seeds group 0, reproducing `_fast`'s black-padded prologue; the final
+group produces real sums for only its first 14 pixels (the row's last 14) and stores a
+precomputed "raw zero, clamped" vector for the last 4 outputs, reproducing `_fast`'s
+two-pixel-short, black-padded tail exactly (752 outputs for a 640-wide row, 948 for
+808). Clamp+convert is generic `v4u32` code (`snes_ntsc_simd_clamp_convert` in
+`snes_ntsc_simd.h`) mirroring the scalar `SNES_NTSC_CLAMP_`/`RGB_OUT_` sequence bit for
+bit, including the final `bswap32` (reproduced as masked shifts/ors, since the v4u32
+layer has no dedicated lane-wise byte-reverse primitive - not needed with one).
+
+**Register-allocation fix found during validation.** The 24-pixel body was first written
+as a `static inline` C++ function taking `v4u32* A`; on the Cortex-A53 build this
+compiled to a real (non-inlined) subroutine, and because `A`'s address was passed
+across that call boundary, the compiler could not keep the 10 accumulators in NEON
+registers - every one of them round-tripped through the caller's stack array on every
+pixel, roughly doubling memory traffic for no algorithmic reason (confirmed with
+`objdump` on the Pi binary: loads/stores through the incoming pointer parameter,
+interleaved with the kernel-table loads). Rewriting the body as a macro
+(`SNES_NTSC_VEC_GROUP_BODY()`, textually inlined at each of the three call sites so `A`
+is an ordinary local array with only compile-time-constant indices and no address ever
+taken) let the compiler scalar-replace it into registers instead; re-checking the
+disassembly afterwards showed the stack traffic gone (only the normal callee-saved
+register save/restore at function entry/exit remained). This took the Pi/NEON
+random-256 time from 16.1-16.2 ms to 13.6-13.9 ms (about 15-18% faster) with the
+checksums unchanged throughout.
+
+### Checksums (all must, and do, match)
+
+| Build | random 256 | mixed | `--input` frames | 808x448 random 256 | threads 2 (= threads 1) |
+|---|---|---|---|---|---|
+| Host, `-march=native` (SSE2 backend*) | 0x95f5c92e642a686f | 0x2921e1e8ab232056 | 0xe3557fa06310379d | 0xea6c5d4426a031f3 | 0x95f5c92e642a686f |
+| Host, `-march=x86-64` (pure SSE2) | 0xc928ffe2395b1fa7** | 0x0616580b4a8a3d6e** | 0xe3557fa06310379d | - | - |
+| Host, `_vec_scalar` (plain-C fallback, native build) | 0x95f5c92e642a686f | 0x2921e1e8ab232056 | 0xe3557fa06310379d | - | - |
+| Pi, NEON | 0x95f5c92e642a686f | 0x2921e1e8ab232056 | 0xe3557fa06310379d | 0xea6c5d4426a031f3 | 0x95f5c92e642a686f |
+| Pi, `_vec_scalar` (plain-C fallback) | 0x95f5c92e642a686f | - | 0xe3557fa06310379d | - | - |
+
+\* the v4u32 layer only ever needs SSE2 on x86 (see `SNES_NTSC_SIMD_BACKEND_NAME` in
+`snes_ntsc_simd.h`); "SSE2 backend" here just notes that the bench's `simd=` field for
+`_vec` reports the *layer's* choice, which is SSE2 regardless of `-march=native` giving
+the host SSE4/AVX2.
+
+\*\* **Deviation from the brief, with root cause.** The brief expected every host build
+to reproduce the reference checksums above regardless of `-march`. It doesn't: building
+with `-march=x86-64` instead of `-march=native` changes the *table-generation* float
+math (`gen_kernel`/`init` in `snes_ntsc.cpp`, unchanged by Stage 2) because the host has
+AVX2/FMA (`-march=native` enables `-mfma`, fusing some `a*b+c` into a single rounding
+step; `-march=x86-64` doesn't - exactly the risk flagged in `analysis/ALGORITHM.md`
+section 7.9). This is **not a vec-kernel bug**: rebuilding the unmodified
+`snes_ntsc_blit_hires_fast` with `-march=x86-64` reproduces the *same* two changed
+checksums (`0xc928ffe2395b1fa7` on random 256, `0x0616580b4a8a3d6e` on mixed) bit for
+bit, and the unmodified scalar blitter also changes (`0x8a54cf7b7096697e` ->
+`0x4b1acfda629211f9`) under the same flag - i.e. every blitter that reads the table is
+affected identically, because the table itself differs, not because of anything in the
+new kernel. `vec` matches `_fast` exactly under every build configuration tested (native
+vs native, `-march=x86-64` vs `-march=x86-64`), which is the actual bit-exactness bar
+("bit-identical to `_fast`"). Tellingly, the `--input` checksum is untouched by this
+effect on either blitter, on either flag - real captured-frame colours apparently never
+land on an FMA-vs-no-FMA rounding boundary, only the wide-gamut synthetic random/mixed
+palettes do.
+
+### Pi timings (sl-d303, `--seconds 5`, median of 3, performance governor, pinned core 3)
+
+| Function | random 256, ms | fps | `--input` (24 frames), ms | fps | update_ms |
+|---|---|---|---|---|---|
+| `snes_ntsc_blit_hires_vec` | 13.61 | 73.5 | 9.65 | 103.6 | 2.14 |
+| `snes_ntsc_blit_hires_fast` | 16.64 | 60.1 | 8.02 | 124.7 | 2.14 |
+| `snes_ntsc_blit_hires` (scalar) | 18.87 | 53.0 | 13.50 | 74.1 | 2.13 |
+
+`vec` is 1.22x faster than `_fast` and 1.39x faster than scalar on the random-256
+benchmark (no blitter has a working shortcut on uncorrelated random colour, so this
+isolates the raw kernel cost Part B targets) - inside, if at the high end of, the
+brief's 8-13 ms / "2 to 2.5x over scalar" expectation (measured 1.39x; reported
+honestly as asked). On captured real frames, `vec` (9.65 ms) is *slower* than `_fast`
+(8.02 ms): `_fast`'s `CHECK_ALL_EQUAL` repeat-block shortcut exploits the very high
+redundancy real content has (91% identical even/odd pairs, 65% flat 6-pixel chunks per
+`frame_stats.py`) and `vec` has no equivalent yet - that is Part C's run-length ladder
+(Stage 3), explicitly out of scope here. `vec` still clearly beats scalar on real
+content (1.40x). `update_ms` (slot-table sync cost) is identical across all three, as
+expected - it is Stage 1 machinery, untouched by Stage 2.
+
+L1-resident case (`--colours 16`, single 5 s run, same box/settings):
+
+| Function | ms | fps | cycles/output @ 1 GHz |
+|---|---|---|---|
+| `snes_ntsc_blit_hires_vec` | 7.03 | 142.3 | 20.9 |
+| `snes_ntsc_blit_hires_fast` | 10.42 | 96.0 | 30.9 |
+| `snes_ntsc_blit_hires` (scalar) | 11.19 | 89.3 | 33.4 |
+
+(`snes_ntsc_blit_hires_vec_scalar` / `_fast` share `out_width` 752; scalar's is 749 -
+both checksums confirmed the standard scalar-vs-SIMD width difference, nothing new.)
+Cycles/output = `ms * 1e6 / (448 rows * out_width)` at the confirmed 1 GHz Cortex-A53
+clock (`vcgencmd measure_clock arm` on sl-d303). The same formula on the random-256
+table above gives `vec` 40.4, `_fast` 49.4, scalar 56.3 cycles/output. Against
+`analysis/ARCHITECTURE.md` section 11's Stage 2 gate (16-colour row at or under 22
+cycles/output, 256-colour at or under 34): `vec` **meets** the 16-colour gate (20.9) and
+**falls short** of the 256-colour one (40.4 vs 34) - reported honestly; closing that gap
+is exactly what Part C's run-length ladder (Stage 3, out of scope here) is for, since it
+removes most of the table traffic the 256-colour case is dominated by.
+
+### Game build and run (WSL, `/home/pearc/cannonball-se-dump`)
+
+`cmake --build build -j16` with `CPATH=~/localdeps/usr/include/x86_64-linux-gnu:~/localdeps/usr/include`
+produced no new warnings (the one pre-existing `-Wcomment` warning at `snes_ntsc.h:427`,
+in commented-out dead code untouched by this stage, is unchanged). Both perftest+dump
+invocations exited 0 and produced 6 valid frames each, verified by `frame_stats.py`
+(`verify=OK` on all 5 checked, 0 FAILED):
+
+```
+./build/cannonball-se -cfgfile res/config-dump.xml -perftest -t 1 -dump .../frames_stage2    61 5   # exit 0
+./build/cannonball-se -cfgfile res/config-dump.xml -perftest -t 4 -dump .../frames_stage2_t4 61 5   # exit 0
+```

@@ -18,6 +18,7 @@ Updates Feb-26:  added SSE2 fall-back; SSE4.1 now selected at compile time via _
 #include <omp.h>    // JJP - OpenMP support for multi-threading initialization
 #endif
 #include <stdint.h> // uint32_t etc
+#include "snes_ntsc_simd.h" // portable v4u32 SIMD layer for snes_ntsc_blit_hires_vec (Stage 2)
 
 
 /* Copyright (C) 2006-2007 Shay Green. This module is free software; you
@@ -151,18 +152,21 @@ static void gen_slot(snes_ntsc_t* ntsc, int slot, unsigned short colour,
     correct_errors(rgb, tmp);
 
     // Scatter tmp[burst_size*b + rgb_kernel_size*a + n] (b<3 bursts, a<3
-    // alignments, n<14 words) into plane[b][slot][block_words*a + n], zeroing
-    // the two pad words of every 16-word alignment block.
+    // alignments, n<14 words) into plane[b][slot][block_words*a + block_lead + n],
+    // zeroing the leading and trailing pad words of every 20-word alignment block
+    // (snes_ntsc_block_lead = 3 leading, block_words - block_lead - 14 = 3 trailing).
     for (int bidx = 0; bidx < snes_ntsc_burst_count; ++bidx) {
         snes_ntsc_rgb_t const* src_burst = tmp + burst_size * bidx;
         snes_ntsc_rgb_t* dst_slot = ntsc->plane[bidx][slot];
         for (int a = 0; a < alignment_count; ++a) {
             snes_ntsc_rgb_t const* src = src_burst + rgb_kernel_size * a;
             snes_ntsc_rgb_t* dst = dst_slot + snes_ntsc_block_words * a;
-            for (int n = 0; n < rgb_kernel_size; ++n)
-                dst[n] = src[n];
-            dst[14] = 0;
-            dst[15] = 0;
+            for (int n = 0; n < (int)snes_ntsc_block_lead; ++n)
+                dst[n] = 0;
+            for (int n = 0; n < (int)rgb_kernel_size; ++n)
+                dst[(int)snes_ntsc_block_lead + n] = src[n];
+            for (int n = (int)snes_ntsc_block_lead + (int)rgb_kernel_size; n < (int)snes_ntsc_block_words; ++n)
+                dst[n] = 0;
         }
     }
 }
@@ -753,6 +757,181 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
 }
 
 #endif
+
+// ---------------------------------------------------------------------------
+// snes_ntsc_blit_hires_vec (Stage 2 of the NTSC filter re-architecture, Part B -
+// see tools/ntsc_bench/analysis/ARCHITECTURE.md section 5): an adjacent-outputs
+// vector kernel computing four consecutive output pixels per v4u32 register
+// from contiguous 16-byte window loads. Bit-identical to
+// snes_ntsc_blit_hires_fast() above (same 752/948-wide output, same tail
+// semantics reproducing _fast's dropped-last-two-input-pixels behaviour), but
+// built on the portable v4u32 layer (snes_ntsc_simd.h) rather than the per-ISA
+// macros _fast uses, so this function compiles and is correct on every target
+// (the plain-C v4u32 fallback makes it universal, unlike _fast which only
+// exists when SNES_NTSC_HAVE_SIMD).
+//
+// One row is processed in groups of 24 input pixels / 28 output pixels, using
+// 10 accumulator vectors A[0..9]: A[0..6] hold the group's own 28 outputs,
+// A[7..9] accumulate the "spill" into the next group's first 12 outputs (a
+// pixel's 14-tap contribution can extend up to 3 v4u32's past its group's
+// own 7). Each group is seeded with the previous group's spill (rotated into
+// A[0..2]) and starts with A[3..9] at zero; after the body runs, A[0..6] are
+// clamped, converted and stored, then rotated for the next group. A virtual
+// group -1 (22 black pixels then in[0], in[1], from zeroed accumulators)
+// seeds group 0's first three vectors, reproducing _fast's black-padded
+// prologue; a tail group (the last 14 real pixels then black) produces only
+// A[0..4] plus one fixed "zero raw, clamped" vector for the final four
+// outputs, reproducing _fast's black-padded, two-pixel-short tail exactly
+// rather than computing a 6th accumulator _fast never produces.
+//
+// Pixel k (0..23) of any group contributes its 14-word kernel block (at
+// alignment `a = (k%6)>>1`) to accumulator vectors v0..v0+M, where v0 and the
+// intra-block residue r come from rel(k) = k + k/6 (the output offset of the
+// pixel's first tap, relative to the group's own base) via r = rel(k)%4,
+// v0 = (rel(k)-r)/4, M = (r==3) ? 4 : 3 - see the Stage 2 design brief for the
+// derivation. Vector v0+m's load starts at word offset (3 - r + 4m) of the
+// pixel's padded 20-word alignment block, which - thanks to the block's 3
+// leading/3 trailing zero pad words (snes_ntsc_block_lead in snes_ntsc.h) -
+// is always a valid in-block 16-byte window, so every load is unconditional
+// and every offset a compile-time immediate.
+#define SNES_NTSC_VEC_PIXEL(K, ALIGN, V0, R, M) do {                                    \
+    const snes_ntsc_rgb_t* base = P + (size_t)slotv[K] * (size_t)snes_ntsc_slot_words   \
+                                     + (size_t)(ALIGN) * (size_t)snes_ntsc_block_words;  \
+    A[(V0)+0] = snes_v4_add(A[(V0)+0], snes_v4_load_u(base + (3-(R)+0)));                \
+    A[(V0)+1] = snes_v4_add(A[(V0)+1], snes_v4_load_u(base + (3-(R)+4)));                \
+    A[(V0)+2] = snes_v4_add(A[(V0)+2], snes_v4_load_u(base + (3-(R)+8)));                \
+    A[(V0)+3] = snes_v4_add(A[(V0)+3], snes_v4_load_u(base + (3-(R)+12)));               \
+    if ((M) == 4)                                                                        \
+        A[(V0)+4] = snes_v4_add(A[(V0)+4], snes_v4_load_u(base + (3-(R)+16)));           \
+} while (0)
+
+// The 24-pixel group body, identical for every group (real, the virtual
+// left-edge group -1, and the right-edge tail group): 24 uses of the PIXEL
+// macro above, operating on the caller's local `P` (row's current phase
+// plane base), `slotv` (24 slot indices - snes_ntsc_black_slot for a
+// virtual/padding pixel) and `A` (the 10-vector accumulator array, A[0..2]
+// pre-seeded by the caller from the previous group's spill, A[3..9] zero on
+// entry). This is a *macro*, not a function: the whole 24-pixel sequence is
+// textually inlined at each of the three call sites in
+// snes_ntsc_blit_hires_vec() below, rather than called through a pointer to
+// `A`, so the compiler sees A[0..9] as an ordinary fully-constant-indexed
+// local array with no address ever taken and can scalar-replace it into
+// plain registers (confirmed against the Cortex-A53 build - passing `A` by
+// pointer to a real, non-inlined subroutine, which is what an equivalent
+// `static inline` *function* compiled down to here, forced every
+// accumulator through an actual stack slot on every pixel instead of a
+// register, roughly doubling memory traffic for no algorithmic reason).
+#define SNES_NTSC_VEC_GROUP_BODY() do {  \
+    SNES_NTSC_VEC_PIXEL( 0, 0, 0, 0, 3); \
+    SNES_NTSC_VEC_PIXEL( 1, 0, 0, 1, 3); \
+    SNES_NTSC_VEC_PIXEL( 2, 1, 0, 2, 3); \
+    SNES_NTSC_VEC_PIXEL( 3, 1, 0, 3, 4); \
+    SNES_NTSC_VEC_PIXEL( 4, 2, 1, 0, 3); \
+    SNES_NTSC_VEC_PIXEL( 5, 2, 1, 1, 3); \
+    SNES_NTSC_VEC_PIXEL( 6, 0, 1, 3, 4); \
+    SNES_NTSC_VEC_PIXEL( 7, 0, 2, 0, 3); \
+    SNES_NTSC_VEC_PIXEL( 8, 1, 2, 1, 3); \
+    SNES_NTSC_VEC_PIXEL( 9, 1, 2, 2, 3); \
+    SNES_NTSC_VEC_PIXEL(10, 2, 2, 3, 4); \
+    SNES_NTSC_VEC_PIXEL(11, 2, 3, 0, 3); \
+    SNES_NTSC_VEC_PIXEL(12, 0, 3, 2, 3); \
+    SNES_NTSC_VEC_PIXEL(13, 0, 3, 3, 4); \
+    SNES_NTSC_VEC_PIXEL(14, 1, 4, 0, 3); \
+    SNES_NTSC_VEC_PIXEL(15, 1, 4, 1, 3); \
+    SNES_NTSC_VEC_PIXEL(16, 2, 4, 2, 3); \
+    SNES_NTSC_VEC_PIXEL(17, 2, 4, 3, 4); \
+    SNES_NTSC_VEC_PIXEL(18, 0, 5, 1, 3); \
+    SNES_NTSC_VEC_PIXEL(19, 0, 5, 2, 3); \
+    SNES_NTSC_VEC_PIXEL(20, 1, 5, 3, 4); \
+    SNES_NTSC_VEC_PIXEL(21, 1, 6, 0, 3); \
+    SNES_NTSC_VEC_PIXEL(22, 2, 6, 1, 3); \
+    SNES_NTSC_VEC_PIXEL(23, 2, 6, 2, 3); \
+} while (0)
+
+void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
+    int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel)
+{
+    const int W = in_width;
+    const int G = (W - 16) / 24; // number of full 24-pixel/28-output groups (26 for 640, 33 for 808)
+    const uint32_t alevel_u = (uint32_t)Alevel;
+
+    // Fixed value stored at the last 4 outputs of every row (N-4..N-1, N = 28G+24):
+    // the clamp+convert sequence applied to a raw accumulator of zero, exactly
+    // reproducing _fast's tail ("zero vector, clamped") - independent of phase and
+    // of the row's actual pixel content, so it is computed once for the whole call.
+    const v4u32 fixed_tail = snes_ntsc_simd_clamp_convert(
+        snes_v4_zero(), (uint32_t)snes_ntsc_clamp_mask, (uint32_t)snes_ntsc_clamp_add, alevel_u);
+
+    for (; in_height; --in_height)
+    {
+        const snes_ntsc_rgb_t* restrict P = (const snes_ntsc_rgb_t*)ntsc->plane[burst_phase];
+        SNES_NTSC_IN_T const* restrict line_in = input;
+        uint32_t* restrict line_out = (uint32_t*)rgb_out;
+
+        v4u32 A[10];
+        for (int i = 0; i < 10; ++i) A[i] = snes_v4_zero();
+
+        // Virtual group -1: pixels j = -22..1 (22 black slots then in[0], in[1]).
+        // A[0..6] (outputs -28..-1) are discarded; only the spill A[7..9]
+        // (outputs 0..11, i.e. group 0's first three vectors) is kept.
+        {
+            uint32_t slotv[24];
+            for (int k = 0; k < 22; ++k) slotv[k] = (uint32_t)snes_ntsc_black_slot;
+            slotv[22] = (uint32_t)line_in[0];
+            slotv[23] = (uint32_t)line_in[1];
+            SNES_NTSC_VEC_GROUP_BODY();
+            A[0] = A[7]; A[1] = A[8]; A[2] = A[9];
+            A[3] = A[4] = A[5] = A[6] = A[7] = A[8] = A[9] = snes_v4_zero();
+        }
+
+        // Main groups 0..G-1: pixels j = 24g+2 .. 24g+25, all real (holds
+        // whenever (W-16) % 24 == 0, true for both 640 and 808 - see the
+        // Stage 2 design brief).
+        for (int g = 0; g < G; ++g) {
+            uint32_t slotv[24];
+            SNES_NTSC_IN_T const* restrict p = line_in + 2 + g * 24;
+            for (int k = 0; k < 24; ++k) slotv[k] = (uint32_t)p[k];
+            SNES_NTSC_VEC_GROUP_BODY();
+
+            for (int v = 0; v < 7; ++v)
+                A[v] = snes_ntsc_simd_clamp_convert(A[v], (uint32_t)snes_ntsc_clamp_mask,
+                                                     (uint32_t)snes_ntsc_clamp_add, alevel_u);
+            uint32_t* restrict out_g = line_out + (size_t)g * 28;
+            for (int v = 0; v < 7; ++v)
+                snes_v4_store_a(out_g + v * 4, A[v]);
+
+            A[0] = A[7]; A[1] = A[8]; A[2] = A[9];
+            A[3] = A[4] = A[5] = A[6] = A[7] = A[8] = A[9] = snes_v4_zero();
+        }
+
+        // Tail group G: the last 14 real pixels (j = W-14..W-1) then black
+        // (j = W..W+9), reproducing _fast's end-of-row handling. Only A[0..4]
+        // (outputs 28G..28G+19) are real sums; the last 4 outputs of the row
+        // get the precomputed fixed_tail value rather than a 6th accumulator
+        // _fast never computes.
+        {
+            uint32_t slotv[24];
+            SNES_NTSC_IN_T const* restrict p = line_in + (W - 14);
+            for (int k = 0; k < 14; ++k) slotv[k] = (uint32_t)p[k];
+            for (int k = 14; k < 24; ++k) slotv[k] = (uint32_t)snes_ntsc_black_slot;
+            SNES_NTSC_VEC_GROUP_BODY();
+
+            for (int v = 0; v < 5; ++v)
+                A[v] = snes_ntsc_simd_clamp_convert(A[v], (uint32_t)snes_ntsc_clamp_mask,
+                                                     (uint32_t)snes_ntsc_clamp_add, alevel_u);
+            uint32_t* restrict out_g = line_out + (size_t)G * 28;
+            for (int v = 0; v < 5; ++v)
+                snes_v4_store_a(out_g + v * 4, A[v]);
+            snes_v4_store_a(out_g + 5 * 4, fixed_tail);
+        }
+
+        burst_phase = (burst_phase + 1) % snes_ntsc_burst_count;
+        input += in_row_width;
+        rgb_out = (char*)rgb_out + out_pitch;
+    }
+}
+#undef SNES_NTSC_VEC_GROUP_BODY
+#undef SNES_NTSC_VEC_PIXEL
 
 /*
 * The following table attempts to depicts how the data is gathered and summed, showing

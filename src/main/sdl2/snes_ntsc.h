@@ -11,11 +11,21 @@ Updates Sep-26: slot-indexed, phase-major kernel table (Part A of the NTSC filte
                 not by a 16-bit packed colour value, and is generated/regenerated one
                 slot at a time via snes_ntsc_update_slot()/snes_ntsc_update_slots()
                 so a palette RAM write no longer requires a full table rebuild.
+                Stage 2: added snes_ntsc_blit_hires_vec(), a portable (NEON/SSE2/RVV/
+                scalar) adjacent-outputs vector kernel bit-identical to _fast; widened
+                each alignment block from 16 to 20 words (3 leading + 14 real + 3
+                trailing zero words, see snes_ntsc_block_lead) so every compile-time-
+                constant 16-byte window the vector kernel needs - including ones that
+                start before the first real tap or end after the last - stays inside
+                one block without a bounds check.
 
 Note: SIMD dependent functions e.g. snes_ntsc_blit_hires_fast() require buffers aligned at
-      a 64-byte boundary. The per-slot kernel blocks inside snes_ntsc_t are separately
-      64-byte aligned (see snes_ntsc_block_words below) so that no blitter load crosses
-      a cache line within one alignment block.
+      a 64-byte boundary. The per-slot kernel blocks inside snes_ntsc_t are 4-byte-word
+      aligned within a 64-byte-aligned plane (see snes_ntsc_block_words below); with
+      20-word (80-byte) blocks a block no longer always sits inside one 64-byte cache
+      line, which only matters for raw load-latency, not correctness - every reader
+      (scalar, _fast, vec) addresses words via SNES_NTSC_KW / explicit offsets, so the
+      block size change is transparent to all of them.
 */
 
 #ifndef SNES_NTSC_H
@@ -167,6 +177,16 @@ extern "C" {
 		int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel);
 #endif
 
+	/* Stage 2 of the NTSC filter re-architecture (see
+	tools/ntsc_bench/analysis/ARCHITECTURE.md section 5/7): an adjacent-outputs vector
+	kernel built on the portable v4u32 SIMD layer (src/main/sdl2/snes_ntsc_simd.h), with
+	NEON, SSE2 and RVV backends plus a plain-C scalar fallback - so, unlike
+	snes_ntsc_blit_hires_fast() above, this function is available unconditionally on every
+	build (SNES_NTSC_HAVE_SIMD 0 or 1). Bit-identical to snes_ntsc_blit_hires_fast() on
+	every input; same signature. */
+	void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
+		int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel);
+
 	/* Number of output pixels written by low-res blitter for given input width. Width
 	might be rounded down slightly; use SNES_NTSC_IN_WIDTH() on result to find rounded
 	value. Guaranteed not to round 256 down at all. */
@@ -283,26 +303,32 @@ extern "C" {
 	// range of values already present in the emulator's S16 pixel buffer), slot 8192 is
 	// reserved for black (used by the blitters to pad the start/end of each row) and slot
 	// 8193 is a spare, also always black, kept only for layout symmetry/future use. Each
-	// slot holds one burst-phase's kernel as three 16-word "alignment blocks" (64 bytes
-	// each): the first 14 words are real kernel taps (see SNES_NTSC_KW below for how a
-	// classic 0..41 kernel-word index maps into this padded layout), the last 2 words of
-	// every block are always zero so that no blitter load can read past real data. This
-	// costs about 14% extra memory (48 words allocated per slot per phase versus 42
-	// actually used) in exchange for every load an output group needs staying inside one
-	// 64-byte line.
+	// slot holds one burst-phase's kernel as three 20-word "alignment blocks": 3 leading
+	// zero words, the 14 real kernel taps (see SNES_NTSC_KW below for how a classic 0..41
+	// kernel-word index maps into this padded layout), then 3 trailing zero words. The
+	// symmetric padding (added in Stage 2 of the re-architecture, see
+	// tools/ntsc_bench/analysis/ARCHITECTURE.md) means every compile-time-constant 16-byte
+	// (4-word) window that `snes_ntsc_blit_hires_vec` needs, starting anywhere from 3 words
+	// before the first real tap to 3 words after the last, stays inside the padded block
+	// without any bounds check; `_fast` and the scalar blitter are unaffected because they
+	// only ever read via SNES_NTSC_KW, which folds to the same physical offsets regardless
+	// of block size. This costs about 43% extra memory (60 words allocated per slot per
+	// phase versus 42 actually used; table is about 5.9 MB total) in exchange for that.
 	enum { snes_ntsc_slot_count  = 8192 };  // std (0..4095) + shadow (4096..8191)
 	enum { snes_ntsc_black_slot  = 8192 };  // reserved slot for black; used as row padding
 	enum { snes_ntsc_slot_total  = 8194 };  // slot_count + black_slot + one spare slot
-	enum { snes_ntsc_block_words = 16 };    // 14 real kernel words + 2 zero pad words
-	enum { snes_ntsc_slot_words  = 48 };    // 3 alignment blocks x 16 words, per slot per phase
+	enum { snes_ntsc_block_words = 20 };    // 3 lead zeros + 14 real kernel words + 3 trail zeros
+	enum { snes_ntsc_block_lead  = 3 };     // zero pad words before the first real tap of a block
+	enum { snes_ntsc_slot_words  = 60 };    // 3 alignment blocks x 20 words, per slot per phase
 
 	typedef uint32_t snes_ntsc_rgb_t;           // JJP - was unsigned long
 
 	// Maps a classic kernel-word index (0..41, i.e. 3 alignment blocks of 14 words: block b
-	// occupies words 14b..14b+13) into the padded, 16-word-block layout used by `plane`
-	// below (block b now occupies words 16b..16b+13, with words 16b+14/16b+15 always zero).
-	// Every caller passes a compile-time-constant `w`, so this folds away entirely.
-#define SNES_NTSC_KW( w ) (((w) / 14) * 16 + ((w) % 14))
+	// occupies words 14b..14b+13) into the padded, 20-word-block layout used by `plane`
+	// below (block b now occupies words 20b..20b+19, with real taps at 20b+3..20b+16 and
+	// words 20b..20b+2 / 20b+17..20b+19 always zero). Every caller passes a compile-time-
+	// constant `w`, so this folds away entirely.
+#define SNES_NTSC_KW( w ) (((w) / 14) * snes_ntsc_block_words + snes_ntsc_block_lead + ((w) % 14))
 
 	struct snes_ntsc_t {
 		// plane[burst phase][slot][word within slot's 3x16-word kernel]. One phase's plane
