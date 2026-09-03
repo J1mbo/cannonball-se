@@ -1,5 +1,8 @@
 #pragma once
 
+#include <string>
+#include <atomic>
+
 #include "globals.hpp"
 #include "sdl2/audio.hpp"
 
@@ -39,4 +42,20 @@ namespace cannonball
     extern long fps_eval_period;
     extern int  game_threads;
     extern bool perftest;
+
+    // -------------------------------------------------------------------
+    // Frame-dump facility (-dump <dir> [interval] [count] command line option).
+    // When dump_enabled is true, RenderSurface::draw_frame() writes the NTSC
+    // filter's input for every dump_interval-th rendered frame to dump_dir,
+    // until dump_count frames have been written. See rendersurface.cpp
+    // (write_dump_frame) for the file format.
+    // -------------------------------------------------------------------
+    extern bool        dump_enabled;
+    extern std::string dump_dir;
+    extern int         dump_interval;
+    extern int         dump_count;
+    // Set (from a render thread) once dump_count frames have been written.
+    // The main loop polls this and performs a normal, clean shutdown via
+    // cannonball::state = STATE_QUIT, rather than quitting from a render thread.
+    extern std::atomic<bool> dump_finished;
 }

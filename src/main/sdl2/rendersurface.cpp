@@ -21,10 +21,14 @@
 #include <mutex>
 #include "rendersurface.hpp"
 #include "frontend/config.hpp"
+#include "main.hpp"   // frame-dump command-line option (cannonball::dump_*)
 // Aligned Memory Allocation (standard C++17)
 #include <new>        // std::align_val_t, ::operator new/delete
 #include <cstddef>    // std::size_t
 #include <cstdint>
+#include <cstdio>     // fopen/fwrite/fclose (frame dump)
+#include <cstring>    // memcpy (frame dump)
+#include <vector>
 #include <omp.h>
 #include <math.h>
 #include <cmath>   // std::sqrtf, std::fabs, std::roundf, std::lroundf, etc.
@@ -1246,6 +1250,92 @@ static void apply_crt_bloom(uint32_t *pixels,
 }
 
 
+// ---------------------------------------------------------------------------
+// Frame-dump facility (-dump <dir> [interval] [count] command-line option;
+// parsed in main.cpp, flags/state live in the cannonball:: namespace).
+//
+// When enabled, captures the whole-frame S16 buffer that the Blargg/NTSC
+// filter is about to consume, together with the palette table and burst
+// phase in effect for that frame, once every 'interval'-th rendered frame
+// (frames interval, 2*interval, ... up to 'count' frames), then flags the
+// main loop to quit cleanly. The call site is in RenderSurface::draw_frame(),
+// immediately after the phase update that happens once per rendered frame
+// (section 0 or -1 -- never section 1, so this runs exactly once per game
+// frame regardless of the render-thread configuration). The whole 'pixels'
+// buffer is converted through rgb_blargg here, independently of whatever
+// (possibly partial, per-section) conversion blargg_filter() performs, so
+// the dump is unaffected by threading/section splitting.
+//
+// File format (little-endian, one file per frame, "<dir>/frame_NNNNNN.bin"):
+//   header (64 bytes, as 16 x uint32_t):
+//     char     magic[8]        = "CBSEFRM1"
+//     uint32_t width
+//     uint32_t height
+//     uint32_t frame_number      (rendered frames since startup; 1-based)
+//     uint32_t phase              (Blargg burst phase in effect, 0..2)
+//     uint32_t hires              (config.video.hires)
+//     uint32_t wide               (config.video.widescreen)
+//     uint32_t palette_entries    (= S16_PALETTE_ENTRIES*2)
+//     uint32_t reserved[7]        (zero)
+//   uint16_t raw[width*height]       -- S16 palette indices, as produced by the emulator
+//   uint16_t table[palette_entries]  -- rgb_blargg, exactly as it stood for this frame
+//   uint16_t colour[width*height]    -- raw[] converted through table[]: exactly what
+//                                        the Blargg blitter is handed for this frame
+//
+// Also appends one line per frame to "<dir>/manifest.txt":
+//   filename,frame_number,phase,width,height
+// ---------------------------------------------------------------------------
+static void write_dump_frame(const std::string& dir, uint32_t frame_number, uint32_t phase,
+                              int width, int height, int hires, int wide,
+                              const uint16_t* raw, const uint16_t* table, uint32_t palette_entries)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/frame_%06u.bin", dir.c_str(), frame_number);
+
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        std::cerr << "dump: unable to open '" << path << "' for writing\n";
+        return;
+    }
+
+    // 64-byte header, laid out as 16 uint32_t words to guarantee an exact,
+    // padding-free size and layout (see format comment above).
+    uint32_t hdr[16] = {0};
+    std::memcpy(&hdr[0], "CBSEFRM1", 8);   // hdr[0..1]
+    hdr[2] = static_cast<uint32_t>(width);
+    hdr[3] = static_cast<uint32_t>(height);
+    hdr[4] = frame_number;
+    hdr[5] = phase;
+    hdr[6] = static_cast<uint32_t>(hires);
+    hdr[7] = static_cast<uint32_t>(wide);
+    hdr[8] = palette_entries;
+    // hdr[9..15] reserved, left zero
+
+    const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+
+    // Convert the whole frame through rgb_blargg ourselves -- exactly what the
+    // blitter receives, computed independently of blargg_filter()'s own
+    // (possibly per-section) conversion.
+    std::vector<uint16_t> colour(pixel_count);
+    for (size_t i = 0; i < pixel_count; i++)
+        colour[i] = table[raw[i]];
+
+    fwrite(hdr, sizeof(uint32_t), 16, f);
+    fwrite(raw, sizeof(uint16_t), pixel_count, f);
+    fwrite(table, sizeof(uint16_t), palette_entries, f);
+    fwrite(colour.data(), sizeof(uint16_t), pixel_count, f);
+    fclose(f);
+
+    char manifest_path[1024];
+    snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.txt", dir.c_str());
+    FILE* m = fopen(manifest_path, "a");
+    if (m) {
+        fprintf(m, "frame_%06u.bin,%u,%u,%d,%d\n", frame_number, frame_number, phase, width, height);
+        fclose(m);
+    }
+}
+
+
 int RenderSurface::get_blargg_config() {
     return (    config.video.blargg +
                 config.video.saturation +
@@ -1286,6 +1376,24 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
         if (fastpass!=1) {
             if (config.fps == 60) phase = (phase + 1) % 3; // cycle through 0/1/2
             else                  phase = (phase + 2) % 3; // cycle through 0/1/2, but at twice the rate
+
+            // Frame-dump facility (-dump option). Default-off: when disabled this is a
+            // single bool compare and nothing else. See write_dump_frame() above for
+            // the exact format and why this call site was chosen.
+            if (cannonball::dump_enabled && !cannonball::dump_finished.load(std::memory_order_relaxed)) {
+                static uint32_t dumpFrameNumber  = 0; // rendered frames seen since startup
+                static uint32_t dumpFramesWritten = 0; // frames actually written so far
+                dumpFrameNumber++;
+                if ((dumpFrameNumber % static_cast<uint32_t>(cannonball::dump_interval)) == 0) {
+                    write_dump_frame(cannonball::dump_dir, dumpFrameNumber, static_cast<uint32_t>(phase),
+                                      src_width, src_height, config.video.hires, config.video.widescreen,
+                                      pixels, rgb_blargg, static_cast<uint32_t>(S16_PALETTE_ENTRIES) * 2u);
+                    dumpFramesWritten++;
+                    if (dumpFramesWritten >= static_cast<uint32_t>(cannonball::dump_count)) {
+                        cannonball::dump_finished.store(true, std::memory_order_release);
+                    }
+                }
+            }
         }
         blargg_filter(pixels, writePixels, fastpass);
         // apply scanlines, if enabled.
