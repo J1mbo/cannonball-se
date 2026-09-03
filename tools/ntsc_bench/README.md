@@ -27,7 +27,7 @@ the working tree (`_fast` + `_fast2`), or a future rewrite.
 ```sh
 ./bench_fast2 [--pattern random|mixed] [--colours N] [--width W] [--height H] \
               [--seconds S] [--threads T] [--palette random|contiguous] [--hugepages] \
-              [--input <path>] [--lores]
+              [--input <path>] [--lores] [--dump-output <file>]
 ```
 
 Defaults: `random`, 256 colours, 640x448, 5 seconds, 1 thread, `--palette
@@ -72,6 +72,14 @@ every frame - unless `--input` is given (see below).
   regress the lores path in later re-architecture stages - it is not
   comparable to the hires numbers elsewhere in this file. Mutually exclusive
   with `--input`.
+- `--dump-output <file>` - append every output frame produced during the
+  correctness-checksum pass (the same frames/phases folded into `checksum` -
+  see above) to `<file>`, tightly packed (height rows x `out_width` x 4
+  bytes, row pitch == `out_width*4`), preceded by one 32-byte header: magic
+  `CBSEOUT1`, `uint32 out_width`, `uint32 height`, `uint32 frame_count`,
+  `uint32 phases_per_frame`, `uint32 reserved[2]`. Pure addition - writing
+  the dump does not change `checksum` or any other RESULT field. Compare two
+  dumps with `diff_output.py` (see "Captured game frames" below). Default off.
 
 Driver scripts (run from WSL, from the repo root):
 
@@ -132,18 +140,27 @@ Earlier runs (before 2026-09-02 evening) used the raw preset, whose literal has
 | Function (rev) | random, 256 colours | random, 65536 colours | mixed | 24 captured frames, host/SSE4 (`--input`) | 24 captured frames, Pi/NEON (`--input`) |
 |---|---|---|---|---|---|
 | snes_ntsc_blit_hires_fast (086591c) | 0x95f5c92e642a686f | 0x50df72f5a78f9e6d | 0x2921e1e8ab232056 | 0xf977fe072096daea | 0xe3557fa06310379d **(MISMATCH, see below)** |
+| snes_ntsc_blit_hires_fast (working tree, fixed - see "Real-frame baseline") | 0x95f5c92e642a686f (unchanged) | 0x50df72f5a78f9e6d (unchanged) | 0x2921e1e8ab232056 (unchanged) | 0xe3557fa06310379d | 0xe3557fa06310379d (matches) |
 | snes_ntsc_blit_hires_fast2 (working tree) | 0x95f5c92e642a686f | same as _fast | 0x7d137397ad358e78 (MISMATCH: repeat-block bug) | not measured (Stage 0 covers `_fast`/scalar only) | not measured |
 | snes_ntsc_blit_hires scalar (086591c), out_width 749 | 0x8a54cf7b7096697e | 0x5afd2d5d92a24084 | 0x8390b47c580c191e | 0xa01757db54ee3c6f | 0xa01757db54ee3c6f (matches) |
 
 SSE4 (host) and NEON (Pi) builds of the same source produce identical
-checksums on every column above **except** `snes_ntsc_blit_hires_fast` on the
-24 captured frames, which differs between host and Pi (both stable/reproducible
-on their own platform - see "Real-frame baseline" below for details and a
-working hypothesis). The scalar path agrees cross-platform on captured frames
-just as it always has on the synthetic patterns. `snes_ntsc_blit_hires_fast`
-and the scalar `snes_ntsc_blit_hires` disagree with each other on every
-column, as expected: they use different `out_width` (752 vs 749), so even
-identical per-pixel math produces a different byte stream.
+checksums on every column above **except** `snes_ntsc_blit_hires_fast (086591c)`
+on the 24 captured frames, which differs between host and Pi (both
+stable/reproducible on their own platform). This has been root-caused and
+fixed in the working tree (see "Real-frame baseline" below): the host/SSE4
+checksum on captured frames changes from `0xf977fe072096daea` to
+`0xe3557fa06310379d`, which now matches the Pi/NEON figure bit-for-bit (the
+Pi/NEON side was already correct and is unchanged by the fix). Every other
+checksum in this table - both synthetic patterns, on both platforms - is
+unchanged by the fix, as expected (see below for why). The scalar path
+agrees cross-platform on captured frames just as it always has on the
+synthetic patterns. `snes_ntsc_blit_hires_fast` and the scalar
+`snes_ntsc_blit_hires` disagree with each other on every full-buffer
+checksum, as expected: they use different `out_width` (752 vs 749), so even
+identical per-pixel math produces a different byte stream (the fixed working
+tree's `_fast` now matches scalar exactly on columns 0-735 of every one of
+the 72 captured-frame/phase combinations - see `diff_output.py` below).
 
 `--lores` reference (`snes_ntsc_blit`, synthetic 320x224, random 256 colours,
 086591c): checksum `0x18b1960769cc63dd`. Not comparable to the hires rows
@@ -230,6 +247,20 @@ multiple of 3 so all burst phases are sampled.
   three phases), with PNGs in `frames/png/`. Averages over the full capture: 100 distinct
   colours, 65% flat chunks, 91% identical even/odd pairs, 81% vertical repetition.
 
+- `diff_output.py A.bin B.bin [--cols N]`: pixel-by-pixel diff of two
+  `--dump-output` dumps (standard library only; uses numpy when importable,
+  for speed on ~100 MB dumps, with an equivalent pure-stdlib fallback
+  otherwise). `--cols N` limits the comparison to each row's first N columns
+  - needed to compare a SIMD `_fast` dump (`out_width` 752) against a scalar
+  dump (`out_width` 749); `--cols 736` is what was used to localise the
+  `ROTATE_OUT_SSE4` bug below, since it excludes the trailing columns where
+  the two blitters' end-of-line handling legitimately differs. Without
+  `--cols`, defaults to the smaller of the two dumps' `out_width`. Reports
+  total/per-image diff counts, the first 20 differences as `(frame, phase,
+  row, col, valueA, valueB)`, histograms of differing columns mod 28 (the
+  `_fast` unroll period: 4 chunks x 7 outputs) and mod 7, the set of rows
+  affected, and a run-length summary of consecutive differing columns.
+
 `ntsc_bench --input frames/` (or a single file, or a comma-separated list -
 see Usage above) benches and checksums this corpus directly; `run_pi.sh`
 ships `frames/*.bin` to the Pi and translates a local `--input` path under
@@ -252,28 +283,85 @@ before and after every run below (no thermal throttling, all runs).
 
 **The scalar checksum matches the host (WSL/SSE4) figure in the
 reference-checksums table above bit-for-bit, as expected - but the `_fast`
-(SIMD) checksum does not** (host: `0xf977fe072096daea`, Pi: `0xe3557fa06310379d`).
-This is reproducible and stable (identical on all 3 Pi runs above, and on two
-independent host runs), and it is not a transfer problem - the 24 frame files
+(SIMD) checksum did not** (host: `0xf977fe072096daea`, Pi: `0xe3557fa06310379d`).
+This was reproducible and stable (identical on all 3 Pi runs above, and on two
+independent host runs), and it was not a transfer problem - the 24 frame files
 on the Pi are byte-identical to the local copies (`md5sum` matches every
-file). It is also new information: the existing random/mixed synthetic
+file). It was also new information: the existing random/mixed synthetic
 benchmarks have always agreed bit-for-bit between SSE and NEON builds of
-`_fast` (see the reference-checksums table), so this is the first input that
-exposes a real SSE4-vs-NEON divergence in the shipped `_fast` blitter, and it
-only shows up on real game content - exactly the gap `--input` was added to
-close. The likely area is the ISA-conditional repeat-block detector
-(`CHECK_ALL_EQUAL_SSE4` vs `CHECK_ALL_EQUAL_AARCH64` in `snes_ntsc.cpp`,
-feeding the "broadcast the last sub-vector" shortcut `analysis/ARCHITECTURE.md`
-section 6 already calls fragile): real frames are 65% flat 6-pixel chunks and
-91% identical even/odd pairs, so they exercise that shortcut far more than
-the old synthetic patterns, where a full 24-pixel window repeating exactly is
-comparatively rare. This has NOT been root-caused or fixed here (Stage 0 is
-measurement only, and `src/` is off-limits) - it needs a decision before
-Stage 1: pick one platform's `_fast` output as the bit-exactness reference
-(or fix the divergence first), since `_fast` is not currently self-consistent
-across SIMD ISAs on real content, only on the old synthetic ones. The scalar
-path has no such shortcut and matches perfectly, so it is the trustworthy
-cross-platform reference in the meantime.
+`_fast` (see the reference-checksums table), so this was the first input that
+exposed a real SSE4-vs-NEON divergence in the shipped `_fast` blitter, and it
+only showed up on real game content - exactly the gap `--input` was added to
+close.
+
+### Root cause and fix
+
+The divergence has since been root-caused and fixed (`src/main/sdl2/snes_ntsc.h`,
+`ROTATE_OUT_SSE4`). Diffing raw `--dump-output` pixel dumps with
+`diff_output.py` (see below) showed that on the host, `snes_ntsc_blit_hires_fast`
+disagreed with `snes_ntsc_blit_hires` (scalar, ground truth) on 1671 of the
+23,740,416 pixels compared (columns 0-735, the region shared by both
+`out_width`s) - and that the Pi's `_fast` output matched its own scalar output
+on **every** compared pixel (0 diffs), while host `_fast` vs Pi `_fast` on all
+752 columns reproduced the exact same 1671-pixel set, byte-for-byte, as the
+host `_fast` vs host scalar diff. That three-way match pinned the bug
+squarely on the host/SSE4 build of `_fast`: the Pi/NEON+AArch64 build was
+already correct.
+
+The affected pixels were small (mostly 1-a-few-LSB) errors confined to 23
+scanlines out of 448 across 11 of the 24 frames, clustered in runs of 11-15
+(never a full 28-wide unrolled output block), and landing at `col % 28`
+values 0-11 and 25-27 but never 12-24 - consistent with a shortcut
+*occasionally* misfiring on nearly-but-not-exactly-flat content (anti-aliased
+text edges, gentle gradients) rather than a wholesale wrong-value
+substitution, which is why the errors are small in magnitude but real.
+
+The shortcut in question is exactly the one `analysis/ARCHITECTURE.md`
+section 6 already calls fragile: `snes_ntsc_blit_hires_fast` checks whether
+all 24 input pixels about to be processed are identical
+(`CHECK_ALL_EQUAL_SSE4`/`_AARCH64`/`_NEON` in `snes_ntsc.cpp`) and, if so,
+skips the maths and reuses the previous iteration's last output sub-vector.
+That check needs the input pixels at lanes 2-3 of `xmm0` (the tail of the
+*previous* 4-pixel load) and lanes 0-1 of `xmm6` (the head of the *next*
+4-pixel load) gathered into one 4-lane vector - `ROTATE_OUT(xmm0, xmm6, 2)` -
+because those are the two pixels that straddle the 4-pixel load boundary at
+the start of this iteration's 24-pixel block. `ROTATE_OUT_NEON`
+(`vext_u16(A, B, 2)`) gets this right: `[A[2], A[3], B[0], B[1]]`.
+`ROTATE_OUT_SSE4(A, B, N)` had the two byte-shifts swapped - it did
+`slli(A, N*2) | srli(B, 8-N*2)`, which for `N=2` produces `[B[2], B[3], A[0],
+A[1]]` instead: the wrong two pixels from *each* side of the boundary
+(`xmm6`'s lanes 2-3, which belong to the *next* iteration's block, and
+`xmm0`'s lanes 0-1, which belong to the *previous* one). So the SSE4 build's
+"is this whole 24-pixel block flat" check was silently testing four pixels
+that are not even part of the current block, on every single invocation.
+The fix (in `ROTATE_OUT_SSE4`) swaps which operand gets `slli` vs `srli` so
+it reads `srli(A, N*2) | slli(B, 8-N*2)`, matching `vext_u16`'s semantics for
+any `N` in 0-4, not just the `N=2` this code happens to call it with.
+
+Random and mixed synthetic test patterns never exposed this because they
+have essentially no chance of an accidental 4-pixel coincidence spanning a
+block boundary being uniform when the wrong-but-adjacent 4 pixels are
+checked instead of the right ones. Real game content is the opposite case:
+65% flat 6-pixel chunks and 91% identical even/odd pairs mean long runs of
+identical pixels are the norm, so the *wrong* 4-pixel sample is very often
+just as uniform as the *right* one would have been - except right at the
+edges of a run, exactly where the two samples can disagree, which is what
+produced the small, sparse, edge-clustered error pattern above.
+
+Rerunning after the fix: `snes_ntsc_blit_hires_fast`'s host/SSE4 checksum on
+the 24 captured frames changes from `0xf977fe072096daea` to
+`0xe3557fa06310379d`, now identical to the (unchanged) Pi/NEON figure; the
+scalar checksum on both platforms is unchanged (`0xa01757db54ee3c6f`); and
+all three synthetic `_fast` checksums (random 256, random 65536, mixed) are
+unchanged on both platforms, as expected since the fix only changes behaviour
+on the input pattern the bug depended on. `diff_output.py A.bin B.bin --cols
+736` on fresh `--dump-output` dumps confirms 0 pixel differences for fixed
+host `_fast` vs host scalar, for Pi `_fast` vs Pi scalar, and (all 752
+columns) for fixed host `_fast` vs Pi `_fast`.
+
+`_fast` is now self-consistent across SIMD ISAs on both real and synthetic
+content, and matches the scalar reference on every shared column - no
+platform-choice decision is needed before Stage 1.
 
 For reference, the same two functions with the default synthetic random
 256-colour input, one run each (compare against the working-set sweep table

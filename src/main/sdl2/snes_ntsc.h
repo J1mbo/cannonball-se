@@ -455,11 +455,29 @@ extern "C" {
 	_mm_alignr_epi8((B), (A), (elements)*4)
 
 /*  N must be a compile‑time constant (0 … 4).
-    Result: low 64 bits contain the rotated data, high 64 bits are zero. */
+    Result: low 64 bits contain the rotated data, high 64 bits are zero.
+    Semantics must match ROTATE_OUT_NEON(A, B, N) == vext_u16(A, B, N):
+    treat A then B as one 8-lane sequence and take the 4-lane window
+    starting at lane N, i.e. result = [A[N..3], B[0..N-1]]. That requires
+    bringing A's *upper* lanes down to the bottom (srli) and B's *lower*
+    lanes up to the top (slli) - NOT the other way round. (A previous
+    version of this macro had the two shift directions swapped, which
+    instead produced [B[N..3], A[0..N-1]] - i.e. it read N pixels from the
+    wrong side of the window. That fed the wrong 4 of the 24 input pixels
+    into CHECK_ALL_EQUAL_SSE4's "is this whole block one flat colour"
+    check, so on SSE4 builds the repeat-block shortcut could both misfire
+    (falsely treating a block as flat and reusing stale output) and fail to
+    fire, on any input where the mis-sampled 4 pixels behaved differently
+    to the true ones at the block boundary - see snes_ntsc.cpp's
+    CHECK_ALL_EQUAL_SSE4 for the consumer. Random synthetic test patterns
+    almost never hit this because they rarely have neighbouring pixels
+    equal to begin with; real game content (long flat runs, repeated
+    even/odd pairs) hits it constantly, which is why only --input frames
+    ever showed the SSE4-vs-NEON divergence.) */
 #define ROTATE_OUT_SSE4(A, B, N)                                            \
     ( _mm_or_si128(                                                         \
-        _mm_slli_si128( (A), (N) * 2 ),   /* shift left  N·2 bytes */       \
-        _mm_srli_si128( (B), 8 - (N) * 2 ) ) /* shift right 8‑N·2 bytes */ )
+        _mm_srli_si128( (A), (N) * 2 ),        /* bring A[N..3] down to lane 0 */ \
+        _mm_slli_si128( (B), 8 - (N) * 2 ) ) )  /* bring B[0..N-1] up to lane (4-N) */
 
 #define ROTATE_OUT_NEON(A, B, elements) \
 	vext_u16((A), (B), (elements))

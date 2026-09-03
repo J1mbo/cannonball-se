@@ -68,6 +68,19 @@
  *                                 comparison against the hires numbers
  *                                 elsewhere in this file. Mutually exclusive
  *                                 with --input.
+ *   --dump-output <file>          append every output frame produced during
+ *                                 the correctness-checksum pass (the same
+ *                                 frames/phases folded into `checksum` -
+ *                                 every loaded frame at phases 0,1,2 for
+ *                                 --input, or the three synthetic phases
+ *                                 otherwise) to <file>, tightly packed
+ *                                 (height rows x out_width x 4 bytes, pitch
+ *                                 == out_width*4), preceded by one 32-byte
+ *                                 header: magic "CBSEOUT1", uint32 out_width,
+ *                                 uint32 height, uint32 frame_count, uint32
+ *                                 phases_per_frame, uint32 reserved[2]. Pure
+ *                                 addition - does not alter timing, the
+ *                                 checksum, or any RESULT field.
  *****************************************************************************/
 #include "snes_ntsc.h"
 
@@ -373,6 +386,7 @@ struct Args {
     bool hugepages = false;
     std::string input; // empty = synthetic input (default)
     bool lores = false;
+    std::string dump_output; // empty = no dump (default)
 };
 
 static Args parse_args(int argc, char** argv) {
@@ -390,6 +404,7 @@ static Args parse_args(int argc, char** argv) {
         else if (s == "--hugepages") a.hugepages = true;
         else if (s == "--input")  a.input   = next(i);
         else if (s == "--lores")  a.lores   = true;
+        else if (s == "--dump-output") a.dump_output = next(i);
     }
     if (a.colours < 1) a.colours = 1;
     if (a.colours > 65536) a.colours = 65536;
@@ -619,18 +634,49 @@ int main(int argc, char** argv) {
     // bit-exactness gate for the whole captured-frame corpus.
     uint64_t checksum = 14695981039346656037ULL; // FNV-1a 64-bit offset basis
     size_t out_bytes = (size_t)out_width * height * sizeof(uint32_t);
+
+    // ---- --dump-output: raw pixel dump of the checksum pass -------------
+    // Same frames/phases as the checksum loop below, in the same order -
+    // this is a pure addition (write-only observer of `out`), so it cannot
+    // change `checksum` or any other RESULT field. See the header comment
+    // above for the file format (32-byte header + tightly packed frames).
+    FILE* dump_f = nullptr;
+    if (!args.dump_output.empty()) {
+        dump_f = std::fopen(args.dump_output.c_str(), "wb");
+        if (!dump_f) {
+            std::printf("error: --dump-output '%s': cannot open for writing\n", args.dump_output.c_str());
+            return 1;
+        }
+        uint32_t hdr[8];
+        std::memcpy(&hdr[0], "CBSEOUT1", 8); // occupies hdr[0] and hdr[1]
+        hdr[2] = (uint32_t)out_width;
+        hdr[3] = (uint32_t)height;
+        hdr[4] = using_input ? (uint32_t)in_frames.size() : 1u;
+        hdr[5] = 3u; // phases_per_frame
+        hdr[6] = 0u; // reserved
+        hdr[7] = 0u; // reserved
+        std::fwrite(hdr, sizeof(uint32_t), 8, dump_f);
+    }
+
     if (using_input) {
         for (size_t i = 0; i < in_frames.size(); ++i) {
             for (int phase = 0; phase < 3; ++phase) {
                 run_frame(input_aligned[i], phase);
                 checksum = fnv1a(out, out_bytes, checksum);
+                if (dump_f) std::fwrite(out, 1, out_bytes, dump_f);
             }
         }
     } else {
         for (int phase = 0; phase < 3; ++phase) {
             run_frame(input, phase);
             checksum = fnv1a(out, out_bytes, checksum);
+            if (dump_f) std::fwrite(out, 1, out_bytes, dump_f);
         }
+    }
+
+    if (dump_f) {
+        std::fclose(dump_f);
+        std::printf("dump-output: wrote %s\n", args.dump_output.c_str());
     }
 
     std::printf("RESULT fn=%s rev=%s simd=%s w=%d h=%d pattern=%s colours=%d threads=%d "
