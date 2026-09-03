@@ -140,6 +140,7 @@ set(src_sdl
     "${main_cpp_base}/sdl2/input.hpp"
     "${main_cpp_base}/sdl2/renderbase.hpp"
     "${main_cpp_base}/sdl2/snes_ntsc.h"
+    "${main_cpp_base}/sdl2/snes_ntsc_simd.h"
 
     "${main_cpp_base}/sdl2/audio.cpp"
     "${main_cpp_base}/sdl2/wav123.cpp"

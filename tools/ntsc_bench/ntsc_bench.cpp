@@ -3,15 +3,23 @@
  *                  SNES NTSC hires blitters. See DESIGN.md in this directory.
  *
  * One binary tests exactly one blitter, selected at compile time so the same
- * source builds unmodified against any revision of snes_ntsc.{cpp,h}:
+ * source builds unmodified against any revision of snes_ntsc.{cpp,h} - the
+ * current working tree (default: snes_ntsc_blit_hires_vec, Stage 4's sole
+ * hires blitter), or an older revision still carrying the retired
+ * snes_ntsc_blit_hires_fast()/scalar snes_ntsc_blit_hires() for reference:
  *
- *   g++ -O3 -mcpu=cortex-a53 -std=c++17 -DBENCH_FN=snes_ntsc_blit_hires_fast2 \
- *       -DBENCH_REV=WT ntsc_bench.cpp snes_ntsc.cpp -o bench_fast2
+ *   g++ -O3 -mcpu=cortex-a53 -std=c++17 -DBENCH_FN=snes_ntsc_blit_hires_fast \
+ *       -DBENCH_REV=086591c ntsc_bench.cpp snes_ntsc.cpp -o bench_fast
  *
- * -DBENCH_FN=<function>   function under test (default snes_ntsc_blit_hires_fast)
- * -DBENCH_SCALAR          building against the scalar snes_ntsc_blit_hires
- *                         reference; also switches the output width formula
- *                         to match the non-SIMD game build.
+ * -DBENCH_FN=<function>   function under test (default snes_ntsc_blit_hires_vec).
+ *                         run_host.sh/run_pi.sh also accept <function>_vec_scalar
+ *                         as shorthand for "snes_ntsc_blit_hires_vec with
+ *                         -DSNES_NTSC_FORCE_SCALAR_SIMD" (see snes_ntsc_simd.h).
+ * -DBENCH_SCALAR          building against a pre-Stage-4 revision's scalar
+ *                         snes_ntsc_blit_hires reference; also switches the
+ *                         output width formula to match the non-SIMD game
+ *                         build. run_host.sh/run_pi.sh add this automatically
+ *                         whenever <function> is exactly snes_ntsc_blit_hires.
  * -DBENCH_REV=<token>     free-form revision tag, printed in the RESULT line.
  * -DBENCH_SLOT_API        build against the slot-indexed snes_ntsc_init(3-arg)/
  *                         snes_ntsc_update_slot(s)() API (Part A of the NTSC filter
@@ -125,7 +133,7 @@
 #endif
 
 #ifndef BENCH_FN
-#define BENCH_FN snes_ntsc_blit_hires_fast
+#define BENCH_FN snes_ntsc_blit_hires_vec
 #endif
 #ifndef BENCH_REV
 #define BENCH_REV unknown
@@ -640,6 +648,10 @@ int main(int argc, char** argv) {
 #ifdef BENCH_SCALAR
     const int out_width = args.lores ? SNES_NTSC_OUT_WIDTH(320) : SNES_NTSC_OUT_WIDTH(width >> 1); // matches non-SIMD game build
 #else
+    // SNES_NTSC_OUT_WIDTH_SIMD: kept under its pre-Stage-4 name here (an alias for
+    // SNES_NTSC_OUT_WIDTH_HIRES in the working tree's header - see snes_ntsc.h) so this
+    // file keeps building unmodified against older revisions too (e.g. run_host.sh
+    // a6dfa98 snes_ntsc_blit_hires_fast), whose headers only ever defined this name.
     const int out_width = args.lores ? SNES_NTSC_OUT_WIDTH(320) : SNES_NTSC_OUT_WIDTH_SIMD(width);
 #endif
     const long out_pitch = (long)out_width * 4;

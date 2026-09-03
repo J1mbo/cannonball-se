@@ -3,6 +3,103 @@
 Minimal throughput/correctness harness for the Blargg SNES NTSC hires
 blitters (`src/main/sdl2/snes_ntsc.{cpp,h}`). Full rationale in `DESIGN.md`.
 
+## Current state (post-Stage 4)
+
+The NTSC filter re-architecture (`analysis/ARCHITECTURE.md`) is complete through Stage 4.
+This section is the quick-reference summary; the full per-stage narrative (with the
+measurements and bugs behind every decision) follows below, and `analysis/ARCHITECTURE.md`
+section 13 lists where the shipped code deviates from the original proposal.
+
+**Functions.** `snes_ntsc_blit` (lores, untouched by any stage) and
+`snes_ntsc_blit_hires_vec` (hires - the *only* hires blitter as of Stage 4: the old per-ISA
+`snes_ntsc_blit_hires_fast` and the separate scalar `snes_ntsc_blit_hires` have both been
+deleted from the working tree). `snes_ntsc_blit_hires_vec` is built on a portable v4u32
+SIMD layer (`src/main/sdl2/snes_ntsc_simd.h`, NEON/SSE2/RVV backends plus a plain-C
+fallback selected automatically, or forced with `-DSNES_NTSC_FORCE_SCALAR_SIMD`), so it is
+available and correct on every platform, including ones with no native SIMD ISA at all.
+Inside it, a fused, lookahead-free run-length classifier (no row-wide pre-pass, no
+`std::vector`) picks per 6-pixel chunk between four paths - steady run (free), uniform
+chunk (`plane_ck`), identical pair (`plane_pk`, off by default - see below), and the
+general per-pixel kernel (`plane`) - all four producing the exact same 32-bit wrap-around
+sum. `SNES_NTSC_LADDER_MASK` (default **3** = flat/skip + uniform-chunk, pair off) selects
+which levels are compiled in; see "Ladder default" below for why.
+
+**Tables**, all in `snes_ntsc_t` (`snes_ntsc.h`), phase-major (`[burst 0..2][slot
+0..8193][...]`) and regenerated per slot by `gen_slot()`/`snes_ntsc_update_slot(s)()`:
+
+| Table | Contents | Block shape | Size |
+|---|---|---|---|
+| `plane` | base 14-tap kernel, 3 alignments | 20 words (3 lead + 14 real + 3 trail) | 5.9 MB |
+| `plane_pk` | pair sums, 3 alignments | 24 words (3 lead + 15 real + 6 trail) | 7.1 MB |
+| `plane_ck` | uniform-chunk sums, all 3 alignments combined | 28 words (3 lead + 19 real + 6 trail) | 2.75 MB |
+| `plane_flat` | steady-run constant, pre-clamped/converted | 8 words | 0.79 MB |
+
+`sizeof(snes_ntsc_t)` is **16,527,360 bytes** (~15.76 MiB / 16.5 MB) - confirmed by the
+bench's `sizeof_ntsc=` field on every run below.
+
+**Checksum references** (640x448 unless noted; table built like the game - composite
+preset, `merge_fields` cleared, exactly as `RenderSurface::init_blargg_filter()` does).
+These are unchanged since Stage 2 (Stage 3 and 4 are both bit-identical to it) and hold on
+every build tested - host SSE2/SSE4, host plain-C fallback, Pi NEON, Pi plain-C fallback -
+and at every `SNES_NTSC_LADDER_MASK` value (0/1/2/3/7):
+
+| Input | Checksum |
+|---|---|
+| `--pattern random --colours 256` (default) | `0x95f5c92e642a686f` |
+| `--pattern random --colours 65536` | `0x50df72f5a78f9e6d` |
+| `--pattern mixed --colours 256` | `0x2921e1e8ab232056` |
+| `--pattern runs --colours 256` | `0x0f9860292b10dd73` |
+| `--input tools/ntsc_bench/frames` (24 captured frames, all 3 phases) | `0xe3557fa06310379d` |
+| `--width 808 --pattern random --colours 256` | `0xea6c5d4426a031f3` |
+| `--threads 2` (any of the above) | same as `--threads 1` |
+| `--lores` (unaffected by every stage; regression-only) | `0x18b1960769cc63dd` |
+
+**Comparing against the pre-Stage-4 code (a6dfa98, "Stage 3" in this file's history):**
+`run_host.sh`/`run_pi.sh` stage whichever revision's own `snes_ntsc.{cpp,h}` alongside the
+*current* `ntsc_bench.cpp`, so the retired functions remain buildable and checksummable for
+reference even though they no longer exist in the working tree:
+
+```sh
+tools/ntsc_bench/run_host.sh a6dfa98 snes_ntsc_blit_hires_fast --pattern random --colours 256
+tools/ntsc_bench/run_host.sh a6dfa98 snes_ntsc_blit_hires      --pattern random --colours 256   # scalar, -DBENCH_SCALAR auto-added
+tools/ntsc_bench/run_pi.sh   a6dfa98 snes_ntsc_blit_hires_fast --input tools/ntsc_bench/frames --seconds 5
+tools/ntsc_bench/run_host.sh WT      snes_ntsc_blit_hires_vec  --pattern random --colours 256   # current code
+```
+
+All four must (and do) reproduce the checksums above for the inputs they share.
+
+**Pi timings** (sl-d303, `--seconds 5`, median of 3, performance governor, pinned core 3) -
+`vec` (Stage 4, default mask) vs. the retired `_fast` and scalar, on the four inputs that
+matter (random 256 = raw kernel cost floor, mixed/runs = synthetic ladder exercise, `--input`
+= real game content, the corpus the whole ladder is designed around):
+
+| Function | random 256, ms | mixed, ms | runs, ms | `--input`, ms | `--input` filter-only, ms |
+|---|---|---|---|---|---|
+| `snes_ntsc_blit_hires_vec` (Stage 4) | 14.27 | 9.17 | 12.30 | **7.72** | **5.23** |
+| `snes_ntsc_blit_hires_fast` (retired, a6dfa98) | 16.65 | 13.34 | 13.65 | 8.52 | 6.03 |
+| `snes_ntsc_blit_hires` (retired scalar, a6dfa98) | 18.61 | 14.05 | 14.97 | 13.87 | 11.38 |
+
+Stage 4's fused classifier (no row-wide pre-pass) improves on Stage 3's own `--input`
+figures (9.26 ms / 6.77 ms filter-only) by a further 17% / 23%, and for the first time
+`vec` **beats** the retired `_fast` on real content (7.72 vs 8.52 ms, 9.4% faster) rather
+than trailing it - the goal Stage 3's review called "nearly but not fully realised" is met
+here. Filter-only (5.23 ms) is also now clearly inside `analysis/ARCHITECTURE.md` section
+11's "at or under 6 ms" gate (Stage 3 was 6.77 ms, "close but not quite under").
+
+L1-resident (`--colours 16`, single 5 s run, cycles/output = `ms * 1e6 / (448 * out_width)`
+at the confirmed 1 GHz Cortex-A53 clock): `vec` 8.23 ms (**24.4** cycles/output), retired
+`_fast` 10.82 ms (32.1), retired scalar 11.10 ms (33.1, `out_width` 749) - `vec` remains the
+fastest of the three on every metric measured except real-content total time in Stage 3,
+which Stage 4 has now also closed (see the table above).
+
+**Ladder default.** `SNES_NTSC_LADDER_MASK` defaults to **3** (flat/skip + uniform-chunk),
+not 7 (the Stage 3 default, which also enabled the identical-pair path). The Stage 3 mask
+experiment (further down) measured the pair level giving no measurable benefit on real
+frames while regressing transition-heavy synthetic content (`--pattern runs`) by 32%. The
+pair table (`plane_pk`) and code (`SNES_NTSC_VEC_PK`) are both kept - only the default
+changed - so `BENCH_CXXFLAGS=-DSNES_NTSC_LADDER_MASK=7` (or any other value) still builds
+and still passes every checksum above.
+
 ## Build
 
 One `.cpp`, no SDL/CMake/game headers - links only against `snes_ntsc.cpp`:
@@ -591,6 +688,15 @@ invocations exited 0 and produced 6 valid frames each, verified by `frame_stats.
 
 ## Stage 3: the run-length ladder (Part C)
 
+**Superseded by Stage 4 in one respect, kept for the record below: the row-wide
+classification pre-pass this section describes (`std::vector` buffers, one full pass over
+the row before any accumulation, up to 2-chunk lookahead) was replaced in Stage 4 by a
+fused, lookahead-free classifier carried as state across chunks in processing order - no
+pre-pass, no heap allocation. See "Stage 4" further down and `analysis/ARCHITECTURE.md`
+section 13 for the design and why. The four-path ladder itself (steady run / uniform chunk
+/ pair / general), the derived tables, and every number measured in this section are
+otherwise unaffected - Stage 4 is bit-identical to Stage 3 on every checksum.**
+
 Part C of the re-architecture (`analysis/ARCHITECTURE.md` section 6): inside
 `snes_ntsc_blit_hires_vec`, a row-wide classification pre-pass (one compare per pixel)
 picks, for every 6-pixel chunk, the cheapest of four paths that all sum to exactly the
@@ -795,16 +901,17 @@ but far less, and the mask experiment below explains why.
 snes_ntsc_blit_hires_vec ...`), forcing a rebuild whenever it is set. Bit0 = flat/skip,
 bit1 = CK (uniform chunk), bit2 = PK (pair); a cleared bit routes that case to the next
 path down rather than deleting it (mask 0 = pure general path via the ladder's own
-fallback, mask 7 = the full ladder, the shipped default). Checksums matched the full
-reference set at every mask value (all four below reproduce `0xe3557fa06310379d` on
-`--input` and `0x0f9860292b10dd73` on `--pattern runs`):
+fallback; mask 7 = the full ladder, the shipped default **at the time of this experiment -
+see "Stage 4" below, this table is exactly what motivated changing the default to 3**).
+Checksums matched the full reference set at every mask value (all four below reproduce
+`0xe3557fa06310379d` on `--input` and `0x0f9860292b10dd73` on `--pattern runs`):
 
 | Mask | Levels enabled | `--input`, ms | `--pattern runs`, ms |
 |---|---|---|---|
 | 0 | none (general path only) | 12.36 | 12.06 |
 | 1 | flat/skip | 9.92 | 12.40 |
-| 3 | flat/skip + CK | **9.26** | **11.99** |
-| 7 | flat/skip + CK + PK (shipped default) | **9.26** | 15.81 |
+| 3 | flat/skip + CK (**Stage 4's shipped default**) | **9.26** | **11.99** |
+| 7 | flat/skip + CK + PK (Stage 3's shipped default) | **9.26** | 15.81 |
 
 Flat/skip (bit0) is almost the whole win on `--input` (12.36 -> 9.92 ms, 20%); CK (bit1)
 adds a further 7% (9.92 -> 9.26 ms). **PK (bit2, pairs) adds nothing measurable on
@@ -917,3 +1024,158 @@ session should use per the game's own startup hint. Frame stats on the 5 dumped 
 (both `-t 1` and `-t 4`, identical): avg 200 distinct raw slots, 91 distinct colours, 83.5%
 flat 6-pixel chunks, 95.7% identical even/odd pairs, 89.6% vertical repetition - consistent
 with the `frames/` corpus statistics this filter is designed around.
+
+## Stage 4: retiring the old paths, fusing the classifier
+
+Three changes, all in the working tree only (nothing about how an *old* revision builds or
+checksums changes - see "Current state" above for how `run_host.sh`/`run_pi.sh` still
+exercise the retired functions for reference):
+
+1. **Ladder default 7 -> 3** (`SNES_NTSC_LADDER_MASK` in `snes_ntsc.cpp`): flat/skip + CK
+   stay on, PK (pairs) goes off by default. Purely a default-value change - the mask
+   experiment table above (Stage 3) is exactly the evidence for it, reproduced here as the
+   "shipped default" annotation. PK's code (`SNES_NTSC_VEC_PK`) and table (`plane_pk`,
+   `gen_slot()`'s derivation) are both untouched, so `BENCH_CXXFLAGS=-DSNES_NTSC_LADDER_MASK=7`
+   still builds and still checksums correctly.
+2. **Fused, lookahead-free classifier** (Part 2 of this stage's brief): replaces Stage 3's
+   row-wide pre-pass (three `std::vector` buffers sized once per call, refilled every row,
+   `isFlat(C)`/`isSkip(C)` macros with up to 2-chunk lookahead) inside
+   `snes_ntsc_blit_hires_vec` with a state machine carried across chunks in processing
+   order - no row-wide table, no heap allocation. Full design in the banner comment above
+   `snes_ntsc_blit_hires_vec()` in `snes_ntsc.cpp`; summary:
+   - `uniform(C)`/`slot(C)`: branch-free (OR of 5 XORs against the chunk's first slot).
+   - `run_len(C)`: 0 if not uniform; `run_len(C-1)+1` if uniform and same slot as a chunk
+     that was itself uniform; 1 otherwise. Reset to 0 at each row start.
+   - `emit_flat(C)` = `skipped(C)` = `run_len(C) >= 3` (identical predicate - a chunk this
+     applies to is never accumulated, and always gets its own FLAT overwrite).
+   - **Retro-add**: when a chunk `C` breaks a run (`run_len(C) <= 1`), the 1-2 immediately
+     preceding chunks that were skipped get their CK contribution added retroactively,
+     at that chunk's own compile-time `(v0, r)` placement (all 4 chunk-positions x 2
+     lookback-distances are enumerated at compile time, so every one of the 8 cases is a
+     compile-time immediate, per the brief's requirement) - `SNES_NTSC_VEC_CK` gained a
+     bounds guard (`if (v0+i >= 0)`) so a retro-add whose target crosses into the
+     *previous* group only adds the part that lands in still-live accumulators; the
+     dropped part's columns were already correctly overwritten by that earlier chunk's own
+     FLAT emission. The all-skip group fast path is unaffected (a chunk with `run_len >= 3`
+     can never also have a pending retro-add). The tail group applies this retro rule
+     unconditionally once, for the last two main chunks, before accumulating its own real
+     pixels (the row ends before any later chunk could trigger it naturally).
+   - **A double-counting bug found and fixed during validation**: the first implementation
+     shifted the carried "was chunk C-1/C-2 skipped" state forward by one position every
+     chunk regardless of whether a retro-add had just consumed it, so a chunk already
+     retro-added at one run-end could be retro-added *again* at a later run-end (reached via
+     "C-2" from a chunk further along) - silently double-summing its contribution. Caught
+     immediately by `--pattern runs` under any mask with bit0 set (checksum
+     `0x3df0769d80b04648` instead of the reference `0x0f9860292b10dd73`; `--pattern random`
+     never triggers multi-chunk runs, so it passed throughout and gave no warning, exactly
+     as the equivalent Stage 3 bug's write-up predicted). Diagnosed by comparing the raw
+     accumulator state (`A[0..2]`, dumped via a temporary debug trace) between a
+     known-correct mask=0 run and the failing mask=1 run at the first group boundary after a
+     skip: they matched exactly through the retro-add itself but diverged after the *next*
+     chunk's retro check re-fired on already-resolved state. Fix: the carried skip state is
+     reset (not shifted) whenever a retro-add round consumes it this chunk. Re-verified
+     against the full checksum set below before being kept.
+3. **Retire `snes_ntsc_blit_hires_fast` and the scalar `snes_ntsc_blit_hires`** (Part 3):
+   both deleted from `snes_ntsc.cpp`/`.h`, along with every macro that existed only to
+   support them (`SIMD_REGISTER_t`/`SIMD_INPUT_REGISTER_t` and their per-ISA typedefs,
+   `LOAD_`/`INSERT_`/`EXTRACT_SIMD_REGISTER*`, `ROTATE_OUT*`, `CHECK_ALL_EQUAL*`,
+   `SET_SNES_MASK_VECTORS*`, `SNES_NTSC_CLAMP_*_SSE4/NEON/RVV`,
+   `SNES_NTSC_CLAMP_AND_CONVERT*` (SIMD variants), `SNES_NTSC_RGB_OUT_STORE*`,
+   `SNES_NTSC_RGB_STORE*`, `SNES_NTSC_HIRES_OUT_SIMD*`, `SNES_NTSC_HIRES_OUT`,
+   `SNES_NTSC_HIRES_ROW`, and the x86/NEON/RVV intrinsic `#include`s and
+   `SNES_NTSC_X86_LEVEL`/`SNES_NTSC_HAVE_RVV` detection). `SNES_NTSC_HAVE_SIMD` itself is
+   kept (simplified to a plain 0/1 platform-capability flag, no intrinsic includes) because
+   `ntsc_bench.cpp` and `RenderSurface` still read it in comments/reference contexts even
+   though neither dispatches on it for hires any more. Everything the lores `snes_ntsc_blit`
+   and table generation (`gen_slot()`) use - `SNES_NTSC_CLAMP_`, `SNES_NTSC_CLAMP_AND_CONVERT_SCALAR`,
+   `SNES_NTSC_RGB_OUT_`, `SNES_NTSC_KW`, etc. - is untouched.
+   `SNES_NTSC_OUT_WIDTH_SIMD` is renamed to `SNES_NTSC_OUT_WIDTH_HIRES` (old name kept as a
+   one-release alias - still used as-is by `ntsc_bench.cpp` itself, specifically so it keeps
+   building against pre-Stage-4 revisions that only ever defined the old name).
+   `RenderSurface::init_blargg_filter()` and `::blargg_filter()` drop their
+   `#if SNES_NTSC_HAVE_SIMD` branches entirely - hires always calls `snes_ntsc_blit_hires_vec`
+   and always uses `SNES_NTSC_OUT_WIDTH_HIRES` (752 for 640 input, on every platform); the
+   `invExpandX` shader-uniform branch in `finalize_frame()` loses its own now-stale
+   `SNES_NTSC_HAVE_SIMD` check for the same reason (hires' `out_width` no longer varies by
+   platform, so its correction factor doesn't need to either).
+   `ntsc_bench.cpp`'s default `BENCH_FN` becomes `snes_ntsc_blit_hires_vec`; `-DBENCH_SCALAR`
+   and the `_vec_scalar` function-name mapping are unchanged (the driver scripts already
+   only auto-added `-DBENCH_SCALAR` for exactly `snes_ntsc_blit_hires`, which still holds).
+
+### Checksums (all match; host and Pi; every `SNES_NTSC_LADDER_MASK` in {0,1,2,3,7})
+
+| Build | random 256 | random 65536 | mixed | `runs` | `--input` frames | 808x448 random | threads 2 |
+|---|---|---|---|---|---|---|---|
+| `_fast` (a6dfa98, reference) | 0x95f5c92e642a686f | 0x50df72f5a78f9e6d | 0x2921e1e8ab232056 | 0x0f9860292b10dd73 | 0xe3557fa06310379d | 0xea6c5d4426a031f3 | 0x95f5c92e642a686f |
+| Host `vec`, `-march=native` (SSE2 layer) | 0x95f5c92e642a686f | - | 0x2921e1e8ab232056 | 0x0f9860292b10dd73 | 0xe3557fa06310379d | 0xea6c5d4426a031f3 | 0x95f5c92e642a686f |
+| Host `vec`, `-march=x86-64` (no-FMA table)\* | 0xc928ffe2395b1fa7 | - | - | - | 0xe3557fa06310379d | - | - |
+| Host `vec_scalar` (plain-C layer) | 0x95f5c92e642a686f | - | 0x2921e1e8ab232056 | 0x0f9860292b10dd73 | 0xe3557fa06310379d | - | - |
+| Pi `vec`, NEON | 0x95f5c92e642a686f | - | 0x2921e1e8ab232056 | 0x0f9860292b10dd73 | 0xe3557fa06310379d | 0xea6c5d4426a031f3 | 0x95f5c92e642a686f |
+| Pi `vec_scalar` | 0x95f5c92e642a686f | - | 0x2921e1e8ab232056 | 0x0f9860292b10dd73 | 0xe3557fa06310379d | - | - |
+| `--lores` (unaffected, all builds) | 0x18b1960769cc63dd | | | | | | |
+
+\* same pre-existing FMA-vs-no-FMA table-generation rounding difference documented in
+Stages 2/3 (reproduced bit-for-bit by the retired `_fast` under the same flag, at the same
+revision, in the reference-checksums table earlier in this file) - not a Stage 4 change;
+`--input` is unaffected on either flag, as before.
+
+### Pi timings and game build
+
+See "Current state" above for the final Pi timing table (`vec` vs. the retired `_fast` and
+scalar, median of 3, `--seconds 5`) and the L1-resident cycles/output figures - both
+measured in the same session as the checksums in this section, immediately after the code
+changes above, on the same idle machine (`vcgencmd get_throttled` read `0x0` before and
+after).
+
+**Game build** (WSL, `/home/pearc/cannonball-se-dump`, `cmake --build build -j16`,
+`CPATH=~/localdeps/usr/include/x86_64-linux-gnu:~/localdeps/usr/include`): no new warnings -
+the same pre-existing ones every earlier stage documented are all still present unchanged
+(`-Wcomment` on the commented-out dead code block in `snes_ntsc.h`, now at line 411;
+`gl_backend.hpp`'s two unused `fbw` warnings; `video.cpp`'s non-virtual-destructor warning;
+`rendersurface.cpp`'s unused `apply_crt_bloom`) - and no new ones from anything this stage
+touched. Both perftest+dump invocations exited 0 and produced 5 valid frames each, verified
+by `frame_stats.py` (`verify=OK` on all 5, 0 FAILED, identical stats between `-t 1` and
+`-t 4`):
+
+```sh
+SDL_VIDEODRIVER=offscreen ./build/cannonball-se -cfgfile res/config-dump.xml -perftest -t 1 -dump .../frames_stage4_t1 61 5   # exit 0
+SDL_VIDEODRIVER=offscreen ./build/cannonball-se -cfgfile res/config-dump.xml -perftest -t 4 -dump .../frames_stage4_t4 61 5   # exit 0
+```
+
+**Non-SIMD game path.** A second build in a separate directory
+(`cmake -S . -B build_scalar -DCMAKE_CXX_FLAGS=-DSNES_NTSC_FORCE_SCALAR_SIMD`) forces the
+portable v4u32 layer's plain-C fallback inside the actual game binary (proving the non-SIMD
+path the brief calls out - `SNES_NTSC_HAVE_SIMD` itself stays 1 on this x86-64 host, since
+that flag is about the platform's own ISA, not the v4u32 layer's backend choice; the point
+is that `snes_ntsc_blit_hires_vec` no longer has any *other* hires blitter to fall back to,
+so this is the only way to exercise its non-SIMD code path inside the game today). Same
+`-perftest -t 1 -dump` invocation, exit 0, 5/5 frames `verify=OK`, byte-for-byte identical
+frame statistics to the SIMD build (as expected - the whole point of the v4u32 layer is that
+its backend choice never changes output).
+
+### Deviations from the brief, with reasons
+
+- **Retro-add reuses `SNES_NTSC_VEC_CK` with a runtime-looking but compile-time-foldable
+  bounds guard** (`if ((V0)+i >= 0) ...`), rather than hand-writing a separate fully-unrolled
+  macro per (chunk-position, lookback-distance) pair. Every call site passes `V0` as a
+  literal integer (positive for the classifier's own placement, negative for the 3 of 8
+  retro cases that cross a group boundary), so each guard folds to either "always true" or
+  "always false" at compile time - functionally identical to hand-unrolling, and it lets one
+  macro serve both the normal and retroactive placement, matching the observation that a
+  chunk's own placement and any lookback placement of it are the same `(v0, r)` formula
+  evaluated at a different `c'`. Kept as a single macro for that reason; not a correctness
+  deviation, purely an implementation simplification the brief didn't preclude.
+- **`SNES_NTSC_HAVE_SIMD`'s detection block is kept, simplified** (see point 3 above) rather
+  than removed outright, because `tools/ntsc_bench/ntsc_bench.cpp`'s own guard
+  (`#if !SNES_NTSC_HAVE_SIMD && !defined(BENCH_SCALAR)`, there so the file still compiles
+  when built against a pre-Stage-2 header on a non-SIMD target with the old default
+  `BENCH_FN`) still reads it; removing the macro entirely would have required also auditing
+  and rewriting that guard's interaction with every older revision's header, which is out of
+  scope for a default-value-and-cleanup stage. The intrinsic `#include`s and
+  `SNES_NTSC_X86_LEVEL`/`SNES_NTSC_HAVE_RVV` sub-detection, which nothing outside the
+  deleted functions ever read, are removed as specified.
+- **All other explicitly-listed items landed as specified**: the lookahead-free classifier
+  design (definitions, retro-add rule, all-skip fast path, tail handling) matches the brief's
+  algorithm exactly once the double-counting bug above was fixed; `SNES_NTSC_OUT_WIDTH_HIRES`
+  rename with a one-release alias; `RenderSurface`'s unconditional hires dispatch; the
+  bench's default `BENCH_FN` and usage text.

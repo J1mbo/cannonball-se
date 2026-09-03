@@ -214,3 +214,60 @@ SHORTLIST.md. The uncommitted `_fast2` should be discarded rather than carried f
   group.
 - **Cache-line-crossing loads.** Avoided by the 64-byte block layout; confirm with the
   Stage 2 microbenchmark that unaligned in-line loads run at one per cycle.
+
+## 13. Implementation notes (deviations from this proposal)
+
+This section is retrospective, added once Stages 1-4 landed (see `README.md`'s "Current
+state" section and its per-stage narrative below that for the full detail and measurements
+behind each line). Kept short deliberately - it exists to flag *where* the shipped design
+differs from the plan above, not to re-derive why; `README.md` is the source of truth for
+numbers and rationale.
+
+- **20-word blocks, not 16.** Section 4 above specifies a 16-word (14 real + 2 zero) block.
+  The vector kernel actually shipped (Stage 2) needs a compile-time-constant 16-byte window
+  landing anywhere from 3 words before the first real tap to 3 words after the last, which a
+  2-word trailing pad cannot cover in every case; the block grew to 20 words (3 lead + 14
+  real + 3 trail) instead. `snes_ntsc_block_words`/`snes_ntsc_block_lead` in `snes_ntsc.h`.
+- **~15.8 MB table, not ~11.5 MB.** A consequence of both the wider base block above and
+  Part C's own derived tables (`plane_pk`/`plane_ck`/`plane_flat`) needing correspondingly
+  wider trailing pads for the same reason (a residue-2 window reaches one word further per
+  table). Section 4's 4.5 MiB base + section 6's ~7.5 MiB derived estimate becomes 5.9 MB +
+  10.6 MB = 16.5 MB in practice (`sizeof(snes_ntsc_t)`, confirmed by the bench).
+- **Pair level (PK) off by default.** Section 6 lists the pair path as one of four
+  unconditional levels. Stage 3's own mask experiment measured it giving nothing on real
+  frames (`--input`) and a 32% regression on transition-heavy content (`--pattern runs`) -
+  the extra pair-equality branch and table lookup outweighs its saving once dispatch cost on
+  an in-order core is accounted for. `SNES_NTSC_LADDER_MASK` defaults to 3 (flat/skip + CK)
+  as of Stage 4; the code and table are kept, off by a compile-time default rather than
+  deleted, so a build tuned for busier content can re-enable it.
+- **Prologue and tail stay on the general path (Part B), not the ladder (Part C).**
+  Section 6 does not carve these out explicitly. They are at most 2 of a row's 26-33 groups,
+  so shortcutting them saves little, and excluding them removes a real class of edge-case
+  risk (black-padding interacting with the classifier, and the tail's short/spill semantics)
+  - see README's Stage 3 "Scope decision" for the bug this avoided when it was tried anyway.
+- **Lookahead-free classifier, not a row-wide pre-pass.** Section 6's classification is
+  described as a per-chunk test with no explicit statement of whether it needs lookahead;
+  the Stage 3 implementation used a row-wide pre-pass (`std::vector` buffers, one full pass
+  over every pixel before any accumulation) so a chunk's flat/skip decision could look ahead
+  up to 2 chunks. Stage 4 replaced this with a state machine carried forward across chunks
+  in processing order (run length + up to two pending "skipped, not yet accumulated" chunks,
+  resolved retroactively when a run ends) - no row-wide table, no heap allocation, and the
+  ladder now costs nothing extra on content it cannot shortcut. See the banner comment above
+  `snes_ntsc_blit_hires_vec()` in `snes_ntsc.cpp` for the full state-machine design.
+- **Clamp+convert is a direct build of the final RGBA word, not clamp-then-bswap.** Neither
+  section 5 nor 7 specifies the convert step's exact instruction sequence. The Stage 3
+  review found the original ABGR-build-then-`bswap32` route (~20 ops) could be replaced with
+  three shifts/ands/ors building the little-endian word directly from the clamped value -
+  verified bit-for-bit equivalent, applied in `snes_ntsc_simd_clamp_convert`
+  (`snes_ntsc_simd.h`) and reused by every FLAT/general/tail emit path.
+- **Measured results vs. the estimates above.** Section 5's "15-20 issue cycles per output"
+  and section 6's "10-15 cycles per output, 3.5-5 ms per frame" were pre-implementation
+  estimates. Measured (sl-d303, see README): Part B alone (random 256, no ladder shortcut
+  available) is 40.4 cycles/output, not 15-20 - the general kernel is more expensive in
+  practice than estimated, though still faster than scalar (56.3) and `_fast` (49.4). With
+  the full ladder on real content (`--input`), `vec` lands at 9.26 ms/frame total (6.77 ms
+  filter-only) - inside the brief's real-content target range but not quite section 11's
+  "at or under 6 ms" gate, and still slightly behind `_fast`'s 8.55 ms on the same content
+  (`_fast`'s coarser 24-pixel repeat-block shortcut remains competitive on this specific
+  metric even though `vec` wins everywhere else measured - random, mixed, 16-colour
+  cycles/output, and portability to non-SIMD targets `_fast` cannot reach at all).

@@ -5,12 +5,14 @@
 #   tools/ntsc_bench/run_pi.sh <rev|WT> <function> [bench args...]
 #
 # <rev>      a git commit-ish (e.g. 086591c), or WT for the working tree.
-# <function> the blitter under test, e.g. snes_ntsc_blit_hires_fast,
-#            snes_ntsc_blit_hires_fast2, or snes_ntsc_blit_hires (scalar;
-#            -DBENCH_SCALAR is added automatically for this one).
+# <function> the blitter under test - normally snes_ntsc_blit_hires_vec (Stage 4's
+#            sole hires blitter; also accepted as snes_ntsc_blit_hires_vec_scalar,
+#            forcing its portable SIMD layer to plain C - see snes_ntsc_simd.h), or
+#            a pre-Stage-4 <rev>'s retired snes_ntsc_blit_hires_fast/snes_ntsc_blit_hires
+#            (scalar; -DBENCH_SCALAR is added automatically for this one) for reference.
 #
 # Example:
-#   tools/ntsc_bench/run_pi.sh WT snes_ntsc_blit_hires_fast2 --colours 65536 --threads 2
+#   tools/ntsc_bench/run_pi.sh WT snes_ntsc_blit_hires_vec --colours 65536 --threads 2
 #
 # --input handling: when the bench args include --input, the captured frames
 # in tools/ntsc_bench/frames/ are rsync'd once to sl-d303:~/ntsc_bench/frames/

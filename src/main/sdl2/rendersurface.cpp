@@ -168,15 +168,12 @@ void RenderSurface::init_blargg_filter()
     if (blargg) {
         // first calculate the resultant image size.
         if (config.video.hires) {
-            #if SNES_NTSC_HAVE_SIMD
-                // Only compiled when the fast function exists
-                snes_src_width = SNES_NTSC_OUT_WIDTH_SIMD(src_width); // for 640px input = 752;
-            #else
-                snes_src_width = SNES_NTSC_OUT_WIDTH((src_width>>1));
-                unsigned check_width = SNES_NTSC_IN_WIDTH(snes_src_width);
-                while (check_width < (src_width>>1))
-                    check_width = SNES_NTSC_IN_WIDTH(++snes_src_width);
-            #endif
+            // Stage 4 of the NTSC filter re-architecture: snes_ntsc_blit_hires_vec() is
+            // the only hires blitter now, on every platform (its portable v4u32 layer -
+            // snes_ntsc_simd.h - supplies a SIMD-or-scalar backend unconditionally), so
+            // its output width formula applies unconditionally too - no more non-SIMD
+            // fallback branch computing a different (749-ish) width.
+            snes_src_width = SNES_NTSC_OUT_WIDTH_HIRES(src_width); // for 640px input = 752;
         } else {
             snes_src_width = SNES_NTSC_OUT_WIDTH(src_width);
             unsigned check_width = SNES_NTSC_IN_WIDTH(snes_src_width);
@@ -908,15 +905,14 @@ bool RenderSurface::finalize_frame()
 
             float invExpandX;
             if (config.video.hires==0) {
-                // add 3% width to the source as the non-SIMD blargg filter leaves a black bar on the right
+                // add 3% width to the source as the lores blargg filter leaves a black bar on the right
                 invExpandX = 1 / 1.03;
             } else {
-                #if SNES_NTSC_HAVE_SIMD
-                    invExpandX = 1 / 1.01;
-                #else
-                    // add 3% width to the source as the non-SIMD blargg filter leaves a black bar on the right
-                    invExpandX = 1 / 1.03;
-                #endif
+                // hires always uses snes_ntsc_blit_hires_vec (Stage 4), whose output width
+                // formula (SNES_NTSC_OUT_WIDTH_HIRES) is the same on every platform - so this
+                // is no longer conditional on SNES_NTSC_HAVE_SIMD (there is no separate
+                // non-SIMD hires blitter with a different output width any more).
+                invExpandX = 1 / 1.01;
             }
             float invExpandY = 1.0;
             glb::set_uniform2("invExpand",      invExpandX, invExpandY);
@@ -1022,17 +1018,14 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
 
         // Now call the blargg code, to do the work of translating S16 slots to RGB
         if (config.video.hires) {
-            // hi-res
-            #if SNES_NTSC_HAVE_SIMD
-                // Stage 2 of the NTSC filter re-architecture: the portable vector kernel
-                // (snes_ntsc_blit_hires_vec, src/main/sdl2/snes_ntsc.cpp) replaces the
-                // per-ISA _fast blitter here; bit-identical output, see snes_ntsc_simd.h.
-                snes_ntsc_blit_hires_vec(ntsc, spix, long(src_width), phase, src_width,
-                                          block_height, tpix, output_pitch, Ashifted);
-            #else
-                snes_ntsc_blit_hires(ntsc, spix, long(src_width), phase, src_width,
-                                     block_height, tpix, output_pitch, Ashifted);
-            #endif
+            // hi-res: snes_ntsc_blit_hires_vec (src/main/sdl2/snes_ntsc.cpp) is the only
+            // hires blitter as of Stage 4 of the NTSC filter re-architecture - its portable
+            // v4u32 layer (snes_ntsc_simd.h) supplies a SIMD-or-scalar backend on every
+            // platform, so there is no separate non-SIMD fallback call to make here any
+            // more (the old snes_ntsc_blit_hires_fast()/scalar snes_ntsc_blit_hires() have
+            // both been retired).
+            snes_ntsc_blit_hires_vec(ntsc, spix, long(src_width), phase, src_width,
+                                      block_height, tpix, output_pitch, Ashifted);
         }
         else {
             // standard res processing

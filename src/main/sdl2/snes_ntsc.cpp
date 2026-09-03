@@ -1,15 +1,18 @@
 /* Based on snes_ntsc 0.2.2. http://www.slack.net/~ant/
 
-Updates for CannonBall-SE are Copyright (c) 2025 James Pearce:
+Updates for CannonBall-SE are Copyright (c) 2025-2026 James Pearce:
 - S16 emulation at 24-bit output depth
 - threaded initialisation
-- SSE/NEON SIMD blitters
-Updates Aug-25:  removed AVX dependency (now works with only SSE4.1)
-                 removed ARM AArch64 dependency (now works with ARMv7 NEON e.g. Pi2 v1.1)
-Updates Sep-25:  added scalar fall-back for Pi1 and PiZero
-Updates Feb-26:  added SSE2 fall-back; SSE4.1 now selected at compile time via __SSE4_1__
-                 so no explicit -msse4.1 flag is required
-                 RISC-V RVV 1.0 SIMD path (WITH_RVV=ON / -march=rv64gcv)
+- slot-indexed, phase-major kernel table (snes_ntsc_init()/update_slot(s)(), see
+  snes_ntsc.h's own header comment for the stage-by-stage history)
+- snes_ntsc_blit_hires_vec(): the sole hires blitter, a portable (NEON/SSE2/RVV/
+  scalar, see snes_ntsc_simd.h) adjacent-outputs vector kernel with an inline
+  run-length classifier (uniform chunk / identical pair / steady-run shortcuts
+  on top of the general per-pixel path) - see this file's banner comment above
+  snes_ntsc_blit_hires_vec() for the full design. The earlier per-ISA
+  snes_ntsc_blit_hires_fast() (SSE4/NEON/RVV intrinsics) and the separate
+  scalar snes_ntsc_blit_hires() have both been retired (Stage 4); the lores
+  blitter (snes_ntsc_blit()) is untouched by any of this.
 */
 #include <stdio.h>
 
@@ -21,7 +24,6 @@ Updates Feb-26:  added SSE2 fall-back; SSE4.1 now selected at compile time via _
 #include "snes_ntsc_simd.h" // portable v4u32 SIMD layer for snes_ntsc_blit_hires_vec (Stage 2)
 #include <cstdlib>  // atexit (debug-only FLAT constancy report, see gen_slot())
 #include <atomic>   // debug-only counters below; snes_ntsc_init() regenerates slots under OpenMP
-#include <vector>   // Part C classification buffer in snes_ntsc_blit_hires_vec()
 
 
 /* Copyright (C) 2006-2007 Shay Green. This module is free software; you
@@ -427,475 +429,18 @@ void snes_ntsc_blit(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long i
     }
 }
 
-
-
-
-void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long in_row_width,
-    int burst_phase, int in_width, int in_height, void* rgb_out, long out_pitch, long Alevel)
-{
-    int chunk_count = (in_width - 2) / (snes_ntsc_in_chunk * 2);
-    for (; in_height; --in_height)
-    {
-        SNES_NTSC_IN_T const* line_in = input;
-        SNES_NTSC_HIRES_ROW(ntsc, burst_phase,
-            snes_ntsc_black_slot, snes_ntsc_black_slot, snes_ntsc_black_slot,
-            SNES_NTSC_ADJ_IN(line_in[0]),
-            SNES_NTSC_ADJ_IN(line_in[1]));
-        snes_ntsc_out_t* restrict line_out = (snes_ntsc_out_t*)rgb_out;
-        int n;
-        line_in += 2;
-
-        for (n = chunk_count; n; --n)
-        {
-            // twice as many input pixels per chunk, compared to lo-res version
-            SNES_NTSC_COLOR_IN(0, SNES_NTSC_ADJ_IN(line_in[0]));
-            SNES_NTSC_HIRES_OUT(0, line_out[0], SNES_NTSC_OUT_DEPTH, Alevel);
-
-            SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(line_in[1]));
-            SNES_NTSC_HIRES_OUT(1, line_out[1], SNES_NTSC_OUT_DEPTH, Alevel);
-
-            SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(line_in[2]));
-            SNES_NTSC_HIRES_OUT(2, line_out[2], SNES_NTSC_OUT_DEPTH, Alevel);
-
-            SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(line_in[3]));
-            SNES_NTSC_HIRES_OUT(3, line_out[3], SNES_NTSC_OUT_DEPTH, Alevel);
-
-            SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(line_in[4]));
-            SNES_NTSC_HIRES_OUT(4, line_out[4], SNES_NTSC_OUT_DEPTH, Alevel);
-
-            SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(line_in[5]));
-            SNES_NTSC_HIRES_OUT(5, line_out[5], SNES_NTSC_OUT_DEPTH, Alevel);
-
-            SNES_NTSC_HIRES_OUT(6, line_out[6], SNES_NTSC_OUT_DEPTH, Alevel);
-
-            line_in += 6;
-            line_out += 7;
-        }
-
-        SNES_NTSC_COLOR_IN(0, snes_ntsc_black_slot);
-        SNES_NTSC_HIRES_OUT(0, line_out[0], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(1, snes_ntsc_black_slot);
-        SNES_NTSC_HIRES_OUT(1, line_out[1], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(2, snes_ntsc_black_slot);
-        SNES_NTSC_HIRES_OUT(2, line_out[2], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(3, snes_ntsc_black_slot);
-        SNES_NTSC_HIRES_OUT(3, line_out[3], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(4, snes_ntsc_black_slot);
-        SNES_NTSC_HIRES_OUT(4, line_out[4], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_COLOR_IN(5, snes_ntsc_black_slot);
-        SNES_NTSC_HIRES_OUT(5, line_out[5], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        SNES_NTSC_HIRES_OUT(6, line_out[6], SNES_NTSC_OUT_DEPTH, Alevel);
-
-        burst_phase = (burst_phase + 1) % snes_ntsc_burst_count;
-        input += in_row_width;
-        rgb_out = (char*)rgb_out + out_pitch;
-    }
-}
-
-/* JJP - SIMD macro predefined mask vectors for performance */
-#if SNES_NTSC_HAVE_SIMD
-#  if defined(__aarch64__) || defined(_M_ARM64)
-    #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_AARCH64
-#  elif defined(__ARM_NEON) || defined(__ARM_NEON__)
-    #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_NEON
-#  elif defined(_M_X64) || defined(__x86_64__) || defined(__i386__)
-    #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_SSE4
-#  elif defined(__riscv) && defined(__riscv_v)
-    #define CHECK_ALL_EQUAL CHECK_ALL_EQUAL_RVV
-#  endif
-#endif
-
-
-// Macro to check equality of 24 input pixels and store the result in
-// variable this_colour. The input pixels are stored in:
-// xmm0 lanes 2 and 3; xmm1 to xmm5; and xmm6 lanes 0 and 1.
-// Note - assumes we're working with 4x uint16_t in each register (even if those
-// registers are wider, e.g. 128-bit on SSE)
-
-// This version is for Intel/AMD chips
-
-#define CHECK_ALL_EQUAL_SSE4 do {                                                   \
-    /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1, as we're running 2-pixels out */   \
-    SIMD_INPUT_REGISTER_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                   \
-    /* Extract first 16-bit value and broadcast */                                  \
-    uint16_t first_val = (uint16_t)_mm_extract_epi16(first_line, 0);                \
-    SIMD_INPUT_REGISTER_t ref = _mm_set1_epi16(first_val);                          \
-    /* Compare each SIMD register to the reference and aggregate (AND) */           \
-    SIMD_INPUT_REGISTER_t cmp = _mm_cmpeq_epi16(first_line, ref);                   \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm1, ref));                           \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm2, ref));                           \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm3, ref));                           \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm4, ref));                           \
-    cmp = _mm_and_si128(cmp, _mm_cmpeq_epi16(xmm5, ref));                           \
-    /* Only the low 64 bits (4x u16 -> 8 bytes) matter: check their 8 MSBs */       \
-    int mm = _mm_movemask_epi8(cmp);                                                \
-    uint16_t mask = (uint16_t)-((mm & 0x00FF) == 0x00FF);                           \
-    /* set this_colour = first_val if all equal (in low half), else 0 */            \
-    this_colour = first_val & mask;                                                 \
-} while (0)
-
-
-// This version is for ARM 64-bit AArch64
-#define CHECK_ALL_EQUAL_AARCH64 do {                                                \
-    /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1, as we're running 2-pixels out */   \
-    SIMD_INPUT_REGISTER_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                   \
-    /* Extract first value and broadcast to another register */                     \
-    uint16_t first_val = vget_lane_u16(first_line, 0);                              \
-    SIMD_INPUT_REGISTER_t ref = vdup_n_u16(first_val);                              \
-    /* Compare each SIMD register to the reference and aggregate */                 \
-    SIMD_INPUT_REGISTER_t cmp = vceq_u16(first_line, ref);                          \
-    cmp = vand_u16(cmp, vceq_u16(xmm1, ref));                                       \
-    cmp = vand_u16(cmp, vceq_u16(xmm2, ref));                                       \
-    cmp = vand_u16(cmp, vceq_u16(xmm3, ref));                                       \
-    cmp = vand_u16(cmp, vceq_u16(xmm4, ref));                                       \
-    cmp = vand_u16(cmp, vceq_u16(xmm5, ref));                                       \
-    /* Check if all comparisons are true (i.e., all lanes are 0xFFFF) */            \
-    uint16_t min_c = vminv_u16(cmp);                                                \
-    uint16_t mask = -(min_c == 0xFFFF);                                             \
-    /* set this_colour = first_val if all equal, else 0 */                          \
-    this_colour = first_val & mask;                                                 \
-} while(0)
-
-/* --- ARMv7 NEON helpers (safe on Cortex-A7 / Pi 2) --- */
-#define CHECK_ALL_EQUAL_NEON do {                                                   \
-  /* Gather xmm0 lanes 2/3 and xmm6 lanes 0/1 (now 16-bit lanes) */                 \
-  SIMD_INPUT_REGISTER_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                     \
-  /* Use lane 0 as the reference value */                                           \
-  uint16_t first_val = vget_lane_u16(first_line, 0);                                \
-  SIMD_INPUT_REGISTER_t ref = vdup_n_u16(first_val);                                \
-  /* Compare each vector to the reference (0xFFFF = equal, 0 = not equal) */        \
-  SIMD_INPUT_REGISTER_t cmp = vceq_u16(first_line, ref);                            \
-  cmp = vand_u16(cmp, vceq_u16(xmm1, ref));                                         \
-  cmp = vand_u16(cmp, vceq_u16(xmm2, ref));                                         \
-  cmp = vand_u16(cmp, vceq_u16(xmm3, ref));                                         \
-  cmp = vand_u16(cmp, vceq_u16(xmm4, ref));                                         \
-  cmp = vand_u16(cmp, vceq_u16(xmm5, ref));                                         \
-  /* Pairwise-min reduction (min == AND for {0, 0xFFFF} masks) */                   \
-  SIMD_INPUT_REGISTER_t r = vpmin_u16(cmp, cmp);                                    \
-  r = vpmin_u16(r, r);                                                              \
-  uint16_t lanes_min = vget_lane_u16(r, 0);                                         \
-  /* Set this_colour = first_val iff ALL lanes matched; else 0 */                   \
-  uint16_t mask = (uint16_t)-(lanes_min == 0xFFFFu);                                \
-  this_colour = first_val & mask;                                                   \
-} while (0)
-
-/* --- RISC-V Vector (RVV 1.0) --- */
-#define CHECK_ALL_EQUAL_RVV do {                                                    \
-  SIMD_INPUT_REGISTER_t first_line = ROTATE_OUT(xmm0, xmm6, 2);                    \
-  uint16_t first_val = EXTRACT_SIMD_REGISTER_VALUE(first_line, 0);                  \
-  vuint16m1_t ref = __riscv_vmv_v_x_u16m1(first_val, 4);                            \
-  vbool16_t cmp   = __riscv_vmseq_vv_u16m1_b16(first_line, ref, 4);                \
-  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm1, ref, 4));       \
-  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm2, ref, 4));       \
-  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm3, ref, 4));       \
-  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm4, ref, 4));       \
-  cmp = __riscv_vmand_mm_b16(cmp, __riscv_vmseq_vv_u16m1_b16(xmm5, ref, 4));       \
-  uint16_t mask = (uint16_t)-(__riscv_vcpop_m_b16(cmp, 4) == 4);                   \
-  this_colour = first_val & mask;                                                   \
-} while(0)
-
-
-#if SNES_NTSC_HAVE_SIMD
-void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
-    int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel)
-    // This version utilises SIMD registers streamline:
-    // 1. Loading of pixels, as six 128-bit loads (providing 24 pixels in 6 registers)
-    // 2. Clamp and RGB conversion, as the SIMD registers can be used to perform the calculations
-    // 3. Output to memory, as the SIMD registers can be used to store the output values as seven 128-bit stores
-    // The Blargg algorithm itself is implemented in full, except for a small change in end-of-line processing
-    // to keep output line width divisable by 4 and hence 128-bit aligned.
-{
-    int chunk_count = in_width / (snes_ntsc_in_chunk * 2); // should be 640 / (3 * 2) = 106
-
-    // Prepare SIMD vectors
-    SET_SNES_MASK_VECTORS;
-    //for (int y = 0; y<in_height; y++)
-    for (; in_height; --in_height)
-    {
-        int x = 0;
-        // SIMD Input Registers (uint16_t x4)
-        SIMD_INPUT_REGISTER_t xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6; // inputs
-
-        // Outputs - xmm10..16 (uint32_t x4)
-        SIMD_REGISTER_t xmm10 = SIMD_ZERO;
-        SIMD_REGISTER_t xmm11 = SIMD_ZERO;
-        SIMD_REGISTER_t xmm12 = SIMD_ZERO;
-        SIMD_REGISTER_t xmm13 = SIMD_ZERO;
-        SIMD_REGISTER_t xmm14 = SIMD_ZERO;
-        SIMD_REGISTER_t xmm15 = SIMD_ZERO;
-        SIMD_REGISTER_t xmm16 = SIMD_ZERO;
-
-        // setup the first block, which will affect the second block.
-
-        // load the first four pixels from memory
-        SNES_NTSC_IN_T const* restrict line_in = input;
-        xmm0 = LOAD_SIMD_REGISTER(&line_in[0]);
-
-        // and use the first two pixels for this initial block
-        SNES_NTSC_HIRES_ROW(ntsc, burst_phase,
-            snes_ntsc_black_slot, snes_ntsc_black_slot, snes_ntsc_black_slot,
-            SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 0)),
-            SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 1)));
-        snes_ntsc_out_t* restrict line_out = (snes_ntsc_out_t*)rgb_out;
-
-        // set up SIMD registers and flags
-        int iterations = 0;
-        uint16_t last_colour = 0;
-        uint16_t this_colour = 0;
-
-        for (int n = (chunk_count>>2); n; --n)
-        {
-            // Load the next 6x4 = 24 pixels
-            xmm1 = LOAD_SIMD_REGISTER(&line_in[4]);
-            xmm2 = LOAD_SIMD_REGISTER(&line_in[8]);
-            xmm3 = LOAD_SIMD_REGISTER(&line_in[12]);
-            xmm4 = LOAD_SIMD_REGISTER(&line_in[16]);
-            xmm5 = LOAD_SIMD_REGISTER(&line_in[20]);
-            xmm6 = LOAD_SIMD_REGISTER(&line_in[24]); // need 0/1 for this pass; 2/3 for next
-            line_in += 24;
-
-            // 1st six. Loop is unrolled to four iterations permitting full use
-            // of 4-wide SIMD registers
-
-            CHECK_ALL_EQUAL; // stores result in this_colour, 0 if not equal or the colour if equal
-
-            // identify if this block is a repeat. this_colour must be non-zero to identify a repeat block.
-            uint32_t repeat_block = (this_colour == last_colour) & (this_colour != 0); // 0 or 1
-            last_colour = this_colour;
-
-            // check if we need to go through the calculation process
-            if (!repeat_block) {
-                // we need to do the full calculation
-                // This block processes 6x4(=24) input pixels to produce 7x4(=28) output pixels
-
-                /* process first six input pixels to produce seven outputs */
-                SNES_NTSC_COLOR_IN(0, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 2)));
-                xmm10 = INSERT_SIMD_REGISTER_VALUE(xmm10, SNES_NTSC_HIRES_OUT_SIMD(0), 0);
-
-                SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 3)));
-                xmm10 = INSERT_SIMD_REGISTER_VALUE(xmm10, SNES_NTSC_HIRES_OUT_SIMD(1), 1);
-
-                SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 0)));
-                xmm10 = INSERT_SIMD_REGISTER_VALUE(xmm10, SNES_NTSC_HIRES_OUT_SIMD(2), 2);
-
-                SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 1)));
-                xmm10 = INSERT_SIMD_REGISTER_VALUE(xmm10, SNES_NTSC_HIRES_OUT_SIMD(3), 3);
-
-                SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 2)));
-                xmm11 = INSERT_SIMD_REGISTER_VALUE(xmm11, SNES_NTSC_HIRES_OUT_SIMD(4), 0);
-
-                SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 3)));
-                xmm11 = INSERT_SIMD_REGISTER_VALUE(xmm11, SNES_NTSC_HIRES_OUT_SIMD(5), 1);
-
-                xmm11 = INSERT_SIMD_REGISTER_VALUE(xmm11, SNES_NTSC_HIRES_OUT_SIMD(6), 2);
-
-                /* process second six input pixels to produce seven outputs */
-                SNES_NTSC_COLOR_IN(0, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm2, 0)));
-                xmm11 = INSERT_SIMD_REGISTER_VALUE(xmm11, SNES_NTSC_HIRES_OUT_SIMD(0), 3);
-
-                SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm2, 1)));
-                xmm12 = INSERT_SIMD_REGISTER_VALUE(xmm12, SNES_NTSC_HIRES_OUT_SIMD(1), 0);
-
-                SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm2, 2)));
-                xmm12 = INSERT_SIMD_REGISTER_VALUE(xmm12, SNES_NTSC_HIRES_OUT_SIMD(2), 1);
-
-                SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm2, 3)));
-                xmm12 = INSERT_SIMD_REGISTER_VALUE(xmm12, SNES_NTSC_HIRES_OUT_SIMD(3), 2);
-
-                SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm3, 0)));
-                xmm12 = INSERT_SIMD_REGISTER_VALUE(xmm12, SNES_NTSC_HIRES_OUT_SIMD(4), 3);
-
-                SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm3, 1)));
-                xmm13 = INSERT_SIMD_REGISTER_VALUE(xmm13, SNES_NTSC_HIRES_OUT_SIMD(5), 0);
-
-                xmm13 = INSERT_SIMD_REGISTER_VALUE(xmm13, SNES_NTSC_HIRES_OUT_SIMD(6), 1);
-
-                /* process third six input pixels to produce seven outputs */
-                SNES_NTSC_COLOR_IN(0, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm3, 2)));
-                xmm13 = INSERT_SIMD_REGISTER_VALUE(xmm13, SNES_NTSC_HIRES_OUT_SIMD(0), 2);
-
-                SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm3, 3)));
-                xmm13 = INSERT_SIMD_REGISTER_VALUE(xmm13, SNES_NTSC_HIRES_OUT_SIMD(1), 3);
-
-                SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm4, 0)));
-                xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(2), 0);
-
-                SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm4, 1)));
-                xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(3), 1);
-
-                SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm4, 2)));
-                xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(4), 2);
-
-                SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm4, 3)));
-                xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(5), 3);
-
-                xmm15 = INSERT_SIMD_REGISTER_VALUE(xmm15, SNES_NTSC_HIRES_OUT_SIMD(6), 0);
-
-                /* process fourth set of six input pixels to produce seven outputs */
-                SNES_NTSC_COLOR_IN(0, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm5, 0)));
-                xmm15 = INSERT_SIMD_REGISTER_VALUE(xmm15, SNES_NTSC_HIRES_OUT_SIMD(0), 1);
-
-                SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm5, 1)));
-                xmm15 = INSERT_SIMD_REGISTER_VALUE(xmm15, SNES_NTSC_HIRES_OUT_SIMD(1), 2);
-
-                SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm5, 2)));
-                xmm15 = INSERT_SIMD_REGISTER_VALUE(xmm15, SNES_NTSC_HIRES_OUT_SIMD(2), 3);
-
-                SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm5, 3)));
-                xmm16 = INSERT_SIMD_REGISTER_VALUE(xmm16, SNES_NTSC_HIRES_OUT_SIMD(3), 0);
-
-                SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm6, 0)));
-                xmm16 = INSERT_SIMD_REGISTER_VALUE(xmm16, SNES_NTSC_HIRES_OUT_SIMD(4), 1);
-
-                SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm6, 1)));
-                xmm16 = INSERT_SIMD_REGISTER_VALUE(xmm16, SNES_NTSC_HIRES_OUT_SIMD(5), 2);
-
-                xmm16 = INSERT_SIMD_REGISTER_VALUE(xmm16, SNES_NTSC_HIRES_OUT_SIMD(6), 3);
-
-                // Outputs are in xmm10..xmm16 - perform clamp
-                SNES_NTSC_CLAMP_AND_CONVERT(xmm10);
-                SNES_NTSC_CLAMP_AND_CONVERT(xmm11);
-                SNES_NTSC_CLAMP_AND_CONVERT(xmm12);
-                SNES_NTSC_CLAMP_AND_CONVERT(xmm13);
-                SNES_NTSC_CLAMP_AND_CONVERT(xmm14);
-                SNES_NTSC_CLAMP_AND_CONVERT(xmm15);
-                SNES_NTSC_CLAMP_AND_CONVERT(xmm16);
-
-            }
-
-            #ifndef _WIN32
-                __builtin_prefetch(line_in  + 32, 0, 0);   // prefect next input: read, streaming
-            #endif
-            SNES_NTSC_RGB_STORE(&line_out[0], xmm10);
-            SNES_NTSC_RGB_STORE(&line_out[4], xmm11);
-            SNES_NTSC_RGB_STORE(&line_out[8], xmm12);
-            SNES_NTSC_RGB_STORE(&line_out[12], xmm13);
-            SNES_NTSC_RGB_STORE(&line_out[16], xmm14);
-            SNES_NTSC_RGB_STORE(&line_out[20], xmm15);
-            SNES_NTSC_RGB_STORE(&line_out[24], xmm16);
-
-            // replace xmm0 with next block (we're 2 input pixels out of sync due to the start of line)
-            xmm0 = xmm6;
-
-            xmm10 = xmm11 = xmm12 = xmm13 = xmm14 = xmm15 = xmm16; // in case we can use them next loop
-
-            line_out += 28; // advance pointer (4x7)
-            x += 28;
-        }
-
-        // At this point with have 6x2 + 2 = 14 input pixels left to process, plus we write out
-        // the remaining pixels based on black input pixels to allow the end of line.
-        {
-            // Load the final 2x6 = 12 pixels
-            xmm1 = LOAD_SIMD_REGISTER(&line_in[4]);
-            xmm2 = LOAD_SIMD_REGISTER(&line_in[8]);
-            xmm3 = LOAD_SIMD_REGISTER(&line_in[12]);
-
-            /* process first six input pixels to produce seven outputs */
-            SNES_NTSC_COLOR_IN(0, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 2)));
-            xmm10 = INSERT_SIMD_REGISTER_VALUE(xmm10, SNES_NTSC_HIRES_OUT_SIMD(0), 0);
-
-            SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm0, 3)));
-            xmm10 = INSERT_SIMD_REGISTER_VALUE(xmm10, SNES_NTSC_HIRES_OUT_SIMD(1), 1);
-
-            SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 0)));
-            xmm10 = INSERT_SIMD_REGISTER_VALUE(xmm10, SNES_NTSC_HIRES_OUT_SIMD(2), 2);
-
-            SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 1)));
-            xmm10 = INSERT_SIMD_REGISTER_VALUE(xmm10, SNES_NTSC_HIRES_OUT_SIMD(3), 3);
-
-            SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 2)));
-            xmm11 = INSERT_SIMD_REGISTER_VALUE(xmm11, SNES_NTSC_HIRES_OUT_SIMD(4), 0);
-
-            SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm1, 3)));
-            xmm11 = INSERT_SIMD_REGISTER_VALUE(xmm11, SNES_NTSC_HIRES_OUT_SIMD(5), 1);
-
-            xmm11 = INSERT_SIMD_REGISTER_VALUE(xmm11, SNES_NTSC_HIRES_OUT_SIMD(6), 2);
-
-            /* process last six input pixels for this row to produce seven outputs */
-            SNES_NTSC_COLOR_IN(0, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm2, 0)));
-            xmm11 = INSERT_SIMD_REGISTER_VALUE(xmm11, SNES_NTSC_HIRES_OUT_SIMD(0), 3);
-
-            SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm2, 1)));
-            xmm12 = INSERT_SIMD_REGISTER_VALUE(xmm12, SNES_NTSC_HIRES_OUT_SIMD(1), 0);
-
-            SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm2, 2)));
-            xmm12 = INSERT_SIMD_REGISTER_VALUE(xmm12, SNES_NTSC_HIRES_OUT_SIMD(2), 1);
-
-            SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm2, 3)));
-            xmm12 = INSERT_SIMD_REGISTER_VALUE(xmm12, SNES_NTSC_HIRES_OUT_SIMD(3), 2);
-
-            SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm3, 0)));
-            xmm12 = INSERT_SIMD_REGISTER_VALUE(xmm12, SNES_NTSC_HIRES_OUT_SIMD(4), 3);
-
-            SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm3, 1)));
-            xmm13 = INSERT_SIMD_REGISTER_VALUE(xmm13, SNES_NTSC_HIRES_OUT_SIMD(5), 0);
-
-            xmm13 = INSERT_SIMD_REGISTER_VALUE(xmm13, SNES_NTSC_HIRES_OUT_SIMD(6), 1);
-
-            /* process third six input pixels to produce seven outputs */
-            SNES_NTSC_COLOR_IN(0, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm3, 2)));
-            xmm13 = INSERT_SIMD_REGISTER_VALUE(xmm13, SNES_NTSC_HIRES_OUT_SIMD(0), 2);
-
-            SNES_NTSC_COLOR_IN(1, SNES_NTSC_ADJ_IN(EXTRACT_SIMD_REGISTER_VALUE(xmm3, 3)));
-            xmm13 = INSERT_SIMD_REGISTER_VALUE(xmm13, SNES_NTSC_HIRES_OUT_SIMD(1), 3);
-
-            SNES_NTSC_COLOR_IN(2, SNES_NTSC_ADJ_IN(snes_ntsc_black_slot));
-            xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(2), 0);
-
-            SNES_NTSC_COLOR_IN(3, SNES_NTSC_ADJ_IN(snes_ntsc_black_slot));
-            xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(3), 1);
-
-            SNES_NTSC_COLOR_IN(4, SNES_NTSC_ADJ_IN(snes_ntsc_black_slot));
-            xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(4), 2);
-
-            SNES_NTSC_COLOR_IN(5, SNES_NTSC_ADJ_IN(snes_ntsc_black_slot));
-            xmm14 = INSERT_SIMD_REGISTER_VALUE(xmm14, SNES_NTSC_HIRES_OUT_SIMD(5), 3);
-
-            xmm15 = ZERO_SIMD_REGISTER; // 7th output of this block is black, and 3 pixels padding to retain alignment
-
-            // Clamp the outputs
-            SNES_NTSC_CLAMP(xmm10);
-            SNES_NTSC_CLAMP(xmm11);
-            SNES_NTSC_CLAMP(xmm12);
-            SNES_NTSC_CLAMP(xmm13);
-            SNES_NTSC_CLAMP(xmm14);
-            SNES_NTSC_CLAMP(xmm15);
-
-            // adjust to RGBA and store
-            SNES_NTSC_RGB_OUT_STORE(&line_out[0], xmm10, alevel_vec);
-            SNES_NTSC_RGB_OUT_STORE(&line_out[4], xmm11, alevel_vec);
-            SNES_NTSC_RGB_OUT_STORE(&line_out[8], xmm12, alevel_vec);
-            SNES_NTSC_RGB_OUT_STORE(&line_out[12], xmm13, alevel_vec);
-            SNES_NTSC_RGB_OUT_STORE(&line_out[16], xmm14, alevel_vec);
-            SNES_NTSC_RGB_OUT_STORE(&line_out[20], xmm15, alevel_vec);
-        }
-
-        burst_phase = (burst_phase + 1) % snes_ntsc_burst_count;
-        input += in_row_width;
-        rgb_out = (char*)rgb_out + out_pitch;
-    }
-}
-
-#endif
-
 // ---------------------------------------------------------------------------
-// snes_ntsc_blit_hires_vec (Stage 2 of the NTSC filter re-architecture, Part B -
-// see tools/ntsc_bench/analysis/ARCHITECTURE.md section 5): an adjacent-outputs
-// vector kernel computing four consecutive output pixels per v4u32 register
-// from contiguous 16-byte window loads. Bit-identical to
-// snes_ntsc_blit_hires_fast() above (same 752/948-wide output, same tail
-// semantics reproducing _fast's dropped-last-two-input-pixels behaviour), but
-// built on the portable v4u32 layer (snes_ntsc_simd.h) rather than the per-ISA
-// macros _fast uses, so this function compiles and is correct on every target
-// (the plain-C v4u32 fallback makes it universal, unlike _fast which only
-// exists when SNES_NTSC_HAVE_SIMD).
+// snes_ntsc_blit_hires_vec (Part B of the NTSC filter re-architecture, see
+// tools/ntsc_bench/analysis/ARCHITECTURE.md section 5): the only hires blitter
+// as of Stage 4 - the old per-ISA snes_ntsc_blit_hires_fast() (SSE4/NEON/RVV
+// intrinsics) and the separate scalar snes_ntsc_blit_hires() have both been
+// retired (their 752/948-wide output and end-of-row/tail semantics are exactly
+// what this kernel reproduces below). An adjacent-outputs vector kernel
+// computing four consecutive output pixels per v4u32 register from contiguous
+// 16-byte window loads, built on the portable v4u32 layer (snes_ntsc_simd.h)
+// rather than per-ISA intrinsic macros, so this function compiles and is
+// correct on every target (the plain-C v4u32 fallback makes it universal,
+// unlike the retired _fast, which only ever existed when SNES_NTSC_HAVE_SIMD).
 //
 // One row is processed in groups of 24 input pixels / 28 output pixels, using
 // 10 accumulator vectors A[0..9]: A[0..6] hold the group's own 28 outputs,
@@ -975,32 +520,110 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
     SNES_NTSC_VEC_PIXEL(23, 2, 6, 2, 3); \
 } while (0)
 
-// Part C (Stage 3): the run-length ladder, see ARCHITECTURE.md section 6 and
-// the Stage 3 design brief. Real game content is 65% uniform 6-pixel chunks
+// Part C (Stage 3, re-fused in Stage 4): the run-length ladder, see
+// ARCHITECTURE.md section 6. Real game content is 65% uniform 6-pixel chunks
 // and 91% identical even/odd pairs (frame_stats.py over tools/ntsc_bench/
 // frames/), so most chunks never need the 24-pixel general kernel above at
-// all: a chunk-wide classification (one compare per pixel, done once per row
-// before any accumulation) picks, per 6-pixel chunk, the cheapest of four
-// paths that all sum to exactly the same 32-bit wrap-around total the general
-// kernel would have produced (PK/CK/FLAT are themselves just precomputed
-// partial sums of the same K blocks - see gen_slot() in this file). Applied
-// only to the row's G main groups (pixels 2..24G+1); the row's prologue
-// (virtual group -1) and tail group keep using SNES_NTSC_VEC_GROUP_BODY()
-// unchanged above - together they are at most 2 of a row's G+2 groups (26-33
-// for the widths this filter supports), so shortcutting them buys nothing
-// worth the extra edge-case surface of teaching the ladder about black
-// padding and the tail's short/spill semantics.
+// all: a per-chunk classification picks, per 6-pixel chunk, the cheapest of
+// four paths that all sum to exactly the same 32-bit wrap-around total the
+// general kernel would have produced (PK/CK/FLAT are themselves just
+// precomputed partial sums of the same K blocks - see gen_slot() in this
+// file). Applied only to the row's G main groups (pixels 2..24G+1); the
+// row's prologue (virtual group -1) keeps using SNES_NTSC_VEC_GROUP_BODY()
+// unchanged above (it is at most 1 of a row's G+2 groups, so shortcutting it
+// buys nothing worth the edge-case surface of teaching the ladder about
+// black padding); the tail group also keeps SNES_NTSC_VEC_GROUP_BODY() for
+// its own accumulation, but does participate in the classifier's run-end
+// bookkeeping (see the tail's own comment below).
+//
+// Stage 4: fused, lookahead-free classification. Stage 3 classified an
+// entire row into a heap-allocated table (chunk_slot_buf/flat_buf/r_buf,
+// three std::vectors sized once per call and refilled every row) *before*
+// any accumulation, so a chunk's flat/skip decision could look ahead at
+// chunks up to 2 positions later (isSkip(C) needed isFlat(C), isFlat(C+1)
+// *and* isFlat(C+2)). That pre-pass reads every pixel of the row a second
+// time (accumulation reads them again via slotv) and, on content the ladder
+// can't shortcut anyway, buys nothing - pure overhead. Stage 4 replaces it
+// with a state machine carried across chunks in processing order, needing
+// only the current group's own 24 already-loaded slots (slotv) plus a
+// handful of scalars carried from the last 1-2 chunks - no row-wide table,
+// no std::vector, no lookahead:
+//
+//   uniform(C):  branch-free - OR the XORs of the chunk's other 5 slots
+//                against its first; uniform iff the result is zero.
+//   run_len(C):  0 if not uniform(C); 1 if uniform(C) but its slot differs
+//                from run_len(C-1)'s chunk (or C-1 wasn't uniform); else
+//                run_len(C-1) + 1. Reset to 0 at the start of every row (the
+//                prologue's own last "chunk" always contains in[0]/in[1]
+//                after black padding, so it can never be uniform - the
+//                prologue is never classified at all, group 0 just starts
+//                with run_len = 0, matching what a real classification of
+//                the prologue would have produced anyway).
+//   emit_flat(C) = skipped(C) = run_len(C) >= 3 (chunks C-2, C-1, C are all
+//                uniform and share one slot): after the group's normal
+//                clamp/convert/store, chunk C's own 7 outputs are
+//                unconditionally overwritten with the FLAT constant for that
+//                slot (SNES_NTSC_VEC_EMIT_FLAT) - the vector-coverage mask
+//                still skips clamp/convert/store for any vector fully
+//                covered by such a chunk, exactly as Stage 3 did.
+//
+// A skipped(C) chunk is never accumulated. Its 19-word CK contribution would
+// have reached outputs up to 7C+18 - i.e. into chunks C+1 and C+2 - so *if*
+// C+1 and C+2 turn out to extend the same run (both also end up skipped,
+// hence flat-emitted), those columns are correctly produced by C+1/C+2's own
+// FLAT overwrites and C's missing contribution was never needed. But the
+// classifier has no lookahead, so it cannot know that in advance; instead,
+// when it later processes some chunk C' with run_len(C') <= 1 (uniformity
+// broke, or a fresh differently-coloured run started - i.e. the previous run,
+// if any, just ended at C'-1), it checks whether the immediately preceding
+// chunk (C'-1) and/or the one before that (C'-2) were skipped, and if so adds
+// each one's CK contribution retroactively, before accumulating C' itself -
+// exactly restoring the sum the general kernel would have produced, just
+// later than Stage 3 did it. This retro add reuses the ordinary CK window
+// (SNES_NTSC_VEC_CK), placed at the target chunk's own compile-time (v0,r) -
+// C' - 1 and C' - 2 are always within 2 positions of C', so both (v0,r) pairs
+// are known at compile time for every one of the 4 chunk positions x 2
+// lookback distances, no runtime derivation needed (see
+// SNES_NTSC_VEC_CHUNK_N's R1V0,R1R/R2V0,R2R parameters below). When the
+// retro target crosses into the *previous* group (only possible for chunk
+// position 0 needing d=1, or positions 0-1 needing d=2), part of its 19-word
+// window lands at a negative vector index relative to the current group's
+// A[] - i.e. in output columns the previous group already clamped, converted
+// and stored. Those columns are safe to drop unadded: skipped(C'-d) implies
+// its own emit_flat(C'-d) already overwrote them with the correct FLAT
+// constant when that earlier group was finalized, so nothing there is ever
+// read back out of A[] again. SNES_NTSC_VEC_CK's own bounds guards
+// (added in Stage 4) drop exactly those loads, at compile time (v0 is always
+// a literal at every call site).
+//
+// An all-skip group (all 4 chunks have run_len >= 3) still short-circuits
+// exactly as the Stage 3 review's group-level fast path did: no accumulation,
+// no clamp/convert/store, just 4 FLAT emits and A[] zeroed for the next
+// group's seed - correct because a chunk with run_len >= 3 can never also be
+// pending a retro add (retro add only fires when run_len <= 1), so there is
+// nothing outstanding to lose by skipping the whole group's accumulation.
 
 // Compile-time experiment (Stage 3 review): which ladder levels are enabled,
 // bit0 = flat/skip, bit1 = CK (uniform chunk), bit2 = PK (pair). Clearing a
 // bit routes that case to the next path down (flat to uniform to pair to
 // general), rather than deleting a level outright, so e.g. mask 1 still
 // finds pairs/uniform colour runs via the general per-pixel path, just
-// without the CK/PK tables. Default 7 = the full ladder; run_host.sh/
-// run_pi.sh can override via BENCH_CXXFLAGS=-DSNES_NTSC_LADDER_MASK=<n> to
-// measure which level(s) actually pay off on a given core (see README).
+// without the CK/PK tables. run_host.sh/run_pi.sh can override via
+// BENCH_CXXFLAGS=-DSNES_NTSC_LADDER_MASK=<n> to measure which level(s)
+// actually pay off on a given core (see README).
+//
+// Stage 4: default changed from 7 to 3 (flat/skip + CK, PK off). The Stage 3
+// mask experiment (README "Ladder-level experiment") measured PK (bit2) as
+// giving nothing on real content (`--input`: 9.26 ms either way) while
+// actively regressing transition-heavy content (`--pattern runs`: 11.99 ms
+// at mask 3 vs 15.81 ms at mask 7, a 32% regression) - the extra pair-
+// equality branch and plane_pk lookup is frequently attempted and wasted
+// whenever a chunk is neither flat nor uniform. PK's table (plane_pk,
+// gen_slot()'s PK derivation) and code (SNES_NTSC_VEC_PK, the pair branch
+// below) are both kept, purely so mask 7 (or any BENCH_CXXFLAGS override)
+// can still re-enable it for content that does resemble `--pattern runs`.
 #ifndef SNES_NTSC_LADDER_MASK
-#define SNES_NTSC_LADDER_MASK 7
+#define SNES_NTSC_LADDER_MASK 3
 #endif
 
 // One PK (pair) window: identical to SNES_NTSC_VEC_PIXEL's load pattern
@@ -1029,26 +652,38 @@ void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* re
 // combines all 3 alignments, see gen_slot()). Same addressing shape again;
 // CK's real span is 19 words, so every R needs at least 5 loads, with a 6th
 // at R in {2,3} - again a simple threshold on R, derived internally.
+//
+// Stage 4: V0 may be negative here (a retroactive add of a chunk that turned
+// out to belong to the *previous* group's coordinate frame - see the
+// classifier's "run end" handling in snes_ntsc_blit_hires_vec below), so every
+// store is guarded by "target vector index >= 0". V0/R are always compile-
+// time immediates at every call site (the classifier's own placement, and
+// every retroactive placement, are both fully enumerated by chunk position),
+// so each guard folds away entirely - to nothing for the classifier's own
+// (always non-negative) placement, and to a fixed subset of the 5-6 loads for
+// a retroactive one; the dropped loads' columns belong to a chunk whose own
+// emit_flat overwrite already covers them (see the design comment below).
 #define SNES_NTSC_VEC_CK(SLOT, V0, R) do {                                             \
     const snes_ntsc_rgb_t* base = PCK + (size_t)(SLOT) * (size_t)snes_ntsc_ck_words;    \
-    A[(V0)+0] = snes_v4_add(A[(V0)+0], snes_v4_load_u(base + (3-(R)+0)));               \
-    A[(V0)+1] = snes_v4_add(A[(V0)+1], snes_v4_load_u(base + (3-(R)+4)));               \
-    A[(V0)+2] = snes_v4_add(A[(V0)+2], snes_v4_load_u(base + (3-(R)+8)));               \
-    A[(V0)+3] = snes_v4_add(A[(V0)+3], snes_v4_load_u(base + (3-(R)+12)));              \
-    A[(V0)+4] = snes_v4_add(A[(V0)+4], snes_v4_load_u(base + (3-(R)+16)));              \
-    if ((R) >= 2)                                                                      \
+    if ((V0)+0 >= 0) A[(V0)+0] = snes_v4_add(A[(V0)+0], snes_v4_load_u(base + (3-(R)+0)));  \
+    if ((V0)+1 >= 0) A[(V0)+1] = snes_v4_add(A[(V0)+1], snes_v4_load_u(base + (3-(R)+4)));  \
+    if ((V0)+2 >= 0) A[(V0)+2] = snes_v4_add(A[(V0)+2], snes_v4_load_u(base + (3-(R)+8)));  \
+    if ((V0)+3 >= 0) A[(V0)+3] = snes_v4_add(A[(V0)+3], snes_v4_load_u(base + (3-(R)+12))); \
+    if ((V0)+4 >= 0) A[(V0)+4] = snes_v4_add(A[(V0)+4], snes_v4_load_u(base + (3-(R)+16))); \
+    if ((R) >= 2 && (V0)+5 >= 0)                                                       \
         A[(V0)+5] = snes_v4_add(A[(V0)+5], snes_v4_load_u(base + (3-(R)+20)));         \
 } while (0)
 
-// Emit chunk C's (C = 4*g+n) 7 outputs as the FLAT constant for its slot,
-// unconditionally overwriting out_g+7*n..+6. Stage 3 review, change 1:
-// plane_flat now stores the clamp+converted-with-Alevel=0 word (see
-// gen_slot()), so this is just 2 unaligned loads + 2 ORs (to fold in the
-// real Alevel via the caller's precomputed alpha_vec) + 2 unaligned stores -
-// no clamp, no convert, versus the two full snes_ntsc_simd_clamp_convert
-// calls this used to cost. Needs PFLAT/out_g/alpha_vec from the caller.
-#define SNES_NTSC_VEC_EMIT_FLAT(C_, N_) do {                                           \
-    const snes_ntsc_rgb_t* flat_clamped = PFLAT + (size_t)CS(C_) * (size_t)snes_ntsc_flat_words; \
+// Emit chunk N_'s (N_ = 0..3, this group's chunk position) 7 outputs as the
+// FLAT constant for SLOT, unconditionally overwriting out_g+7*N_..+6. Stage 3
+// review, change 1: plane_flat now stores the clamp+converted-with-Alevel=0
+// word (see gen_slot()), so this is just 2 unaligned loads + 2 ORs (to fold
+// in the real Alevel via the caller's precomputed alpha_vec) + 2 unaligned
+// stores - no clamp, no convert. Needs PFLAT/out_g/alpha_vec from the caller;
+// SLOT is the chunk's own classified slot (Stage 4: passed directly by the
+// caller - chunk_slot[N_] - rather than looked up from a row-wide table).
+#define SNES_NTSC_VEC_EMIT_FLAT(SLOT, N_) do {                                         \
+    const snes_ntsc_rgb_t* flat_clamped = PFLAT + (size_t)(SLOT) * (size_t)snes_ntsc_flat_words; \
     v4u32 out0 = snes_v4_or(snes_v4_load_u(flat_clamped + 0), alpha_vec);              \
     v4u32 out1 = snes_v4_or(snes_v4_load_u(flat_clamped + 3), alpha_vec);              \
     uint32_t* dst = out_g + 7 * (N_);                                                  \
@@ -1083,38 +718,49 @@ static int g_stat_report_installed = (atexit(snes_ntsc_vec_stats_report), 0);
 #define SNES_NTSC_STAT(counter) ((void)0)
 #endif
 
-// One 6-pixel chunk, global chunk index C (a runtime value: C = 4*g + n where
-// g is the current group's runtime loop counter and n in 0..3 is baked into
-// which of the 4 macros below a call site uses - only the (align,v0,r)
-// constants need to be compile-time immediates, and they only depend on n).
-// CS/isFlat/isSkip come from the caller's row-wide classification pre-pass
-// (see snes_ntsc_blit_hires_vec below); both are mask-aware (isFlat folds in
-// SNES_NTSC_LADDER_MASK bit0, so isSkip - built on isFlat - inherits it), and
-// the CK/PK checks below are separately gated on bits 1/2. Each of the 3
-// pairs is given explicitly as (K, ALIGN, EV0,ER0, OV0,OR0): K is the even
-// pixel's index into slotv (the odd one is K+1); (ALIGN,EV0,ER0) is the even
-// pixel's own entry in the per-pixel K table above (SNES_NTSC_VEC_GROUP_BODY)
-// - which is also exactly the PK window's (align,v0,r), since an identical
-// pair's sum lands at the even pixel's own t0 - and (OV0,OR0) is the odd
-// pixel's entry in that same table (its (v0,r) is not simply the even one's
-// r+1: r wraps to 0 with v0+1 partway through this 24-pixel table, so both
-// are spelled out here rather than derived, to avoid re-deriving that carry
-// incorrectly).
-#define SNES_NTSC_VEC_CHUNK(C_EXPR, CK_V0, CK_R,                                       \
+// One 6-pixel chunk at this group's local position N (0..3), fused,
+// lookahead-free classification (Stage 4 - see snes_ntsc_blit_hires_vec's
+// banner comment below for the full run_len/skipped/retro-add design). All
+// decisions are made from this group's own 24 already-loaded slots
+// (chunk_uniform[N]/chunk_slot[N]/run_len[N], computed by the caller just
+// before calling this) plus a small state pair carried across chunks
+// (skip1/skip1_slot, skip2/skip2_slot: whether/what the previous one or two
+// chunks were, when skipped) - no row-wide pre-pass, no lookahead.
+//
+// R1V0,R1R / R2V0,R2R are this position's compile-time CK placement for a
+// *retroactive* add of the immediately-preceding chunk (d=1) / the one before
+// that (d=2) - see the design comment below for the rel=7*(c'-d) derivation;
+// both may be negative (a retroactive target that fell in the previous
+// group), which SNES_NTSC_VEC_CK's own bounds guards handle. OWN_V0,OWN_R is
+// this position's normal (d=0) CK placement, same values Stage 3 used.
+// K0/K2/K4 (+ALIGN/EV/OV/ER/OR) are unchanged from Stage 3 - this group's 3
+// even/odd pixel pairs and their PK/general placement.
+#define SNES_NTSC_VEC_CHUNK_N(N, OWN_V0, OWN_R, R1V0, R1R, R2V0, R2R,                   \
                              K0, K0A, EV0,ER0, OV0,OR0,                                 \
                              K2, K2A, EV2,ER2, OV2,OR2,                                 \
                              K4, K4A, EV4,ER4, OV4,OR4) do {                            \
-    const int C = (C_EXPR);                                                            \
     SNES_NTSC_STAT(g_stat_total);                                                      \
-    if (isSkip(C)) {                                                                   \
-        /* Steady run: this chunk's whole contribution (outputs 7C..7C+18) will be     \
-           overwritten by the FLAT pass below (this chunk's own emit_flat(C), and      \
-           chunks C+1/C+2's, whether those land in this group or spill into the        \
-           next main group) - see the design brief's "why skip_kernel is exact". */    \
+    /* Run-end retro-add: this chunk's run_len <= 1 means the previous run (if any)     \
+       ended at N-1, so any of the last two chunks that were provisionally skipped      \
+       (their contribution never accumulated) must be added now, before this chunk's    \
+       own contribution - see the design comment's "why the retro add is exact". Once   \
+       consumed here, skip1/skip2 must NOT also shift forward into skip2 for the next   \
+       chunk below (their entire 19-word contribution was already placed in full by     \
+       this add) - otherwise a long-since-resolved skip would be retro-added a second   \
+       time at some later run end, double-counting it. */                              \
+    const bool retro_N = (run_len[N] <= 1);                                            \
+    if (retro_N) {                                                                     \
+        if (skip1) SNES_NTSC_VEC_CK(skip1_slot, R1V0, R1R);                            \
+        if (skip2) SNES_NTSC_VEC_CK(skip2_slot, R2V0, R2R);                            \
+    }                                                                                  \
+    if (flat3[N]) {                                                                    \
+        /* Steady run (run_len[N] >= 3): not accumulated - its contribution           \
+           (outputs 7N..7N+18) is either covered by this/the next 1-2 chunks' own      \
+           emit_flat overwrite, or added back retroactively above when the run ends. */ \
         SNES_NTSC_STAT(g_stat_skip);                                                   \
-    } else if ((SNES_NTSC_LADDER_MASK & 2) && CS(C) != 0xFFFFu) {                       \
+    } else if ((SNES_NTSC_LADDER_MASK & 2) && chunk_uniform[N]) {                       \
         SNES_NTSC_STAT(g_stat_uniform);                                                \
-        SNES_NTSC_VEC_CK((uint32_t)CS(C), CK_V0, CK_R);                                \
+        SNES_NTSC_VEC_CK(chunk_slot[N], OWN_V0, OWN_R);                                \
     } else {                                                                           \
         if ((SNES_NTSC_LADDER_MASK & 4) && slotv[K0] == slotv[(K0)+1]) { SNES_NTSC_STAT(g_stat_pair); SNES_NTSC_VEC_PK(K0, K0A, EV0, ER0); } \
         else { SNES_NTSC_STAT(g_stat_general); SNES_NTSC_STAT(g_stat_general);         \
@@ -1129,20 +775,29 @@ static int g_stat_report_installed = (atexit(snes_ntsc_vec_stats_report), 0);
                SNES_NTSC_VEC_PIXEL(K4,     K4A, EV4, ER4, (ER4)==3?4:3);               \
                SNES_NTSC_VEC_PIXEL((K4)+1, K4A, OV4, OR4, (OR4)==3?4:3); }             \
     } \
+    /* Shift the carried state for the next chunk: N-1 -> N-2, N -> N-1 - unless a      \
+       retro add just consumed the old skip1/skip2 above, in which case both are fully  \
+       resolved and nothing carries forward (see the comment above retro_N). */         \
+    if (retro_N) { skip2 = false; }                                                    \
+    else         { skip2 = skip1; skip2_slot = skip1_slot; }                           \
+    skip1 = flat3[N]; skip1_slot = chunk_slot[N];                                      \
 } while (0)
 
-// The 4 chunk positions within a group (n = 0..3, global chunk index
-// C = 4*(G) + n), read directly off the per-pixel K table above: chunk n
-// owns pixels 6n..6n+5, pairs (6n,6n+1)/(6n+2,6n+3)/(6n+4,6n+5). CK's
-// (v0,r) are the ones derived in the design brief ("residues r = 0,3,2,1 for
-// c' = 0,1,2,3, first vector v0 = 0,1,3,5").
-#define SNES_NTSC_VEC_CHUNK0(G) SNES_NTSC_VEC_CHUNK(4*(G)+0, 0, 0,  \
+// The 4 chunk positions within a group (N = 0..3), read directly off the
+// per-pixel K table above: chunk N owns pixels 6N..6N+5, pairs
+// (6N,6N+1)/(6N+2,6N+3)/(6N+4,6N+5). OWN_V0/OWN_R are the same CK placements
+// Stage 3 used ("residues r = 0,3,2,1 for c' = 0,1,2,3, first vector
+// v0 = 0,1,3,5"); R1/R2 are that same table evaluated at c'-1 and c'-2 (see
+// the design comment below for why retroactively placing chunk c'-d uses
+// exactly chunk (c'-d)'s own (v0,r) - shifted back a whole group, i.e. -7 on
+// v0, whenever c'-d < 0).
+#define SNES_NTSC_VEC_CHUNK0() SNES_NTSC_VEC_CHUNK_N(0, 0,0, -2,1, -4,2,  \
      0, 0, 0,0, 0,1,    2, 1, 0,2, 0,3,    4, 2, 1,0, 1,1)
-#define SNES_NTSC_VEC_CHUNK1(G) SNES_NTSC_VEC_CHUNK(4*(G)+1, 1, 3,  \
+#define SNES_NTSC_VEC_CHUNK1() SNES_NTSC_VEC_CHUNK_N(1, 1,3, 0,0, -2,1,  \
      6, 0, 1,3, 2,0,    8, 1, 2,1, 2,2,   10, 2, 2,3, 3,0)
-#define SNES_NTSC_VEC_CHUNK2(G) SNES_NTSC_VEC_CHUNK(4*(G)+2, 3, 2,  \
+#define SNES_NTSC_VEC_CHUNK2() SNES_NTSC_VEC_CHUNK_N(2, 3,2, 1,3, 0,0,  \
     12, 0, 3,2, 3,3,   14, 1, 4,0, 4,1,   16, 2, 4,2, 4,3)
-#define SNES_NTSC_VEC_CHUNK3(G) SNES_NTSC_VEC_CHUNK(4*(G)+3, 5, 1,  \
+#define SNES_NTSC_VEC_CHUNK3() SNES_NTSC_VEC_CHUNK_N(3, 5,1, 3,2, 1,3,  \
     18, 0, 5,1, 5,2,   20, 1, 5,3, 6,0,   22, 2, 6,1, 6,2)
 
 void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
@@ -1169,24 +824,6 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
     // of the row's actual pixel content, so it is computed once for the whole call.
     const v4u32 fixed_tail = snes_ntsc_simd_clamp_convert(snes_v4_zero(), clamp_mask_vec, clamp_add_vec, alpha_vec);
 
-    // Part C classification buffer (see the SNES_NTSC_VEC_CHUNK* macros above):
-    // chunk_slot[C] for global chunk index C = -4 .. 4G+5 (main chunks are
-    // 0..4G-1; the extra -4..-1 covers lookback into the prologue and 4G..4G+5
-    // covers lookahead into the tail, both needed by isFlat()/skip_kernel() at
-    // the row's two ends). Sized once per call (W, hence G, is constant across
-    // every row of one snes_ntsc_blit_hires_vec() call) and refilled every row.
-    const int C_min = -4;
-    const int C_max = 4 * G + 5;
-    const size_t n_chunks = (size_t)(C_max - C_min + 1);
-    std::vector<uint16_t> chunk_slot_buf(n_chunks);
-    // flat_buf/r_buf (see isFlat's precompute below) are refilled every row but sized
-    // once here, outside the row loop - hoisted out of a per-row scope they were
-    // originally in, since a std::vector re-allocating on every one of a frame's 448
-    // rows (per render thread) was real, measurable heap-churn overhead on the Pi that
-    // had nothing to do with the ladder's own arithmetic (see README).
-    std::vector<uint8_t> flat_buf(n_chunks);
-    std::vector<uint8_t> r_buf(n_chunks);
-
     for (; in_height; --in_height)
     {
         const snes_ntsc_rgb_t* restrict P     = (const snes_ntsc_rgb_t*)ntsc->plane[burst_phase];
@@ -1196,81 +833,17 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
         SNES_NTSC_IN_T const* restrict line_in = input;
         uint32_t* restrict line_out = (uint32_t*)rgb_out;
 
-        // Row-wide classification pre-pass (design brief's "Classification"
-        // section): chunk C's 6 pixels are at row-positions 6C+2..6C+7 (this
-        // is the same numbering the group/pixel indexing above already uses -
-        // e.g. main group g's pixel k is at row-position 2+24g+k, and chunk
-        // C=4g+n owns k=6n..6n+5, i.e. positions 2+24g+6n..+5 = 6(4g+n)+2..+7).
-        // A position outside [0,W) is black-slot padding, exactly matching
-        // the prologue/tail's own black fill below. One compare per pixel.
-        //
-        // Every chunk this loop is ever asked about for a *main* group (C in
-        // 0..4G-1) always has its whole 6-pixel window inside [0,W) - only the
-        // handful of chunks classified purely for lookback/lookahead at the
-        // row's two ends (C < 0 or C > (W-8)/6) can poke outside it. So this
-        // is split into an unchecked fast path (no branch, no bounds-checked
-        // helper call, for the ~90%+ of chunks that are the common case on
-        // any row wide enough to have a full group) and a checked slow path
-        // for just those few edge chunks - avoiding a per-pixel bounds check
-        // and function-call indirection across the whole row, which measured
-        // as a real cost on the Pi's in-order core (see README).
-        auto pixel_slot = [&](int pos) -> uint32_t {
-            return (pos < 0 || pos >= W) ? (uint32_t)snes_ntsc_black_slot : (uint32_t)line_in[pos];
-        };
-        for (int C = C_min; C <= C_max; ++C) {
-            int pos0 = 6 * C + 2;
-            uint32_t s0; bool uniform;
-            if (pos0 >= 0 && pos0 + 5 < W) {
-                SNES_NTSC_IN_T const* restrict pp = line_in + pos0;
-                s0 = (uint32_t)pp[0];
-                uniform = (uint32_t)pp[1] == s0 && (uint32_t)pp[2] == s0 && (uint32_t)pp[3] == s0 &&
-                          (uint32_t)pp[4] == s0 && (uint32_t)pp[5] == s0;
-            } else {
-                s0 = pixel_slot(pos0);
-                uniform = true;
-                for (int i = 1; i < 6; ++i) {
-                    if (pixel_slot(pos0 + i) != s0) { uniform = false; break; }
-                }
-            }
-            chunk_slot_buf[(size_t)(C - C_min)] = uniform ? (uint16_t)s0 : (uint16_t)0xFFFFu;
-        }
-        // CS(C)/isFlat(C)/isSkip(C) are *macros*, not lambdas/functions, deliberately:
-        // they are called many times per chunk from inside SNES_NTSC_VEC_CHUNK,
-        // interleaved with A[]-touching code, and Stage 2 already found the hard way
-        // (see this file's "Register-allocation fix" note in the README) that a real,
-        // non-inlined call in that position forces the compiler to spill the live
-        // accumulators around every call even when the callee is trivial - a macro
-        // can't do that, it is textually inline by construction. isFlat folds in
-        // SNES_NTSC_LADDER_MASK bit0 (the flat/skip experiment level) so every
-        // consumer - isSkip, the group-level all-skip check, and the per-chunk
-        // covered-vector/FLAT-overwrite logic below - is automatically gated by it
-        // without separately testing the mask everywhere. Valid only inside
-        // snes_ntsc_blit_hires_vec, where chunk_slot_buf/flat_buf/C_min/G are in
-        // scope; #undef'd with the other Part B/C macros right after this function.
-#define CS(C) (chunk_slot_buf[(size_t)((C) - C_min)])
-#define isFlat(C) (((SNES_NTSC_LADDER_MASK) & 1) && (flat_buf[(size_t)((C) - C_min)] != 0))
-#define isSkip(C) (((C) + 2 <= 4 * G - 1) && isFlat(C) && isFlat((C)+1) && isFlat((C)+2))
-
-        // isFlat(C) (design brief) is queried many times per chunk (the skip
-        // test for chunks C, C-1 and C-2 all consult it, and the FLAT-
-        // overwrite pass consults it again for the same C) - precomputing it
-        // once per row into a plain array (flat_buf, declared once above the
-        // row loop and just refilled here) turns every one of those repeated
-        // queries into a single read instead of recomputing isR(C)/isR(C-1)
-        // (each itself 2 more CS() reads) from scratch every time, which was
-        // the other measurable chunk of the classification overhead. This
-        // precompute always evaluates the true flat property (mask bit0 is
-        // applied only by the isFlat accessor macro above, not here).
-        {
-            for (int C = C_min; C <= C_max; ++C) {
-                uint16_t sc = CS(C);
-                r_buf[(size_t)(C - C_min)] = (uint8_t)((sc != 0xFFFFu) && (C > C_min) && (sc == CS(C - 1)));
-            }
-#define Rbuf(C) ((C) >= C_min && r_buf[(size_t)((C) - C_min)] != 0)
-            for (int C = C_min; C <= C_max; ++C)
-                flat_buf[(size_t)(C - C_min)] = (uint8_t)(Rbuf(C) && Rbuf(C - 1));
-#undef Rbuf
-        }
+        // Part C classifier state, carried across chunks in processing order for the
+        // whole row (see the fused-classifier design comment above
+        // SNES_NTSC_VEC_CHUNK_N): run_len_carry/slot_carry are run_len(C-1) and its
+        // chunk's slot (slot_carry meaningful only when run_len_carry > 0); skip1/
+        // skip1_slot and skip2/skip2_slot record whether chunks C-1 and C-2 were
+        // skipped (run_len >= 3) and, if so, their shared slot, for a possible retro
+        // add. All reset at the start of every row, per the design comment's "the
+        // prologue is never classified, group 0 just starts with run_len = 0".
+        int run_len_carry = 0; uint32_t slot_carry = 0;
+        bool skip1 = false; uint32_t skip1_slot = 0;
+        bool skip2 = false; uint32_t skip2_slot = 0;
 
         v4u32 A[10];
         for (int i = 0; i < 10; ++i) A[i] = snes_v4_zero();
@@ -1329,30 +902,56 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
         for (int g = 0; g < G; ++g) {
             uint32_t* restrict out_g = line_out + (size_t)g * 28;
 
-            if (isSkip(4*g+0) && isSkip(4*g+1) && isSkip(4*g+2) && isSkip(4*g+3)) {
-                SNES_NTSC_STAT(g_stat_total); SNES_NTSC_STAT(g_stat_total);
-                SNES_NTSC_STAT(g_stat_total); SNES_NTSC_STAT(g_stat_total);
-                SNES_NTSC_STAT(g_stat_skip); SNES_NTSC_STAT(g_stat_skip);
-                SNES_NTSC_STAT(g_stat_skip); SNES_NTSC_STAT(g_stat_skip);
-                SNES_NTSC_VEC_EMIT_FLAT(4*g+0, 0);
-                SNES_NTSC_VEC_EMIT_FLAT(4*g+1, 1);
-                SNES_NTSC_VEC_EMIT_FLAT(4*g+2, 2);
-                SNES_NTSC_VEC_EMIT_FLAT(4*g+3, 3);
-                for (int i = 0; i < 10; ++i) A[i] = snes_v4_zero();
-                continue;
-            }
-
             uint32_t slotv[24];
             SNES_NTSC_IN_T const* restrict p = line_in + 2 + g * 24;
             for (int k = 0; k < 24; ++k) slotv[k] = (uint32_t)p[k];
 
-            SNES_NTSC_VEC_CHUNK0(g);
-            SNES_NTSC_VEC_CHUNK1(g);
-            SNES_NTSC_VEC_CHUNK2(g);
-            SNES_NTSC_VEC_CHUNK3(g);
+            // Classify this group's 4 chunks from the slots just loaded (see the
+            // fused-classifier design comment above): branch-free uniform test,
+            // then run_len chained from the carried-in state through this group's
+            // own 4 chunks. Cheap scalar bookkeeping only - no table, no lookahead.
+            uint32_t chunk_slot[4]; bool chunk_uniform[4]; int run_len[4]; bool flat3[4];
+            for (int n = 0; n < 4; ++n) {
+                uint32_t s0 = slotv[6*n];
+                uint32_t u = (slotv[6*n+1]^s0) | (slotv[6*n+2]^s0) | (slotv[6*n+3]^s0) |
+                             (slotv[6*n+4]^s0) | (slotv[6*n+5]^s0);
+                chunk_uniform[n] = (u == 0);
+                chunk_slot[n] = s0;
+                uint32_t prev_slot = (n == 0) ? slot_carry    : chunk_slot[n-1];
+                int      prev_len  = (n == 0) ? run_len_carry : run_len[n-1];
+                if (!chunk_uniform[n])                              run_len[n] = 0;
+                else if (prev_len > 0 && chunk_slot[n] == prev_slot) run_len[n] = prev_len + 1;
+                else                                                 run_len[n] = 1;
+                flat3[n] = ((SNES_NTSC_LADDER_MASK) & 1) && (run_len[n] >= 3);
+            }
+            run_len_carry = run_len[3];
+            slot_carry = chunk_slot[3];
+
+            if (flat3[0] && flat3[1] && flat3[2] && flat3[3]) {
+                // All-skip group fast path (see the design comment above): no chunk
+                // here can have a retro add pending (that only fires at run_len <= 1),
+                // so no accumulation is needed at all - just the 4 FLAT emits.
+                SNES_NTSC_STAT(g_stat_total); SNES_NTSC_STAT(g_stat_total);
+                SNES_NTSC_STAT(g_stat_total); SNES_NTSC_STAT(g_stat_total);
+                SNES_NTSC_STAT(g_stat_skip); SNES_NTSC_STAT(g_stat_skip);
+                SNES_NTSC_STAT(g_stat_skip); SNES_NTSC_STAT(g_stat_skip);
+                SNES_NTSC_VEC_EMIT_FLAT(chunk_slot[0], 0);
+                SNES_NTSC_VEC_EMIT_FLAT(chunk_slot[1], 1);
+                SNES_NTSC_VEC_EMIT_FLAT(chunk_slot[2], 2);
+                SNES_NTSC_VEC_EMIT_FLAT(chunk_slot[3], 3);
+                for (int i = 0; i < 10; ++i) A[i] = snes_v4_zero();
+                skip2 = flat3[2]; skip2_slot = chunk_slot[2];
+                skip1 = flat3[3]; skip1_slot = chunk_slot[3];
+                continue;
+            }
+
+            SNES_NTSC_VEC_CHUNK0();
+            SNES_NTSC_VEC_CHUNK1();
+            SNES_NTSC_VEC_CHUNK2();
+            SNES_NTSC_VEC_CHUNK3();
 
             {
-                const bool f0 = isFlat(4*g+0), f1 = isFlat(4*g+1), f2 = isFlat(4*g+2), f3 = isFlat(4*g+3);
+                const bool f0 = flat3[0], f1 = flat3[1], f2 = flat3[2], f3 = flat3[3];
                 const bool covered[7] = { f0, f0 && f1, f1, f1 && f2, f2, f2 && f3, f3 };
                 for (int v = 0; v < 7; ++v) {
                     if (covered[v]) continue;
@@ -1360,20 +959,18 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
                     snes_v4_store_a(out_g + v * 4, A[v]);
                 }
 
-                // FLAT overwrite pass: any of this group's 4 chunks whose isFlat(C)
+                // FLAT overwrite pass: any of this group's 4 chunks whose emit_flat
                 // holds gets its 7 outputs (7n..7n+6, always inside this group's
                 // own 28) unconditionally replaced with the already clamp+converted
                 // FLAT constant for its slot (see gen_slot() and
                 // SNES_NTSC_VEC_EMIT_FLAT) - correct regardless of whether that
                 // chunk's own accumulation above ran skip/CK/PK/K, or whether the
                 // vector it lives in was even stored above (see the coverage mask
-                // just computed): skip_kernel(C) already guarantees every chunk it
-                // omits gets overwritten this way, either here or in this row's
-                // next group.
-                if (f0) SNES_NTSC_VEC_EMIT_FLAT(4*g+0, 0);
-                if (f1) SNES_NTSC_VEC_EMIT_FLAT(4*g+1, 1);
-                if (f2) SNES_NTSC_VEC_EMIT_FLAT(4*g+2, 2);
-                if (f3) SNES_NTSC_VEC_EMIT_FLAT(4*g+3, 3);
+                // just computed).
+                if (f0) SNES_NTSC_VEC_EMIT_FLAT(chunk_slot[0], 0);
+                if (f1) SNES_NTSC_VEC_EMIT_FLAT(chunk_slot[1], 1);
+                if (f2) SNES_NTSC_VEC_EMIT_FLAT(chunk_slot[2], 2);
+                if (f3) SNES_NTSC_VEC_EMIT_FLAT(chunk_slot[3], 3);
             }
 
             A[0] = A[7]; A[1] = A[8]; A[2] = A[9];
@@ -1384,8 +981,23 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
         // (j = W..W+9), reproducing _fast's end-of-row handling. Only A[0..4]
         // (outputs 28G..28G+19) are real sums; the last 4 outputs of the row
         // get the precomputed fixed_tail value rather than a 6th accumulator
-        // _fast never computes.
+        // _fast never computes. The tail keeps the unmodified Stage-2 general
+        // kernel for its own accumulation (see the Part C banner comment
+        // above), but it is still owed the classifier's run-end bookkeeping:
+        // the last main group's last two chunks (4G-1, 4G-2) may have been
+        // provisionally skipped with no later chunk ever triggering their
+        // retro add (the row simply ends first) - so, unconditionally, before
+        // accumulating anything, retro-add each one that was skipped, at the
+        // same (v0,r) a chunk at this group's position 0 would use for d=1/d=2
+        // (rel=-7/-14) - identical to SNES_NTSC_VEC_CHUNK0's own R1V0,R1R/
+        // R2V0,R2R. Bounds-guarded exactly as any other retro add: only the
+        // parts landing in this (fresh, zeroed-into-seeded) A[] are added: the
+        // rest were already covered by that chunk's own emit_flat overwrite
+        // when the last main group was finalized.
         {
+            if (skip1) SNES_NTSC_VEC_CK(skip1_slot, -2, 1);
+            if (skip2) SNES_NTSC_VEC_CK(skip2_slot, -4, 2);
+
             uint32_t slotv[24];
             SNES_NTSC_IN_T const* restrict p = line_in + (W - 14);
             for (int k = 0; k < 14; ++k) slotv[k] = (uint32_t)p[k];
@@ -1410,15 +1022,12 @@ void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* res
 #undef SNES_NTSC_VEC_PK
 #undef SNES_NTSC_VEC_CK
 #undef SNES_NTSC_VEC_EMIT_FLAT
-#undef SNES_NTSC_VEC_CHUNK
+#undef SNES_NTSC_VEC_CHUNK_N
 #undef SNES_NTSC_VEC_CHUNK0
 #undef SNES_NTSC_VEC_CHUNK1
 #undef SNES_NTSC_VEC_CHUNK2
 #undef SNES_NTSC_VEC_CHUNK3
 #undef SNES_NTSC_STAT
-#undef CS
-#undef isFlat
-#undef isSkip
 
 /*
 * The following table attempts to depicts how the data is gathered and summed, showing
