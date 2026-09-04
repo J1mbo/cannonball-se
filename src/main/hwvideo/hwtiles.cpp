@@ -227,14 +227,27 @@ void hwtiles::render_tile_layer(uint16_t* buf, uint8_t page_index, uint8_t prior
     int x_decrement = (x_clamp - xScroll) & 0x3ff;
     int y_decrement = yScroll & 0x1ff;
 
-    int my8 = -8, mx8;
-    for (int my = 0; my < 64; my++)
+    int   xs[128]; uint8_t mxl[128]; int nmx = 0;
+    for (int mx = 0; mx < 128; mx++) {
+        int x = mx * 8 - x_decrement;
+        if (x < -x_clamp) x += 1024;
+        if (x > -8 && x < s16_width_noscale) { xs[nmx] = x; mxl[nmx++] = (uint8_t)mx; }
+    }
+    int   ys[64];  uint8_t myl[64];  int nmy = 0;
+    for (int my = 0; my < 64; my++) {
+        int y = my * 8 - y_decrement;
+        if (y < -288) y += 512;
+        if (y > -8 && y < S16_HEIGHT) { ys[nmy] = y; myl[nmy++] = (uint8_t)my; }
+    }
+
+    for (int j = 0; j < nmy; j++)
     {
-        my8 += 8;
-        mx8 = -8;
-        for (int mx = 0; mx < 128; mx++)
+        int my = myl[j];
+        y = ys[j];
+        for (int i = 0; i < nmx; i++)
         {
-            mx8 += 8;
+            int mx = mxl[i];
+            x = xs[i];
             const unsigned quad = ((unsigned)(my >= 32) << 1) | (unsigned)(mx >= 64);
             const uint16_t ActPage = (EffPage >> (quad * 4)) & 0x0F;
 /*            if (my < 32 && mx < 64)                    // top left
@@ -271,24 +284,6 @@ void hwtiles::render_tile_layer(uint16_t* buf, uint8_t page_index, uint8_t prior
 
                 Colour = (Data >> 6) & 0x7f;
 
-                x = mx8;
-                y = my8;
-
-                // We take into account the internal screen resolution here
-                // to account for widescreen mode.
-                x -= x_decrement;
-//                x -= (x_clamp - xScroll) & 0x3ff;
-
-                if (x < -x_clamp)
-                    x += 1024;
-
-                y -= y_decrement;
-//                y -= yScroll & 0x1ff;
-
-
-                if (y < -288)
-                    y += 512;
-
                 const uint16_t ColourOff = (uint16_t)((Colour >> 5) << 8) | TILEMAP_COLOUR_OFFSET;
 /*
                 uint16_t ColourOff = TILEMAP_COLOUR_OFFSET;
@@ -312,14 +307,26 @@ void hwtiles::render_text_layer(uint16_t* buf, uint8_t priority_draw)
 {
     uint16_t mx, my, Code, Colour, x, y, Priority, TileIndex = 0;
 
-    int my8 = -8, mx8;
-    for (my = 0; my < 32; my++) 
+    int    xs[64]; uint8_t mxl[64]; int nmx = 0;
+    for (int mx = 0; mx < 64; mx++) {
+        int x = 8 * mx - 192;
+        if (x > -8 && x < s16_width_noscale) { xs[nmx] = x; mxl[nmx++] = (uint8_t)mx; }
+    }
+    int    ys[32]; uint8_t myl[32]; int nmy = 0;
+    for (int my = 0; my < 32; my++) {
+        int y = 8 * my;
+        if (y >= 0 && y < S16_HEIGHT) { ys[nmy] = y; myl[nmy++] = (uint8_t)my; }
+    }
+
+    for (int j = 0; j < nmy; j++)
     {
-        my8 += 8;
-        mx8 = -8;
-        for (mx = 0; mx < 64; mx++) 
+        my = myl[j];
+        y = ys[j];
+        for (int i = 0; i < nmx; i++)
         {
-            mx8 += 8;
+            mx = mxl[i];
+            x = xs[i];
+            TileIndex = (my * 64 + mx) * 2;
             Code = (text_ram[TileIndex + 0] << 8) | text_ram[TileIndex + 1];
             Priority = (Code >> 15) & 1;
 
@@ -331,24 +338,16 @@ void hwtiles::render_text_layer(uint16_t* buf, uint8_t priority_draw)
                 Code += (tile_banks[0] << 12);
                 Code &= (NUM_TILES - 1);
 
-                if (Code != 0) 
+                if (Code != 0)
                 {
-//                    x = 8 * mx;
-//                    y = 8 * my;
-                    x = mx8;
-                    y = my8;
-
-                    x -= 192;
-
-                    // We also adjust the text layer for wide-screen below. But don't allow painting in the 
+                    // We also adjust the text layer for wide-screen below. But don't allow painting in the
                     // wide-screen areas to avoid graphical glitches.
                     if (x > 7 && x < (s16_width_noscale - 8) && y > 7 && y <= (S16_HEIGHT - 8))
                         (this->*render8x8_tile_mask)(buf, Code, x + config.s16_x_off, y, Colour, 3, 0, TILEMAP_COLOUR_OFFSET);
-                    else if (x > -8 && x < s16_width_noscale && y >= 0 && y < S16_HEIGHT) 
+                    else if (x > -8 && x < s16_width_noscale && y >= 0 && y < S16_HEIGHT)
                         (this->*render8x8_tile_mask_clip)(buf, Code, x + config.s16_x_off, y, Colour, 3, 0, TILEMAP_COLOUR_OFFSET);
                 }
             }
-            TileIndex += 2;
         }
     }
 }
