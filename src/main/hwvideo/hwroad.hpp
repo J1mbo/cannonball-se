@@ -27,7 +27,19 @@ public:
     void write_road_control(const uint8_t);
     void (HWRoad::*render_background)(uint16_t*);
     void (HWRoad::*render_foreground)(uint16_t*);
-  
+
+    // S0.4: unconditional accessors (needed by the game's future -dumpram, S0.5,
+    // not yet wired up here). Harmless in the shipping game either way.
+    const uint16_t* road_ram_buffer() const { return ramBuff; }   // 0x800 halfwords
+    uint8_t  get_road_control() const { return road_control; }
+
+#ifdef CB_RENDER_TEST
+    // S0.4: lets the standalone test driver (tools/road_tiles/test) reach
+    // private state and the _ref reference twins below without
+    // "#define private public". Never defined by the game build.
+    friend struct RoadTilesTestAccess;
+#endif
+
 private:
     uint8_t road_control;
     uint16_t color_offset1;
@@ -50,6 +62,16 @@ private:
     void render_foreground_lores(uint16_t*);
     void render_background_hires(uint16_t*);
     void render_foreground_hires(uint16_t*);
+
+#ifdef CB_RENDER_TEST
+    // S0.3: verbatim reference twins of the four functions above, as they
+    // stood before any optimisation section was applied. Not compiled into
+    // the game; every future section is checked against these.
+    void render_background_lores_ref(uint16_t*);
+    void render_foreground_lores_ref(uint16_t*);
+    void render_background_hires_ref(uint16_t*);
+    void render_foreground_hires_ref(uint16_t*);
+#endif
 };
 
 extern HWRoad hwroad;

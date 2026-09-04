@@ -1,0 +1,5 @@
+# build + compiled test binaries
+b/
+*_test
+*_test_scalar
+s1_scan_test

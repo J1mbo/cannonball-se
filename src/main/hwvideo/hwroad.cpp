@@ -1,5 +1,6 @@
 #include <algorithm> // Required for std::fill_n
 #include "hwvideo/hwroad.hpp"
+#include "hwvideo/hwarch.hpp"
 #include "globals.hpp"
 #include "frontend/config.hpp"
 
@@ -110,6 +111,32 @@
  *      | !CENTA & (RDA == 3) & (CTRL == 0)
  *
  *******************************************************************************************/
+
+// S0.3: file-scope copies of the priority tables that used to be duplicated as
+// function-local statics inside render_foreground_lores() and
+// render_foreground_hires() (identical contents in both). Moved here, as a
+// single shared copy, so the _ref twins below, this file's own foreground
+// functions, and any future kernel (S6) all read the same table. This is the
+// one permitted edit to the bodies the _ref twins otherwise copy verbatim;
+// values are unchanged, so shipping-game output is unaffected.
+static const uint8_t priority_map[2][8] =
+{
+    { 0x80,0x81,0x81,0x87,0,0,0,0x00 },
+    { 0x81,0x81,0x81,0x8f,0,0,0,0x80 }
+};
+// Define a lookup table mapping (pix0, pix1) to color indices
+// for the hot path
+static const ALIGN64 uint8_t priority_lookup[8][8] = {
+    // pix1: 0  1  2  3  4  5  6  7
+    {   0,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 0
+    {   1,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 1
+    {   1,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 2
+    {   1,  1,  1,  0,  0,  0,  0, 1 }, // pix0 = 3
+    {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 4
+    {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 5
+    {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 6
+    {   0,  0,  0,  0,  0,  0,  0, 0 }  // pix0 = 7
+};
 
 HWRoad hwroad;
 
@@ -301,25 +328,6 @@ void HWRoad::render_foreground_lores(uint16_t* pixels)
     for (uint16_t y = 0; y < S16_HEIGHT; y++)
     {
         uint16_t color_table[32];
-
-        static const uint8_t priority_map[2][8] =
-        {
-            { 0x80,0x81,0x81,0x87,0,0,0,0x00 },
-            { 0x81,0x81,0x81,0x8f,0,0,0,0x80 }
-        };
-        // Define a lookup table mapping (pix0, pix1) to color indices
-        // for the hot path
-        static const ALIGN64 uint8_t priority_lookup[8][8] = {
-            // pix1: 0  1  2  3  4  5  6  7
-            {   0,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 0
-            {   1,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 1
-            {   1,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 2
-            {   1,  1,  1,  0,  0,  0,  0, 1 }, // pix0 = 3
-            {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 4
-            {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 5
-            {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 6
-            {   0,  0,  0,  0,  0,  0,  0, 0 }  // pix0 = 7
-        };
 
         const uint32_t data0 = roadram[0x000 + y];
         const uint32_t data1 = roadram[0x100 + y];
@@ -605,25 +613,6 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
     {
         yy = y >> 1;
 
-        static const uint8_t priority_map[2][8] =
-        {
-            { 0x80,0x81,0x81,0x87,0,0,0,0x00 },
-            { 0x81,0x81,0x81,0x8f,0,0,0,0x80 }
-        };
-        // Define a lookup table mapping (pix0, pix1) to color indices
-        // for the hot path
-        static const ALIGN64 uint8_t priority_lookup[8][8] = {
-            // pix1: 0  1  2  3  4  5  6  7
-            {   0,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 0
-            {   1,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 1
-            {   1,  0,  0,  0,  0,  0,  0, 1 }, // pix0 = 2
-            {   1,  1,  1,  0,  0,  0,  0, 1 }, // pix0 = 3
-            {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 4
-            {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 5
-            {   0,  0,  0,  0,  0,  0,  0, 0 }, // pix0 = 6
-            {   0,  0,  0,  0,  0,  0,  0, 0 }  // pix0 = 7
-        };
-
         uint32_t data0 = roadram[0x000 + yy];
         uint32_t data1 = roadram[0x100 + yy];
 
@@ -787,4 +776,520 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
             } // end switch
     } // end for
 }
+
+#ifdef CB_RENDER_TEST
+// ------------------------------------------------------------------------------------------------
+// S0.3: reference twins. Verbatim copies of the four functions above as they
+// stood before any optimisation section (S1-S7) was applied, renamed with a
+// "_ref" suffix, taking no DC ZVA, no window scan, no mask. They are the
+// reference every future section is checked against and are never compiled
+// into the game. The only edit relative to the originals is that they read
+// the file-scope priority_map/priority_lookup tables above (S0.3) instead of
+// each carrying their own function-local copy -- values are identical.
+// ------------------------------------------------------------------------------------------------
+
+// Background: Look for solid fill scanlines
+void HWRoad::render_background_lores_ref(uint16_t* pixels)
+{
+    const uint16_t* roadram = ramBuff;
+
+    for (uint16_t y = 0; y < S16_HEIGHT; y++)
+    {
+        const int data0 = roadram[0x000 + y];
+        const int data1 = roadram[0x100 + y];
+
+        int color = -1;
+
+        // based on the info->control, we can figure out which sky to draw
+        switch (road_control & 3)
+        {
+            case 0:
+                if (data0 & 0x800)
+                    color = data0 & 0x7f;
+                break;
+
+            case 1:
+                if (data0 & 0x800)
+                    color = data0 & 0x7f;
+                else if (data1 & 0x800)
+                    color = data1 & 0x7f;
+                break;
+
+            case 2:
+                if (data1 & 0x800)
+                    color = data1 & 0x7f;
+                else if (data0 & 0x800)
+                    color = data0 & 0x7f;
+                break;
+
+            case 3:
+                if (data1 & 0x800)
+                    color = data1 & 0x7f;
+                break;
+        }
+
+        if (color != -1) {
+            const std::size_t w = config.s16_width;
+            uint16_t c = static_cast<uint16_t>(color | color_offset3);
+            uint16_t* pPixel = pixels + (y * w);
+            uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel); // enable writing as 32-bit values
+            // Fill both y and y+1 scanlines with final_color
+            // Total pixels to fill: width * 2 pixels = 2 lines
+            std::fill_n(out32, w >> 1, static_cast<uint32_t>(c << 16) | c);
+        }
+    }
+}
+
+
+// Foreground: Render From ROM
+void HWRoad::render_foreground_lores_ref(uint16_t* pixels)
+{
+    uint16_t* roadram = ramBuff;
+
+    for (uint16_t y = 0; y < S16_HEIGHT; y++)
+    {
+        uint16_t color_table[32];
+
+        const uint32_t data0 = roadram[0x000 + y];
+        const uint32_t data1 = roadram[0x100 + y];
+
+        // if both roads are low priority, skip
+        if (((data0 & 0x800) != 0) && ((data1 & 0x800) != 0))
+            continue;
+
+        uint16_t* pPixel = pixels + (y * config.s16_width);
+        uint32_t hpos0, hpos1, color0, color1;
+        uint32_t control = road_control & 3;
+
+        uint8_t *src0, *src1;
+        uint32_t bgcolor; // 8 bits
+
+        // get road 0 data
+        src0   = ((data0 & 0x800) != 0) ? roads + 256 * 2 * 512 : (roads + (0x000 + ((data0 >> 1) & 0xff)) * 512);
+        hpos0  = roadram[0x200 + (((road_control & 4) != 0) ? y : (data0 & 0x1ff))] & 0xfff;
+        color0 = roadram[0x600 + (((road_control & 4) != 0) ? y : (data0 & 0x1ff))];
+
+        // get road 1 data
+        src1   = ((data1 & 0x800) != 0) ? roads + 256 * 2 * 512 : (roads + (0x100 + ((data1 >> 1) & 0xff)) * 512);
+        hpos1  = roadram[0x400 + (((road_control & 4) != 0) ? (0x100 + y) : (data1 & 0x1ff))] & 0xfff;
+        color1 = roadram[0x600 + (((road_control & 4) != 0) ? (0x100 + y) : (data1 & 0x1ff))];
+
+        // determine the 5 colors for road 0
+        color_table[0x00] = color_offset1 ^ 0x00 ^ ((color0 >> 0) & 1);
+        color_table[0x01] = color_offset1 ^ 0x02 ^ ((color0 >> 1) & 1);
+        color_table[0x02] = color_offset1 ^ 0x04 ^ ((color0 >> 2) & 1);
+        bgcolor = (color0 >> 8) & 0xf;
+        color_table[0x03] = ((data0 & 0x200) != 0) ? color_table[0x00] : (color_offset2 ^ 0x00 ^ bgcolor);
+        color_table[0x07] = color_offset1 ^ 0x06 ^ ((color0 >> 3) & 1);
+
+        // determine the 5 colors for road 1
+        color_table[0x10] = color_offset1 ^ 0x08 ^ ((color1 >> 4) & 1);
+        color_table[0x11] = color_offset1 ^ 0x0a ^ ((color1 >> 5) & 1);
+        color_table[0x12] = color_offset1 ^ 0x0c ^ ((color1 >> 6) & 1);
+        bgcolor = (color1 >> 8) & 0xf;
+        color_table[0x13] = ((data1 & 0x200) != 0) ? color_table[0x10] : (color_offset2 ^ 0x10 ^ bgcolor);
+        color_table[0x17] = color_offset1 ^ 0x0e ^ ((color1 >> 7) & 1);
+
+        // Shift road dependent on whether we are in widescreen mode or not
+        uint16_t s16_x = 0x5f8 + config.s16_x_off;
+
+        // draw the road
+        switch (control)
+        {
+            case 0: {
+                if (data0 & 0x800)
+                    continue;
+                uint16_t pairs = config.s16_width >> 1;
+                uint32_t h0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
+                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
+                while (pairs--) {
+                    // pixel 0
+                    unsigned p0 = 3u;
+                    if (h0 < 0x200u) p0 = src0[h0];
+                    uint16_t c0 = color_table[p0];
+                    h0 = (h0 + 1) & 0xfff;
+
+                    // pixel 1
+                    p0 = 3u;
+                    if (h0 < 0x200u) p0 = src0[h0];
+                    uint16_t c1 = color_table[p0];
+                    h0 = (h0 + 1) & 0xfff;
+
+                    // one 32-bit store (c0 low, c1 high; little-endian)
+                    *out32++ = (uint32_t)c0 | ((uint32_t)c1 << 16);
+                }
+                hpos0 = h0;
+                break;
+            }
+
+            case 1: {
+                // hot path
+                uint16_t pairs = config.s16_width >> 1;               // number of 2-pixel pairs
+                uint32_t h0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
+                uint32_t h1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
+                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
+
+                while (pairs--) {
+                    unsigned p0 = 3u;
+                    unsigned p1 = 3u;
+                    if (h0 < 0x200u) p0 = src0[h0];
+                    if (h1 < 0x200u) p1 = src1[h1];
+
+                    uint16_t c0;
+                    if (priority_lookup[p0][p1]) {
+                        c0 = color_table[0x10 + p1];
+                    } else {
+                        // this is the hot path, 85% or so, rely on branch prediction to handle it
+                        c0 = color_table[0x00 + p0];
+                    }
+
+                    h0 = (h0 + 1) & 0xfff;
+                    h1 = (h1 + 1) & 0xfff;
+
+                    p0 = 3u;
+                    p1 = 3u;
+                    if (h0 < 0x200u) p0 = src0[h0];
+                    if (h1 < 0x200u) p1 = src1[h1];
+
+                    uint16_t c1;
+                    if (priority_lookup[p0][p1]) {
+                        c1 = color_table[0x10 + p1];
+                    } else {
+                        // this is the hot path, 85% or so, rely on branch prediction to handle it
+                        c1 = color_table[0x00 + p0];
+                    }
+
+                    h0 = (h0 + 1) & 0xfff;
+                    h1 = (h1 + 1) & 0xfff;
+
+                    *out32++ = (uint32_t)c0 | ((uint32_t)c1 << 16);
+                }
+                hpos0 = h0;
+                hpos1 = h1;
+
+                break;
+            }
+
+            case 2: {
+                uint16_t pairs = config.s16_width >> 1;               // number of 2-pixel pairs
+                uint32_t h0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
+                uint32_t h1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
+                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
+
+                while (pairs--) {
+                    unsigned p0 = 3u;
+                    unsigned p1 = 3u;
+                    if (h0 < 0x200u) p0 = src0[h0];
+                    if (h1 < 0x200u) p1 = src1[h1];
+
+                    uint16_t c0;
+                    if (((priority_map[1][p0] >> p1) & 1) != 0) {
+                        c0 = color_table[0x10 + p1];
+                    } else {
+                        c0 = color_table[0x00 + p0];
+                    }
+
+                    h0 = (h0 + 1) & 0xfff;
+                    h1 = (h1 + 1) & 0xfff;
+
+                    p0 = 3u;
+                    p1 = 3u;
+                    if (h0 < 0x200u) p0 = src0[h0];
+                    if (h1 < 0x200u) p1 = src1[h1];
+
+                    uint16_t c1;
+                    if (((priority_map[1][p0] >> p1) & 1) != 0) {
+                        c1 = color_table[0x10 + p1];
+                    } else {
+                        c1 = color_table[0x00 + p0];
+                    }
+
+                    h0 = (h0 + 1) & 0xfff;
+                    h1 = (h1 + 1) & 0xfff;
+
+                    *out32++ = (uint32_t)c0 | ((uint32_t)c1 << 16);
+                }
+                hpos0 = h0;
+                hpos1 = h1;
+
+                break;
+            }
+
+            case 3: {
+                if (data1 & 0x800)
+                    continue;
+                uint16_t pairs = config.s16_width >> 1;
+                uint32_t h1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
+                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
+                while (pairs--) {
+                    // pixel 0
+                    unsigned p0 = 3u;
+                    if (h1 < 0x200u) p0 = src1[h1];
+                    uint16_t c0 = color_table[0x10 + p0];
+                    h1 = (h1 + 1) & 0xfff;
+
+                    // pixel 1
+                    p0 = 3u;
+                    if (h1 < 0x200u) p0 = src1[h1];
+                    uint16_t c1 = color_table[0x10 + p0];
+                    h1 = (h1 + 1) & 0xfff;
+
+                    // one 32-bit store (c0 low, c1 high; little-endian)
+                    *out32++ = (uint32_t)c0 | ((uint32_t)c1 << 16);
+                }
+                hpos1 = h1;
+                break;
+            }
+        } // end switch
+    } // end for
+}
+
+void HWRoad::render_background_hires_ref(uint16_t* pixels)
+{
+    int x, y;
+    uint16_t* roadram = ramBuff;
+
+    for (y = 0; y < config.s16_height; y += 2)
+    {
+        int data0 = roadram[0x000 + (y >> 1)];
+        int data1 = roadram[0x100 + (y >> 1)];
+
+        int color = -1;
+
+        // based on the info->control, we can figure out which sky to draw
+        switch (road_control & 3)
+        {
+            case 0:
+                if (data0 & 0x800)
+                    color = data0 & 0x7f;
+                break;
+
+            case 1:
+                if (data0 & 0x800)
+                    color = data0 & 0x7f;
+                else if (data1 & 0x800)
+                    color = data1 & 0x7f;
+                break;
+
+            case 2:
+                if (data1 & 0x800)
+                    color = data1 & 0x7f;
+                else if (data0 & 0x800)
+                    color = data0 & 0x7f;
+                break;
+
+            case 3:
+                if (data1 & 0x800)
+                    color = data1 & 0x7f;
+                break;
+        }
+
+        // fill the scanline with color
+        // JJP - this is in the hot-path, over 5% CPU spent here
+        // Optimise by replacing per-pixel processing with per-two-lines processing
+        // Assumes the memcpy outside the loop is redundant when color = -1
+        /* Original Code: */
+        /* if (color != -1)
+        {
+            uint16_t* pPixel = pixels + (y * config.s16_width);
+            color |= color_offset3;
+
+            for (x = 0; x < config.s16_width; x++)
+                *(pPixel)++ = color;
+        }
+
+        // Hi-Res Mode: Copy extra line of background
+        memcpy(pixels + ((y+1) * config.s16_width), pixels + (y * config.s16_width), sizeof(uint16_t) * config.s16_width);
+        */
+
+        // Hi-speed version - might leave road with gaps
+        if (color != -1) {
+            uint16_t* pPixel = pixels + (y * config.s16_width);
+            uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel); // enable writing as 32-bit values
+            uint16_t c = static_cast<uint16_t>(color | color_offset3);
+            // Fill both y and y+1 scanlines with final_color
+            // Total pixels to fill: width * 2 pixels = 2 lines
+            std::fill_n(out32, config.s16_width, static_cast<uint32_t>(c << 16) | c);
+        }
+    }
+}
+
+// Interpolates previous scanline with next.
+void HWRoad::render_foreground_hires_ref(uint16_t* pixels)
+{
+    int x, y, yy;
+    uint16_t* roadram = ramBuff;
+
+    uint16_t color_table[32];
+    int32_t color0, color1;
+    int32_t bgcolor; // 8 bits
+
+    for (y = 0; y < config.s16_height; y++)
+    {
+        yy = y >> 1;
+
+        uint32_t data0 = roadram[0x000 + yy];
+        uint32_t data1 = roadram[0x100 + yy];
+
+        // if both roads are low priority, skip
+        if (((data0 & 0x800) != 0) && ((data1 & 0x800) != 0))
+        {
+            y++;
+            continue;
+        }
+
+        uint8_t *src0 = NULL, *src1 = NULL;
+
+        // get road 0 data
+        int32_t hpos0  = roadram[0x200 + (((road_control & 4) != 0) ? yy : (data0 & 0x1ff))] & 0xfff;
+
+        // get road 1 data
+        int32_t hpos1  = roadram[0x400 + (((road_control & 4) != 0) ? (0x100 + yy) : (data1 & 0x1ff))] & 0xfff;
+
+        // ----------------------------------------------------------------------------------------
+        // Interpolate Scanlines when in hi-resolution mode.
+        // ----------------------------------------------------------------------------------------
+        if (y & 1 && yy < S16_HEIGHT - 1)
+        {
+            uint32_t data0_next = roadram[0x000 + yy + 1];
+            uint32_t data1_next = roadram[0x100 + yy + 1];
+
+            int32_t  hpos0_next = roadram[0x200 + (((road_control & 4) != 0) ? yy + 1 : (data0_next & 0x1ff))] & 0xfff;
+            int32_t  hpos1_next = roadram[0x400 + (((road_control & 4) != 0) ? yy + 1 : (data1_next & 0x1ff))] & 0xfff;
+
+            // Interpolate road 1 position
+            if (((data0 & 0x800) == 0) && (data0_next & 0x800) == 0)
+            {
+                data0      = (data0      >> 1) & 0xFF;
+                data0_next = (data0_next >> 1) & 0xFF;
+                int32_t diff = (data0 + ((data0_next - data0) >> 1)) & 0xFF;
+                src0 = (roads + (0x000 + diff) * 512);
+                hpos0 = (hpos0 + ((hpos0_next - hpos0) >> 1)) & 0xFFF;
+            }
+            // Interpolate road 2 source position
+            if (((data1 & 0x800) == 0) && (data1_next & 0x800) == 0)
+            {
+                data1      = (data1      >> 1) & 0xFF;
+                data1_next = (data1_next >> 1) & 0xFF;
+                int32_t diff = (data1 + ((data1_next - data1) >> 1)) & 0xFF;
+                src1 = (roads + (0x100 + diff) * 512);
+                hpos1 = (hpos1 + ((hpos1_next - hpos1) >> 1)) & 0xFFF;
+            }
+        }
+        // ----------------------------------------------------------------------------------------
+        // Recalculate for non-interpolated scanlines
+        // ----------------------------------------------------------------------------------------
+        else
+        {
+            color0 = roadram[0x600 + (((road_control & 4) != 0) ? yy :           (data0 & 0x1ff))];
+            color1 = roadram[0x600 + (((road_control & 4) != 0) ? (0x100 + yy) : (data1 & 0x1ff))];
+
+            // determine the 5 colors for road 0
+            color_table[0x00] = color_offset1 ^ 0x00 ^ ((color0 >> 0) & 1);
+            color_table[0x01] = color_offset1 ^ 0x02 ^ ((color0 >> 1) & 1);
+            color_table[0x02] = color_offset1 ^ 0x04 ^ ((color0 >> 2) & 1);
+            bgcolor = (color0 >> 8) & 0xf;
+            color_table[0x03] = ((data0 & 0x200) != 0) ? color_table[0x00] : (color_offset2 ^ 0x00 ^ bgcolor);
+            color_table[0x07] = color_offset1 ^ 0x06 ^ ((color0 >> 3) & 1);
+
+            // determine the 5 colors for road 1
+            color_table[0x10] = color_offset1 ^ 0x08 ^ ((color1 >> 4) & 1);
+            color_table[0x11] = color_offset1 ^ 0x0a ^ ((color1 >> 5) & 1);
+            color_table[0x12] = color_offset1 ^ 0x0c ^ ((color1 >> 6) & 1);
+            bgcolor = (color1 >> 8) & 0xf;
+            color_table[0x13] = ((data1 & 0x200) != 0) ? color_table[0x10] : (color_offset2 ^ 0x10 ^ bgcolor);
+            color_table[0x17] = color_offset1 ^ 0x0e ^ ((color1 >> 7) & 1);
+        }
+
+        if (src0 == NULL)
+            src0 = ((data0 & 0x800) != 0) ? roads + 256 * 2 * 512 : (roads + (0x000 + ((data0 >> 1) & 0xff)) * 512);
+        if (src1 == NULL)
+            src1 = ((data1 & 0x800) != 0) ? roads + 256 * 2 * 512 : (roads + (0x100 + ((data1 >> 1) & 0xff)) * 512);
+
+        // Shift road dependent on whether we are in widescreen mode or not
+        uint16_t s16_x = 0x5f8 + config.s16_x_off;
+        uint16_t* const pPixel = pixels + (y * config.s16_width);
+        uint16_t* pP;
+
+        // draw the road
+        switch (road_control & 3)
+        {
+            case 0:{
+                // infrequently called in Outrun
+                if (data0 & 0x800)
+                    continue;
+                auto thpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
+                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
+                int xmax = config.s16_width >> 1;
+                while (xmax) {
+                    int pix0 = (thpos0 < 0x200) ? src0[thpos0] : 3;
+                    uint16_t c = color_table[0x00 + pix0];
+                    *out32++ = (static_cast<uint32_t>(c) << 16) | c; // write two pixels
+                    thpos0 = (thpos0 + 1) & 0xfff;
+                    xmax--;
+                }
+                break;
+            }
+            case 1: {
+                // JJP - Outrun hot path - optimised via pre-computed
+                // lookup table & unroll to avoid hpos calculation tests
+                auto thpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
+                auto thpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
+                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
+                int xmax = config.s16_width >> 1;
+                while (xmax) {
+                    int pix0 = (thpos0 < 0x200) ? src0[thpos0] : 3;
+                    int pix1 = (thpos1 < 0x200) ? src1[thpos1] : 3;
+                    uint16_t c;
+                    if (priority_lookup[pix0][pix1]) {
+                        c = color_table[0x10 + pix1];
+                    }
+                    else {
+                        // this is the hot path, 85% or so, rely on branch prediction to handle it
+                        c = color_table[0x00 + pix0];
+                    }
+                    *out32++ = (static_cast<uint32_t>(c) << 16) | c; // write two pixels
+                    thpos0 = (thpos0 + 1) & 0xfff;
+                    thpos1 = (thpos1 + 1) & 0xfff;
+                    xmax--;
+                }
+                break;
+            }
+            case 2:
+                // seems to be never taken in Outrun
+                hpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
+                hpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
+                for (x = 0; x < config.s16_width; x++)
+                {
+                    int pix0 = (hpos0 < 0x200) ? src0[hpos0] : 3;
+                    int pix1 = (hpos1 < 0x200) ? src1[hpos1] : 3;
+                    if (((priority_map[1][pix0] >> pix1) & 1) != 0)
+                        pPixel[x] = color_table[0x10 + pix1];
+                    else
+                        pPixel[x] = color_table[0x00 + pix0];
+                    if (x & 1)
+                    {
+                        hpos0 = (hpos0 + 1) & 0xfff;
+                        hpos1 = (hpos1 + 1) & 0xfff;
+                    }
+                }
+                break;
+
+            case 3:
+                // seems to be never taken in Outrun
+                if (data1 & 0x800)
+                    continue;
+                hpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
+                for (x = 0; x < config.s16_width; x++)
+                {
+                    int pix1 = (hpos1 < 0x200) ? src1[hpos1] : 3;
+                    pPixel[x] = color_table[0x10 + pix1];
+                    if (x & 1)
+                        hpos1 = (hpos1 + 1) & 0xfff;
+                }
+                break;
+            } // end switch
+    } // end for
+}
+#endif // CB_RENDER_TEST
 
