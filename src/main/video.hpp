@@ -45,7 +45,12 @@ public:
     // prepare_frame(), read by the main thread for the periodic report: these
     // are monotonic accumulators, so a torn read would only mis-state one
     // sample and cannot corrupt state.
-    uint64_t prof_ns_road_tiles = 0;
+    uint64_t prof_ns_road_tiles = 0;   // sum of the five below
+    uint64_t prof_ns_tilevals   = 0;   // tile_layer->update_tile_values()
+    uint64_t prof_ns_road_bg    = 0;   // hwroad render_background
+    uint64_t prof_ns_tile_bg    = 0;   // render_tile_layer(pixels, 1, 0)
+    uint64_t prof_ns_tile_fg    = 0;   // render_tile_layer(pixels, 0, 0)
+    uint64_t prof_ns_road_fg    = 0;   // hwroad render_foreground
     uint64_t prof_ns_sprites    = 0;
     uint64_t prof_ns_text       = 0;
     uint64_t prof_frames        = 0;

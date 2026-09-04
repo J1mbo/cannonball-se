@@ -644,22 +644,32 @@ static void main_loop() {
             // it includes contention from the render threads, the audio thread
             // and the GPU. Deltas since the last report.
             {
-                static uint64_t last_rt = 0, last_sp = 0, last_tx = 0, last_fr = 0;
-                uint64_t rt = video.prof_ns_road_tiles, sp = video.prof_ns_sprites;
-                uint64_t tx = video.prof_ns_text,       fr = video.prof_frames;
-                uint64_t dfr = fr - last_fr;
+                static uint64_t l_tv = 0, l_rb = 0, l_tb = 0, l_tf = 0, l_rf = 0;
+                static uint64_t l_sp = 0, l_tx = 0, l_fr = 0;
+                uint64_t tv = video.prof_ns_tilevals, rb = video.prof_ns_road_bg;
+                uint64_t tb = video.prof_ns_tile_bg,  tf = video.prof_ns_tile_fg;
+                uint64_t rf = video.prof_ns_road_fg,  sp = video.prof_ns_sprites;
+                uint64_t tx = video.prof_ns_text,     fr = video.prof_frames;
+                uint64_t dfr = fr - l_fr;
                 if (dfr) {
-                    printf("\r%i FPS (dropped: %i%%)  | per frame: road+tiles %.2f ms, "
-                           "SPRITES %.2f ms, text %.2f ms  (%llu frames)   ",
-                           fps, droppedPercent,
-                           (double)(rt - last_rt) / dfr / 1e6,
-                           (double)(sp - last_sp) / dfr / 1e6,
-                           (double)(tx - last_tx) / dfr / 1e6,
-                           (unsigned long long)dfr);
+                    printf("\n%i FPS (drop %i%%, %llu frames) ms/frame:"
+                           " tilevals %.3f | road_bg %.3f | tile_bg %.3f | tile_fg %.3f"
+                           " | road_fg %.3f | SPRITES %.3f | text %.3f | TOTAL %.3f",
+                           fps, droppedPercent, (unsigned long long)dfr,
+                           (double)(tv - l_tv) / dfr / 1e6,
+                           (double)(rb - l_rb) / dfr / 1e6,
+                           (double)(tb - l_tb) / dfr / 1e6,
+                           (double)(tf - l_tf) / dfr / 1e6,
+                           (double)(rf - l_rf) / dfr / 1e6,
+                           (double)(sp - l_sp) / dfr / 1e6,
+                           (double)(tx - l_tx) / dfr / 1e6,
+                           (double)((tv-l_tv)+(rb-l_rb)+(tb-l_tb)+(tf-l_tf)+(rf-l_rf)
+                                    +(sp-l_sp)+(tx-l_tx)) / dfr / 1e6);
                 } else {
                     printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
                 }
-                last_rt = rt; last_sp = sp; last_tx = tx; last_fr = fr;
+                l_tv = tv; l_rb = rb; l_tb = tb; l_tf = tf; l_rf = rf;
+                l_sp = sp; l_tx = tx; l_fr = fr;
             }
             fflush(stdout);
             fps_counter = fps;

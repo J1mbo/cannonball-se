@@ -194,10 +194,16 @@ void Video::prepare_frame()
         const clk::time_point t0 = clk::now();
 
         tile_layer->update_tile_values();
+        const clk::time_point tA = clk::now();
 
         (hwroad.*hwroad.render_background)(pixels);
+        const clk::time_point tB = clk::now();
+
         tile_layer->render_tile_layer(pixels, 1, 0);      // background layer
+        const clk::time_point tC = clk::now();
+
         tile_layer->render_tile_layer(pixels, 0, 0);      // foreground layer
+        const clk::time_point tD = clk::now();
 
         if (!config.engine.fix_bugs || oroad.horizon_base != ORoad::HORIZON_OFF)
             (hwroad.*hwroad.render_foreground)(pixels);
@@ -208,6 +214,11 @@ void Video::prepare_frame()
         tile_layer->render_text_layer(pixels, 1);
         const clk::time_point t3 = clk::now();
 
+        prof_ns_tilevals   += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(tA - t0).count();
+        prof_ns_road_bg    += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(tB - tA).count();
+        prof_ns_tile_bg    += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(tC - tB).count();
+        prof_ns_tile_fg    += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(tD - tC).count();
+        prof_ns_road_fg    += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - tD).count();
         prof_ns_road_tiles += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
         prof_ns_sprites    += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
         prof_ns_text       += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count();
