@@ -639,7 +639,28 @@ static void main_loop() {
             int fps = renderedFrames / 2;
             int totalFrames = renderedFrames + droppedFrames;
             int droppedPercent = (totalFrames > 0) ? (droppedFrames * 100 / totalFrames) : 0;
-            printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
+            // --- measurement only (branch sprite-a53) -------------------------
+            // Per-frame cost of each prepare_frame() layer, measured in situ so
+            // it includes contention from the render threads, the audio thread
+            // and the GPU. Deltas since the last report.
+            {
+                static uint64_t last_rt = 0, last_sp = 0, last_tx = 0, last_fr = 0;
+                uint64_t rt = video.prof_ns_road_tiles, sp = video.prof_ns_sprites;
+                uint64_t tx = video.prof_ns_text,       fr = video.prof_frames;
+                uint64_t dfr = fr - last_fr;
+                if (dfr) {
+                    printf("\r%i FPS (dropped: %i%%)  | per frame: road+tiles %.2f ms, "
+                           "SPRITES %.2f ms, text %.2f ms  (%llu frames)   ",
+                           fps, droppedPercent,
+                           (double)(rt - last_rt) / dfr / 1e6,
+                           (double)(sp - last_sp) / dfr / 1e6,
+                           (double)(tx - last_tx) / dfr / 1e6,
+                           (unsigned long long)dfr);
+                } else {
+                    printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
+                }
+                last_rt = rt; last_sp = sp; last_tx = tx; last_fr = fr;
+            }
             fflush(stdout);
             fps_counter = fps;
             renderedFrames = 0;

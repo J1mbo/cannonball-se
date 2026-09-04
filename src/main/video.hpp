@@ -39,6 +39,17 @@ public:
 
     bool enabled;
 
+    // --- measurement only (branch sprite-a53) ---------------------------------
+    // Nanoseconds accumulated inside prepare_frame(), split by layer, plus the
+    // number of sprite scanlines drawn.  Written by whichever thread runs
+    // prepare_frame(), read by the main thread for the periodic report: these
+    // are monotonic accumulators, so a torn read would only mis-state one
+    // sample and cannot corrupt state.
+    uint64_t prof_ns_road_tiles = 0;
+    uint64_t prof_ns_sprites    = 0;
+    uint64_t prof_ns_text       = 0;
+    uint64_t prof_frames        = 0;
+
 	Video();
     ~Video();
     

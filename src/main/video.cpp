@@ -22,6 +22,7 @@
 #include <cstring>      // std::memset
 #include <iostream>
 #include <bit>          // std::byteswap (C++20/23)
+#include <chrono>       // measurement only (branch sprite-a53)
 #include <cstring>      // std::memcpy
 
 #include "video.hpp"
@@ -189,6 +190,9 @@ void Video::prepare_frame()
     else
     {
         // OutRun Hardware Video Emulation
+        typedef std::chrono::steady_clock clk;
+        const clk::time_point t0 = clk::now();
+
         tile_layer->update_tile_values();
 
         (hwroad.*hwroad.render_background)(pixels);
@@ -198,8 +202,16 @@ void Video::prepare_frame()
         if (!config.engine.fix_bugs || oroad.horizon_base != ORoad::HORIZON_OFF)
             (hwroad.*hwroad.render_foreground)(pixels);
 
+        const clk::time_point t1 = clk::now();
         sprite_layer->render(pixels, 8);
+        const clk::time_point t2 = clk::now();
         tile_layer->render_text_layer(pixels, 1);
+        const clk::time_point t3 = clk::now();
+
+        prof_ns_road_tiles += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        prof_ns_sprites    += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
+        prof_ns_text       += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count();
+        prof_frames++;
     }
 }
 
