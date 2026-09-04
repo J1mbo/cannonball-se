@@ -340,7 +340,22 @@ void Input::handle_key(const int key, const bool is_pressed)
 
         case SDLK_F7:
             // JJP - switches between sprite rendering (original/hi-res)
+            //
+            // Hi-res sprites are only valid while the hi-res game engine is
+            // active. With hiresprites set, OSprites::do_sprite() takes its
+            // zoom from ZOOM_LOOKUP_HIRES, whose values are pre-doubled on the
+            // assumption that hwsprites::render() halves them again - which it
+            // only does when config.video.hires is set. Toggling this on in
+            // lo-res therefore feeds the renderer unhalved zoom values of up
+            // to 0x7E0, roughly double anything the lo-res path is designed
+            // for, and also applies the hi-res sub-pixel x offset that was
+            // computed for a doubled canvas.
+            //
+            // The menu already refuses this combination (menu.cpp, "Set game
+            // engine to hires first") and clears the flag when hi-res is
+            // switched off; the hotkey must agree with it.
             if (!is_pressed) break;
+            if (!config.video.hires) break;
             config.video.hiresprites ^= 1;
             break;
 
