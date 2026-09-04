@@ -54,6 +54,7 @@ public:
     uint64_t prof_ns_sprites    = 0;
     uint64_t prof_ns_text       = 0;
     uint64_t prof_frames        = 0;
+    uint64_t prof_frame_cksum   = 1469598103934665603ULL; // CB_FRAME_CKSUM test aid
 
 	Video();
     ~Video();

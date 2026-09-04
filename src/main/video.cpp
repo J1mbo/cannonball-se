@@ -223,6 +223,19 @@ void Video::prepare_frame()
         prof_ns_sprites    += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
         prof_ns_text       += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count();
         prof_frames++;
+
+#ifdef CB_FRAME_CKSUM
+        // Test aid (not shipped): rolling FNV-1a over the finished S16 frame, so
+        // an optimisation can be proved to leave every composited pixel identical.
+        // Deterministic only with -t 1 -perftest (frame-locked, single thread).
+        {
+            const uint16_t* q = pixels;
+            const int n = config.s16_width * config.s16_height;
+            uint64_t h = prof_frame_cksum;
+            for (int i = 0; i < n; i++) { h ^= q[i]; h *= 1099511628211ULL; }
+            prof_frame_cksum = h;
+        }
+#endif
     }
 }
 

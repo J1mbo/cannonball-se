@@ -633,6 +633,22 @@ static void main_loop() {
         // Update the next frame time.
         nextFrameTime += frameDuration;
 
+#ifdef CB_FRAME_CKSUM
+        // Test aid: run a fixed number of frames then quit, printing the rolling
+        // frame checksum. Deterministic under -t 1 -perftest, so a before/after
+        // build comparison proves bit-identical composited output.
+        {
+            const char* mx = getenv("CB_MAX_FRAMES");
+            if (mx && video.prof_frames >= (uint64_t)atoll(mx)) {
+                printf("\nCB_FRAME_CKSUM frames=%llu cksum=0x%016llx\n",
+                       (unsigned long long)video.prof_frames,
+                       (unsigned long long)video.prof_frame_cksum);
+                fflush(stdout);
+                cannonball::state = STATE_QUIT;
+            }
+        }
+#endif
+
         // Record FPS info on console (every 2 seconds) and FPS on-screen if enabled
         auto elapsed = std::chrono::steady_clock::now() - fpsTimer;
         if (elapsed >= std::chrono::seconds(2)) {
