@@ -138,6 +138,38 @@ static const ALIGN64 uint8_t priority_lookup[8][8] = {
     {   0,  0,  0,  0,  0,  0,  0, 0 }  // pix0 = 7
 };
 
+// S6.2: render_row_runs's visible-window formula walks pair index i in
+// [0, pairs) as a single contiguous interval, which only holds while
+// pairs <= 0x200. config.s16_width >> 1 is at most S16_WIDTH_WIDE (the wide
+// hi-res case; the narrow width and both lo-res widths are smaller).
+static_assert(S16_WIDTH_WIDE <= 512, "S6: render_row_runs's visible-window formula requires pairs <= 0x200");
+
+// S6.2: fills n consecutive uint32_t words with w. Under CB_HAVE_NEON,
+// unrolled to two vst1q_u32 per iteration for n >= 8 (unaligned vst1q is fine
+// on AArch64; p is only 4-byte aligned here); otherwise std::fill_n, which is
+// what CB_FORCE_SCALAR and every non-NEON target (x86-64, MSVC) use.
+static inline void fill_pairs(uint32_t* p, int n, uint32_t w)
+{
+#if defined(CB_HAVE_NEON)
+    uint32x4_t v = vdupq_n_u32(w);
+    while (n >= 8) {
+        vst1q_u32(p, v);
+        vst1q_u32(p + 4, v);
+        p += 8;
+        n -= 8;
+    }
+    while (n >= 4) {
+        vst1q_u32(p, v);
+        p += 4;
+        n -= 4;
+    }
+    while (n-- > 0)
+        *p++ = w;
+#else
+    std::fill_n(p, n, w);
+#endif
+}
+
 HWRoad hwroad;
 
 HWRoad::HWRoad()
@@ -214,10 +246,36 @@ void HWRoad::decode_road(const uint8_t* src_road)
     }
 
     // set up a dummy road in the last entry
-    for (int i = 0; i < 512; i++) 
+    for (int i = 0; i < 512; i++)
     {
         roads[256 * 2 * 512 + i] = 3;
     }
+
+    // S6.2: (re)build the run-length table over roads[] -- this is the only
+    // writer of roads[], so this is the only place the table needs building.
+    // One entry per maximal run of equal texel value, per line, followed by a
+    // start=512 sentinel entry that terminates that line's run list.
+    run_tab.clear();
+    for (int line = 0; line < ROAD_LINES; line++)
+    {
+        const uint8_t* row = roads + line * 512;
+        run_first[line] = static_cast<uint32_t>(run_tab.size());
+
+        uint8_t value = row[0];
+        int start = 0;
+        for (int x = 1; x < 512; x++)
+        {
+            if (row[x] != value)
+            {
+                run_tab.push_back(static_cast<uint16_t>(start | (value << 12)));
+                value = row[x];
+                start = x;
+            }
+        }
+        run_tab.push_back(static_cast<uint16_t>(start | (value << 12)));
+        run_tab.push_back(static_cast<uint16_t>(512)); // sentinel: start=512, value=0
+    }
+    run_first[ROAD_LINES] = static_cast<uint32_t>(run_tab.size());
 }
 
 // Writes go to RAM, but we read from the RAM Buffer.
@@ -597,6 +655,123 @@ void HWRoad::render_background_hires(uint16_t* pixels)
 }
 
 // ------------------------------------------------------------------------------------------------
+// S6.2: run-length row kernel for render_foreground_hires.
+//
+// Reproduces, for pair index i in [0, pairs): tN(i) = (tN + i) & 0xfff,
+// vN(i) = tN(i) < 0x200 ? srcN[tN(i)] : 3, colour c(i) = select(mode, v0(i),
+// v1(i)), writing c | c<<16 to out32[i]. Because pairs <= 0x200 (guarded by
+// the static_assert above), the set of i with tN(i) < 0x200 is one
+// contiguous interval [a, b) with texel index tex + (i - a); each road
+// contributes breakpoints at a, b and every run start inside that interval,
+// and the two roads' breakpoints are merged with a two-cursor walk so each
+// output run is filled with one fill_pairs call.
+// ------------------------------------------------------------------------------------------------
+void HWRoad::render_row_runs(uint32_t* out32, int pairs, unsigned mode,
+                              const uint8_t* src0, const uint8_t* src1,
+                              uint32_t t0, uint32_t t1, const uint16_t* color_table)
+{
+    // Per-road cursor state for the merge walk below.
+    struct Cursor
+    {
+        int a, b;          // visible window [a, b) in pair-index space
+        uint32_t tex;      // texel index at pair index a
+        uint32_t line;     // road line index into run_first[]
+        uint32_t k = 0;    // run_tab index of the current run (set by enter() before use)
+        unsigned v = 3;     // current 3-bit texel value (3 == "outside window")
+        int next = 0;       // pair index of the next breakpoint for this road
+    };
+
+    // Visible window per road (S6.2): pairs <= 0x200 keeps the set of visible
+    // i as one contiguous interval.
+    auto compute_window = [pairs](uint32_t t, int& a, int& b, uint32_t& tex) {
+        if (t < 0x200u) {
+            a = 0;
+            int rem = 0x200 - static_cast<int>(t);
+            b = (rem < pairs) ? rem : pairs;
+            tex = t;
+        } else if (static_cast<int>(0x1000u - t) < pairs) {
+            a = static_cast<int>(0x1000u - t);
+            b = pairs;
+            tex = 0;
+        } else {
+            a = 0;
+            b = 0;
+            tex = 0;
+        }
+    };
+
+    Cursor c0, c1;
+    compute_window(t0, c0.a, c0.b, c0.tex);
+    compute_window(t1, c1.a, c1.b, c1.tex);
+
+    // Mode 0/3 only ever look at one road's value (select() below ignores the
+    // other), so force the unused road's window empty: correctness-neutral,
+    // it just avoids fragmenting the fill with irrelevant run breakpoints.
+    if (mode == 0) { c1.a = 0; c1.b = 0; }
+    if (mode == 3) { c0.a = 0; c0.b = 0; }
+
+    c0.line = static_cast<uint32_t>(src0 - roads) / 512u;
+    c1.line = static_cast<uint32_t>(src1 - roads) / 512u;
+    c0.v = 3; c0.next = pairs;
+    c1.v = 3; c1.next = pairs;
+
+    // Locates the run of line c.line containing texel c.tex (linear scan
+    // from run_first[c.line], as every line's runs are stored in increasing
+    // start order and terminated by a start=512 sentinel that is always
+    // greater than any valid texel index).
+    auto enter = [this](Cursor& c) {
+        uint32_t k = run_first[c.line];
+        while ((run_tab[k + 1] & 0x3FFu) <= c.tex)
+            k++;
+        c.k = k;
+        c.v = (run_tab[k] >> 12) & 7u;
+        int cand = c.a + static_cast<int>((run_tab[k + 1] & 0x3FFu) - c.tex);
+        c.next = (cand < c.b) ? cand : c.b;
+    };
+
+    // Called when the merge walk's cursor i reaches c.next.
+    auto advance = [this, pairs, &enter](Cursor& c, int i) {
+        if (i == c.b) {
+            c.v = 3;
+            c.next = pairs;
+        } else if (i == c.a) {
+            enter(c);
+        } else {
+            c.k++;
+            c.v = (run_tab[c.k] >> 12) & 7u;
+            int cand = c.a + static_cast<int>((run_tab[c.k + 1] & 0x3FFu) - c.tex);
+            c.next = (cand < c.b) ? cand : c.b;
+        }
+    };
+
+    // Enter each road's first run now if it is visible from column 0;
+    // otherwise, if it becomes visible later in the row, arrange for the
+    // merge walk to call advance() (the i == c.a branch) when it gets there.
+    if (c0.a < c0.b) { if (c0.a == 0) enter(c0); else c0.next = c0.a; }
+    if (c1.a < c1.b) { if (c1.a == 0) enter(c1); else c1.next = c1.a; }
+
+    int i = 0;
+    while (i < pairs) {
+        int n = c0.next < c1.next ? c0.next : c1.next;
+        if (n > pairs) n = pairs;
+
+        unsigned v0 = c0.v, v1 = c1.v;
+        uint16_t col;
+        switch (mode) {
+            case 0:  col = color_table[v0]; break;
+            case 1:  col = priority_lookup[v0][v1] ? color_table[0x10 + v1] : color_table[v0]; break;
+            case 2:  col = ((priority_map[1][v0] >> v1) & 1) ? color_table[0x10 + v1] : color_table[v0]; break;
+            default: col = color_table[0x10 + v1]; break; // mode 3
+        }
+        fill_pairs(out32 + i, n - i, static_cast<uint32_t>(col) | (static_cast<uint32_t>(col) << 16));
+
+        i = n;
+        if (c0.next == i) advance(c0, i);
+        if (c1.next == i) advance(c1, i);
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
 // Render Road Foreground - High Resolution Version
 // Interpolates previous scanline with next.
 // ------------------------------------------------------------------------------------------------
@@ -703,75 +878,33 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
                 // infrequently called in Outrun
                 if (data0 & 0x800)
                     continue;
-                auto thpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
-                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
-                int xmax = config.s16_width >> 1;
-                while (xmax) {
-                    int pix0 = (thpos0 < 0x200) ? src0[thpos0] : 3;
-                    uint16_t c = color_table[0x00 + pix0];
-                    *out32++ = (static_cast<uint32_t>(c) << 16) | c; // write two pixels
-                    thpos0 = (thpos0 + 1) & 0xfff;
-                    xmax--;
-                }
+                render_row_runs(reinterpret_cast<uint32_t*>(pPixel), config.s16_width >> 1, 0,
+                                 src0, src1, (hpos0 - (s16_x + x_offset)) & 0xfff,
+                                 (hpos1 - (s16_x + x_offset)) & 0xfff, color_table);
                 break;
             }
             case 1: {
                 // JJP - Outrun hot path - optimised via pre-computed
                 // lookup table & unroll to avoid hpos calculation tests
-                auto thpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
-                auto thpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
-                uint32_t* out32 = reinterpret_cast<uint32_t*>(pPixel);
-                int xmax = config.s16_width >> 1;
-                while (xmax) {
-                    int pix0 = (thpos0 < 0x200) ? src0[thpos0] : 3;
-                    int pix1 = (thpos1 < 0x200) ? src1[thpos1] : 3;
-                    uint16_t c;
-                    if (priority_lookup[pix0][pix1]) {
-                        c = color_table[0x10 + pix1];
-                    }
-                    else {
-                        // this is the hot path, 85% or so, rely on branch prediction to handle it
-                        c = color_table[0x00 + pix0];
-                    }
-                    *out32++ = (static_cast<uint32_t>(c) << 16) | c; // write two pixels
-                    thpos0 = (thpos0 + 1) & 0xfff;
-                    thpos1 = (thpos1 + 1) & 0xfff;
-                    xmax--;
-                }
+                render_row_runs(reinterpret_cast<uint32_t*>(pPixel), config.s16_width >> 1, 1,
+                                 src0, src1, (hpos0 - (s16_x + x_offset)) & 0xfff,
+                                 (hpos1 - (s16_x + x_offset)) & 0xfff, color_table);
                 break;
             }
             case 2:
                 // seems to be never taken in Outrun
-                hpos0 = (hpos0 - (s16_x + x_offset)) & 0xfff;
-                hpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
-                for (x = 0; x < config.s16_width; x++) 
-                {
-                    int pix0 = (hpos0 < 0x200) ? src0[hpos0] : 3;
-                    int pix1 = (hpos1 < 0x200) ? src1[hpos1] : 3;
-                    if (((priority_map[1][pix0] >> pix1) & 1) != 0)
-                        pPixel[x] = color_table[0x10 + pix1];
-                    else
-                        pPixel[x] = color_table[0x00 + pix0];
-                    if (x & 1)
-                    {
-                        hpos0 = (hpos0 + 1) & 0xfff;
-                        hpos1 = (hpos1 + 1) & 0xfff;
-                    }
-                }
+                render_row_runs(reinterpret_cast<uint32_t*>(pPixel), config.s16_width >> 1, 2,
+                                 src0, src1, (hpos0 - (s16_x + x_offset)) & 0xfff,
+                                 (hpos1 - (s16_x + x_offset)) & 0xfff, color_table);
                 break;
 
             case 3:
                 // seems to be never taken in Outrun
                 if (data1 & 0x800)
                     continue;
-                hpos1 = (hpos1 - (s16_x + x_offset)) & 0xfff;
-                for (x = 0; x < config.s16_width; x++)
-                {
-                    int pix1 = (hpos1 < 0x200) ? src1[hpos1] : 3;
-                    pPixel[x] = color_table[0x10 + pix1];
-                    if (x & 1)
-                        hpos1 = (hpos1 + 1) & 0xfff;
-                }
+                render_row_runs(reinterpret_cast<uint32_t*>(pPixel), config.s16_width >> 1, 3,
+                                 src0, src1, (hpos0 - (s16_x + x_offset)) & 0xfff,
+                                 (hpos1 - (s16_x + x_offset)) & 0xfff, color_table);
                 break;
             } // end switch
     } // end for
