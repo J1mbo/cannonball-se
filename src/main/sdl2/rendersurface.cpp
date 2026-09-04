@@ -288,6 +288,41 @@ void RenderSurface::flush_ntsc_palette()
 }
 
 
+void RenderSurface::advance_blargg_phase()
+{
+    // Advances 'phase' - the NTSC burst phase used for the row that starts the NEXT frame -
+    // for the frame that is about to be released to the render thread(s). This used to run
+    // inside draw_frame(), gated by "fastpass != 1" (i.e. on the call that processes the top
+    // half, or the whole frame in the single-threaded case). That was both racy and, for the
+    // bottom half, wrong:
+    //   - Racy: when render_threads == 2, draw_frame(fastpass=0) (top half) and
+    //     draw_frame(fastpass=1) (bottom half) run concurrently on two different std::thread
+    //     workers, both released from the same pair of semaphore releases in main.cpp with no
+    //     ordering between them. The old code had the fastpass==0 call write 'phase' and the
+    //     fastpass==1 call read it with no synchronization at all - a data race, and in
+    //     practice sometimes the bottom half would see the previous frame's value rather than
+    //     the current one, depending on which thread the scheduler ran first.
+    //   - Wrong even when race-free: the bottom half starts at the row immediately after the
+    //     top half's last row. A single, unsplit call to the blitter advances its internal
+    //     burst phase by one for every row it processes, so by the time it reaches the first
+    //     row of the bottom half it is no longer at 'phase' but at
+    //     (phase + top_half_row_count) % 3. The old code handed the bottom-half call the same
+    //     'phase' the top half started at, which restarts the phase sequence at the seam every
+    //     frame - visible as the bottom half's dot-crawl shimmer looking like it is repeating
+    //     rather than advancing smoothly. blargg_filter() now applies this offset itself using
+    //     the block height it already computes for the section being processed.
+    //
+    // Moving the advance here removes the race: this runs once per frame from the main thread
+    // (see the call sites in main.cpp, the same safe point flush_ntsc_palette() uses), strictly
+    // before either render thread is released, so both threads observe a stable, already-final
+    // 'phase' for the frame via the semaphore release/acquire that follows - a valid
+    // happens-before edge, unlike the old unsynchronized read.
+    if (!blargg) return;
+    if (config.fps == 60) phase = (phase + 1) % 3; // cycle through 0/1/2
+    else                  phase = (phase + 2) % 3; // cycle through 0/1/2, but at twice the rate
+}
+
+
 // ----------------------------------------------------------------------------------
 // set_scaling - determines the X and Y parameters and image position
 // ----------------------------------------------------------------------------------
@@ -1038,6 +1073,17 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
 
     uint16_t* spix = gamePixels + (this_section * src_pixel_count); // S16 Output (slot indices)
 
+    // The blitter advances its own internal burst phase by one, mod 3, for every row it
+    // processes. A single unsplit call (section == -1) therefore reaches the phase this
+    // formula gives for every row on its own; but when the frame is split across two render
+    // threads, the section == 1 (bottom-half) call starts partway down the frame and must be
+    // told the phase that a continuous single call would have reached by that row, or the
+    // phase sequence restarts at the seam every frame (visible as the bottom half's dot-crawl
+    // shimmer looking like it repeats rather than advances - see advance_blargg_phase() for
+    // the full explanation). section == 0 (top half) and section == -1 (whole frame) both
+    // start at row 0, so they use 'phase' unchanged.
+    int section_phase = (section == 1) ? (int)((phase + block_height) % 3) : phase;
+
     if (blargg) {
         // Under the slot-indexed NTSC filter table, the emulator's S16 pixel buffer already
         // holds exactly the values the filter table is addressed by (palette slot 0..4095,
@@ -1059,12 +1105,12 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
             // platform, so there is no separate non-SIMD fallback call to make here any
             // more (the old snes_ntsc_blit_hires_fast()/scalar snes_ntsc_blit_hires() have
             // both been retired).
-            snes_ntsc_blit_hires_vec(ntsc, spix, long(src_width), phase, src_width,
+            snes_ntsc_blit_hires_vec(ntsc, spix, long(src_width), section_phase, src_width,
                                       block_height, tpix, output_pitch, Ashifted);
         }
         else {
             // standard res processing
-            snes_ntsc_blit(ntsc, spix, long(src_width), phase,
+            snes_ntsc_blit(ntsc, spix, long(src_width), section_phase,
                 src_width, block_height, tpix, output_pitch, Ashifted);
         }
     }
@@ -1421,8 +1467,11 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
         pixels = (uint16_t*)__builtin_assume_aligned(pixels, 4);
         uint32_t* writePixels = (uint32_t*)__builtin_assume_aligned(current_writePixels, 4);
         if (fastpass!=1) {
-            if (config.fps == 60) phase = (phase + 1) % 3; // cycle through 0/1/2
-            else                  phase = (phase + 2) % 3; // cycle through 0/1/2, but at twice the rate
+            // Note: 'phase' is no longer advanced here. It is now advanced once per frame by
+            // advance_blargg_phase(), called from main.cpp before either render thread is
+            // released (see that method for why draw_frame() is the wrong place to do it when
+            // render_threads == 2). By the time draw_frame() runs, 'phase' already holds this
+            // frame's value; blargg_filter() applies the top/bottom-half offset itself.
 
             // Frame-dump facility (-dump option). Default-off: when disabled this is a
             // single bool compare and nothing else. See write_dump_frame() above for

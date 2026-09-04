@@ -39,6 +39,13 @@ public:
     // no-op for renderers without an NTSC filter table (e.g. non-Blargg paths).
     virtual void flush_ntsc_palette() {}
 
+    // Advances the NTSC filter's burst phase for the next frame. Called from the main loop
+    // at the same safe point as flush_ntsc_palette() (see there for why that point has no
+    // active render thread), so an implementation can update its phase state without a race
+    // against the render threads reading it during draw_frame()/blargg_filter(). Default
+    // no-op for renderers without an NTSC filter.
+    virtual void advance_blargg_phase() {}
+
     // S16 video hardware ladder DAC values
     alignas(ALIGNMENT) uint32_t rgb_lookup[LOOKUP_SIZE];
 

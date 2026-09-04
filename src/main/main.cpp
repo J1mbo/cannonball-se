@@ -587,8 +587,13 @@ static void main_loop() {
             // draw_frame()/blargg_filter() reading the NTSC kernel table, and no thread is
             // currently inside tick()/prepare_frame() calling convert_palette() to mark
             // slots dirty. This is therefore a safe point to rewrite the table's dirty
-            // slots without locking against a concurrent reader or writer.
+            // slots without locking against a concurrent reader or writer. It is also the
+            // safe point to advance the NTSC burst phase for the frame about to be released:
+            // draw_frame() no longer does this itself, because when render_threads == 2 it
+            // runs concurrently on two threads (top half, bottom half) with no ordering
+            // between them - see RenderSurface::advance_blargg_phase() for the full story.
             video.flush_ntsc_palette();
+            video.advance_blargg_phase();
 
             // Set NTSC filter to work on the last complete frame immediately
             renderReady0.release();
@@ -620,8 +625,9 @@ static void main_loop() {
             // No worker threads exist in this configuration, so this point (after game
             // logic/convert_palette() calls have finished for this frame, before
             // render_frame() reads the NTSC kernel table) is always a safe, lock-free
-            // point to rewrite the table's dirty slots.
+            // point to rewrite the table's dirty slots and advance the burst phase.
             video.flush_ntsc_palette();
+            video.advance_blargg_phase();
 
             video.render_frame(-1);
             video.present_frame();

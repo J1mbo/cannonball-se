@@ -38,6 +38,7 @@ public:
     bool finalize_frame();
     void draw_frame(uint16_t* pixels, int fastpass);
     void flush_ntsc_palette();
+    void advance_blargg_phase();
 
 private:
     // SDL2 window

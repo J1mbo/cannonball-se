@@ -51,6 +51,7 @@ public:
     void render_frame(int fastpass);
     void present_frame();
     void flush_ntsc_palette();
+    void advance_blargg_phase();
     bool supports_window();
     bool supports_vsync();
 
