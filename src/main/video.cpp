@@ -19,6 +19,7 @@
 #include <new>          // std::align_val_t, ::operator new/delete
 #include <cstddef>      // std::size_t
 #include <cstdint>
+#include <cstdlib>      // std::abort (CB_RENDER_CHECKS)
 #include <cstring>      // std::memset
 #include <iostream>
 #include <bit>          // std::byteswap (C++20/23)
@@ -194,21 +195,54 @@ void Video::prepare_frame()
         const clk::time_point t0 = clk::now();
 
         tile_layer->update_tile_values();
+        // S3.2: fg_enabled computed once and shared by the mask, the
+        // foreground call and (S5) the tile-layer clip; road RAM cannot
+        // change between here and the foreground render (ORoad::do_road runs
+        // earlier in tick(), same thread).
+        const bool fg_enabled = !config.engine.fix_bugs || oroad.horizon_base != ORoad::HORIZON_OFF;
+        hwroad.foreground_row_mask(road_fg_rows, fg_enabled);
         const clk::time_point tA = clk::now();
 
         (hwroad.*hwroad.render_background)(pixels);
         const clk::time_point tB = clk::now();
 
-        tile_layer->render_tile_layer(pixels, 1, 0);      // background layer
+        tile_layer->render_tile_layer(pixels, 1, 0, road_fg_rows);      // background layer
         const clk::time_point tC = clk::now();
 
-        tile_layer->render_tile_layer(pixels, 0, 0);      // foreground layer
+        tile_layer->render_tile_layer(pixels, 0, 0, road_fg_rows);      // foreground layer
         const clk::time_point tD = clk::now();
 
-        if (!config.engine.fix_bugs || oroad.horizon_base != ORoad::HORIZON_OFF)
+        if (fg_enabled)
             (hwroad.*hwroad.render_foreground)(pixels);
 
         const clk::time_point t1 = clk::now();
+
+#ifdef CB_RENDER_CHECKS
+        // S3.2: debug-only invariant check, timed outside prof_ns_road_fg
+        // (measured above, at t1) so it never pollutes that number. Scratch
+        // is sized/aligned exactly like pixel_buffers (see Video::init above)
+        // and re-allocated only if s16_width/height change at runtime
+        // (hires/widescreen toggles).
+        {
+            static uint16_t* cb_check_base = nullptr;
+            static std::size_t cb_check_size = 0;
+            const std::size_t need = ((std::size_t)config.s16_width * (config.s16_height + 2) + alignment) * sizeof(uint16_t);
+            if (need != cb_check_size) {
+                if (cb_check_base) ::operator delete(cb_check_base, std::align_val_t(alignment));
+                cb_check_base = static_cast<uint16_t*>(::operator new(need, std::align_val_t(alignment)));
+                cb_check_size = need;
+            }
+            uint16_t* const cb_check_scratch = cb_check_base + alignment;
+
+            int rows_both = 0;
+            const int violations = hwroad.check_foreground_rows(road_fg_rows, fg_enabled, cb_check_scratch, &rows_both);
+            if (violations != 0) {
+                std::cerr << "CB_RENDER_CHECKS: check_foreground_rows found " << violations << " violating line(s)\n";
+                std::abort();
+            }
+        }
+#endif
+
         sprite_layer->render(pixels, 8);
         const clk::time_point t2 = clk::now();
         tile_layer->render_text_layer(pixels, 1);

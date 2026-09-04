@@ -1,7 +1,29 @@
 #pragma once
 
 #include "stdint.hpp"
+#include "globals.hpp"      // S16_HEIGHT (S3: foreground_row_mask/check_foreground_rows signatures)
 #include <vector>
+
+// ---------------------------------------------------------------------------
+// S3.2: shared road-foreground/background row predicates. Free functions (not
+// members) so hwroad.cpp, video.cpp/prepare_frame's debug check and the
+// standalone test driver all read exactly one definition -- they cannot
+// drift apart. Mirrors the foreground's both-solid skip (hwroad.cpp:631-635,
+// plus the per-mode continues at 715-716/776-777) and the background's sky
+// fill switch (hwroad.cpp:534-559 lores numbering; 600-625 hires).
+// ---------------------------------------------------------------------------
+
+// True iff the foreground pass writes lo-res line yy (hi-res rows 2yy, 2yy+1) given the two
+// road RAM words and the control mode.  Mirrors hwroad.cpp:631-635, 715-716, 776-777.
+static inline bool road_row_written(unsigned mode, unsigned d0, unsigned d1) {
+    const bool s0 = (d0 & 0x800u) != 0, s1 = (d1 & 0x800u) != 0;
+    switch (mode & 3u) { case 0: return !s0; case 3: return !s1; default: return !(s0 && s1); }
+}
+// True iff the background pass fills the line.  Mirrors hwroad.cpp:534-559.
+static inline bool road_row_sky(unsigned mode, unsigned d0, unsigned d1) {
+    const bool s0 = (d0 & 0x800u) != 0, s1 = (d1 & 0x800u) != 0;
+    switch (mode & 3u) { case 0: return s0; case 3: return s1; default: return s0 || s1; }
+}
 
 class HWRoad
 {
@@ -33,6 +55,27 @@ public:
     // not yet wired up here). Harmless in the shipping game either way.
     const uint16_t* road_ram_buffer() const { return ramBuff; }   // 0x800 halfwords
     uint8_t  get_road_control() const { return road_control; }
+
+    // S3.2: out[yy] = 1 iff the foreground will write lo-res line yy this
+    // frame; all zero when !fg_enabled. Derived from ramBuff (the buffer the
+    // renderers actually read), road RAM cannot change between this call and
+    // the foreground render (ORoad::do_road runs earlier in tick(), on the
+    // same thread -- IMPLEMENTATION_SPEC.md S3.2).
+    void foreground_row_mask(uint8_t out[S16_HEIGHT], bool fg_enabled) const;
+
+    // S3.2: compiled always (called only under CB_RENDER_CHECKS and by the
+    // driver's unit s3). Renders the foreground into `scratch` (same
+    // size/alignment as `pixels`, this function pre-fills it with 0xFFFF --
+    // a value no road colour can take: color_offset1/2 are 0x400/0x420) and
+    // verifies, per lo-res line, that every hi-res row of the line is
+    // written in full iff mask[yy] == 1 and untouched iff mask[yy] == 0;
+    // also verifies road_row_sky || road_row_written (coverage) for every
+    // line. Returns the number of violating lines (0 == pass) and prints the
+    // first violation to stderr. `rows_both` (if non-null) receives the
+    // count of lines where the background also fills (statistic, not a
+    // failure).
+    int check_foreground_rows(const uint8_t mask[S16_HEIGHT], bool fg_enabled,
+                               uint16_t* scratch, int* rows_both);
 
 #ifdef CB_RENDER_TEST
     // S0.4: lets the standalone test driver (tools/road_tiles/test) reach

@@ -224,7 +224,7 @@ void hwtiles::render_all_tiles(uint16_t* buf)
     }
 }
 
-void hwtiles::render_tile_layer(uint16_t* buf, uint8_t page_index, uint8_t priority_draw)
+void hwtiles::render_tile_layer(uint16_t* buf, uint8_t page_index, uint8_t priority_draw, const uint8_t* dead_rows)
 {
     int16_t Colour, x, y, Priority = 0;
 
@@ -252,7 +252,21 @@ void hwtiles::render_tile_layer(uint16_t* buf, uint8_t page_index, uint8_t prior
     for (int my = 0; my < 64; my++) {
         int y = my * 8 - y_decrement;
         if (y < -288) y += 512;
-        if (y > -8 && y < S16_HEIGHT) { ys[nmy] = y; myl[nmy++] = (uint8_t)my; }
+        if (y > -8 && y < S16_HEIGHT) {
+            // S5.2: skip this my only if every on-screen row of the tile is
+            // dead (fully overwritten later by the road foreground);
+            // partially-dead tiles render unchanged. Off-screen rows of a
+            // clip-path tile never count toward "dead", hence the clamp to
+            // [0, S16_HEIGHT).
+            if (dead_rows) {
+                const int r0 = y < 0 ? 0 : y;
+                const int r1 = (y + 8 > S16_HEIGHT) ? S16_HEIGHT : y + 8;
+                bool dead = true;
+                for (int r = r0; r < r1; r++) if (!dead_rows[r]) { dead = false; break; }
+                if (dead) continue;
+            }
+            ys[nmy] = y; myl[nmy++] = (uint8_t)my;
+        }
     }
 
     for (int j = 0; j < nmy; j++)

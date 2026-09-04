@@ -1,4 +1,5 @@
 #include <algorithm> // Required for std::fill_n
+#include <cstdio>    // S3: check_foreground_rows() diagnostic to stderr
 #include "hwvideo/hwroad.hpp"
 #include "hwvideo/hwarch.hpp"
 #include "globals.hpp"
@@ -908,6 +909,79 @@ void HWRoad::render_foreground_hires(uint16_t* pixels)
                 break;
             } // end switch
     } // end for
+}
+
+// ------------------------------------------------------------------------------------------------
+// S3.2: road-foreground overwrite mask and invariant check.
+// ------------------------------------------------------------------------------------------------
+
+// out[yy] = 1 iff the foreground will write lo-res line yy this frame; all 0 if !fg_enabled.
+void HWRoad::foreground_row_mask(uint8_t out[S16_HEIGHT], bool fg_enabled) const
+{
+    for (int yy = 0; yy < S16_HEIGHT; yy++)
+        out[yy] = fg_enabled && road_row_written(road_control & 3, ramBuff[yy], ramBuff[0x100 + yy]);
+}
+
+// See hwroad.hpp for the contract. Renders the foreground into `scratch`
+// (pre-filled here with the 0xFFFF sentinel) and checks, per lo-res line,
+// that it was written in full iff mask[yy]==1 and left untouched iff
+// mask[yy]==0, plus the sky||written coverage invariant (using the raw,
+// fg_enabled-independent predicates -- this is a closed-form tautology of
+// road_row_sky/road_row_written, not conditioned on whether the foreground
+// actually ran this call).
+int HWRoad::check_foreground_rows(const uint8_t mask[S16_HEIGHT], bool fg_enabled,
+                                   uint16_t* scratch, int* rows_both)
+{
+    const int width          = config.s16_width;
+    const int height         = config.s16_height;
+    const int rows_per_line  = (height == 2 * S16_HEIGHT) ? 2 : 1;  // hi-res : lo-res
+    const unsigned mode      = road_control & 3;
+
+    std::fill_n(scratch, (std::size_t)width * (std::size_t)height, (uint16_t)0xFFFFu);
+    if (fg_enabled)
+        (this->*render_foreground)(scratch);
+
+    int violations = 0;
+    int both = 0;
+    bool printed = false;
+
+    for (int yy = 0; yy < S16_HEIGHT; yy++)
+    {
+        const unsigned d0 = ramBuff[yy];
+        const unsigned d1 = ramBuff[0x100 + yy];
+        const bool sky         = road_row_sky(mode, d0, d1);
+        const bool raw_written = road_row_written(mode, d0, d1);
+        if (sky && raw_written) both++;
+
+        const int total_px = rows_per_line * width;
+        int written_px = 0;
+        for (int r = 0; r < rows_per_line; r++)
+        {
+            const uint16_t* row = scratch + (std::size_t)(yy * rows_per_line + r) * width;
+            for (int x = 0; x < width; x++)
+                if (row[x] != 0xFFFFu) written_px++;
+        }
+
+        bool ok = true;
+        if (mask[yy]) { if (written_px != total_px) ok = false; }
+        else          { if (written_px != 0)        ok = false; }
+        if (!(sky || raw_written)) ok = false; // coverage: should never trip (tautological by construction)
+
+        if (!ok)
+        {
+            violations++;
+            if (!printed)
+            {
+                std::fprintf(stderr,
+                    "check_foreground_rows: violation yy=%d mode=%u mask=%u sky=%d raw_written=%d written_px=%d/%d\n",
+                    yy, mode, mask[yy], (int)sky, (int)raw_written, written_px, total_px);
+                printed = true;
+            }
+        }
+    }
+
+    if (rows_both) *rows_both = both;
+    return violations;
 }
 
 #ifdef CB_RENDER_TEST

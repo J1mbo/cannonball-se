@@ -26,7 +26,11 @@ public:
     void restore_tiles();
     void set_x_clamp(const uint16_t);
     void update_tile_values();
-    void render_tile_layer(uint16_t*, uint8_t, uint8_t);
+    // S5.2: dead_rows is Video::road_fg_rows (S16_HEIGHT lo-res-line entries,
+    // 1 iff the road foreground will overwrite that line in full this frame)
+    // or nullptr for no clipping. Defaulted so existing 3-arg callers (the
+    // driver's selftest, the _ref twin's own dispatch) are unaffected.
+    void render_tile_layer(uint16_t*, uint8_t, uint8_t, const uint8_t* dead_rows = nullptr);
     void render_text_layer(uint16_t*, uint8_t);
     void render_all_tiles(uint16_t*);
 

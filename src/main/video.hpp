@@ -39,6 +39,13 @@ public:
 
     bool enabled;
 
+    // S3.2: out[yy] = 1 iff the road foreground will write lo-res line yy
+    // this frame (all zero when the foreground pass is skipped). Computed
+    // once per frame in prepare_frame() from the same ramBuff/road_control
+    // the foreground itself reads; S5 uses it to skip tiles the foreground
+    // is about to overwrite in full.
+    uint8_t road_fg_rows[S16_HEIGHT];
+
     // --- measurement only (branch sprite-a53) ---------------------------------
     // Nanoseconds accumulated inside prepare_frame(), split by layer, plus the
     // number of sprite scanlines drawn.  Written by whichever thread runs
