@@ -297,7 +297,13 @@ const uint8_t* hwsprites::sched(uint32_t zoom)
             int32_t r = 0;
             while (xacc < 0x200) { r++; xacc += zoom; }
             xacc -= 0x200;
-            assert(zoom < (uint32_t)SPR_FAST_ZOOM_MIN || r <= 4);
+            // SPRITE_R1_LLD.md sec. 4.1: pins the MAXRUN select_kernel commits
+            // to -- C5 (SCHEDULE_VERIFICATION.md): zoom >= 0x100 => run <= 2,
+            // zoom >= 0x80 => run <= 4. store_fill<2>/<4> (sec. 4.2) rely on
+            // this: a run this assertion would trip is a store past the
+            // MAXRUN-halfword width the caller selected.
+            assert(zoom < (uint32_t)SPR_FAST_ZOOM_MIN ||
+                   (r <= 4 && (zoom < 0x100 || r <= 2)));
             slot[i] = (uint8_t)r;
         }
         // SPRITE_IMPLEMENTATION_SPEC.md S4b: wsum[m] = sum(run[8m..8m+7]),
@@ -355,29 +361,79 @@ bool hwsprites::classify_mixed(uint32_t w, uint32_t smask)
     return ((z | f | a) & C8) != 0;
 }
 
+// select_kernel (SPRITE_R1_LLD.md sec. 4.1): the run-0 regime (zoom >= 0x200)
+// takes the generic instantiation (runtime flip, MAXRUN=4, HEAD's own scan);
+// C5 (SCHEDULE_VERIFICATION.md) pins run <= 2 for zoom >= 0x100 and run <= 4
+// for zoom >= 0x80 (sched()'s assertion above), so the other four
+// instantiations are exact for the whole zoom < 0x200 range decode_row_k's
+// caller ever selects them for.
+hwsprites::Kernel hwsprites::select_kernel(int32_t zoom, int32_t flip)
+{
+    if (zoom >= 0x200) return K_GEN;
+    if (zoom >= 0x100) return flip ? K_F1R2 : K_F0R2;
+    return flip ? K_F1R4 : K_F0R4;
+}
+
 // SPRITE_R1_LLD.md sec. 2.7: decode_row is now a thin wrapper -- only the
 // driver's SpriteTestAccess::decode_row hook calls this (the game path goes
-// through draw_sprite_rows -> decode_row_k directly via the ctx built once
+// through draw_sprite_rows_t -> decode_row_k directly via the ctx built once
 // per sprite in draw_sprite_fast). Builds a SpriteCtx (pixels == nullptr:
 // decode never touches the destination) and stores decode_row_k's returned
 // record count into the member nrec -- the only place nrec is written, so
 // the replay() wrapper below and the driver's own nrec(hw) hook keep seeing
-// exactly HEAD's decode_row/replay hand-off.
+// exactly HEAD's decode_row/replay hand-off. R1b: dispatches through the
+// same select_kernel switch draw_sprite_fast uses, so unit s1c/s2b/s2c
+// exercise the real <FLIP, MAXRUN> instantiation for every zoom they
+// generate (sec. 4.1's closing note).
 void hwsprites::decode_row(const SpriteRec& r, int32_t j, int32_t pend)
 {
     SpriteCtx c;
     make_ctx(r, nullptr, pend, c);
-    nrec = decode_row_k(c, j);
+    switch (select_kernel(r.zoom, r.flip)) {
+        case K_F0R2: nrec = decode_row_k<0, 2>(c, j); break;
+        case K_F1R2: nrec = decode_row_k<1, 2>(c, j); break;
+        case K_F0R4: nrec = decode_row_k<0, 4>(c, j); break;
+        case K_F1R4: nrec = decode_row_k<1, 4>(c, j); break;
+        default:     nrec = decode_row_k<2, 4>(c, j); break;
+    }
 }
 
-// decode_row_k (SPRITE_R1_LLD.md sec. 3/5.2): expands source row j into
-// line[] (output-order n|color halfwords, always written eight-at-a-time
+// store_fill<MAXRUN> (SPRITE_R1_LLD.md sec. 4.2, R1b): fill by shift-OR at
+// the class width -- removes R0 item 1 (nine `mul x,x,x13` per source word,
+// HEAD's `v * 0x0001000100010001ULL`). `v = nibble | color <= 0xFFF` needs
+// no masking before widening (HEAD's `and` was the uint16_t -> uint64_t
+// widen for the multiply). Same instruction count as HEAD's 8-byte form for
+// MAXRUN=4 (three ALU ops either way) but 3-cycle-latency `mul` -> 1-cycle
+// `orr`s off the value chain in front of the store, and the multiply pipe
+// freed; MAXRUN=2 additionally halves the store width. Overrun safety is
+// LLD sec. 4.2's argument verbatim with MAXRUN substituted: a MAXRUN-wide
+// store at `pos` writes at most MAXRUN-1 halfwords past this nibble's own
+// run, and either a following nibble in the row re-stores its own MAXRUN-
+// wide value over every one of them (both stores are the same width) or
+// these are the row's final nibble and the spurious positions lie at/after
+// the sentinel position, which replay_k never reads (only [rec[k].pos,
+// rec[k+1].pos) of a COLOUR record is read from line[]).
+template <> CB_ALWAYS_INLINE void hwsprites::store_fill<2>(uint16_t* p, uint32_t v)
+{
+    const uint32_t v2 = v | (v << 16);       // A64: one `orr wA, wV, wV, lsl #16`
+    std::memcpy(p, &v2, 4);                  //      one `str wA, [xLine, xPos, lsl #1]`
+}
+template <> CB_ALWAYS_INLINE void hwsprites::store_fill<4>(uint16_t* p, uint32_t v)
+{
+    const uint32_t v2 = v | (v << 16);
+    const uint64_t v4 = (uint64_t)v2 | ((uint64_t)v2 << 32); // A64: `orr xA, xA, xA, lsl #32` (w-write zero-extends)
+    std::memcpy(p, &v4, 8);                                  //      `str xA, ...`
+}
+
+// decode_row_k (SPRITE_R1_LLD.md sec. 3/4.2/5.2): expands source row j into
+// line[] (output-order n|color halfwords, always written MAXRUN-at-a-time
 // regardless of this nibble's own run length -- safe because any overrun
 // lands on positions the next source pixel overwrites, or beyond the
 // sentinel where replay never reads, per SPR_LB_LEN's margin) and into
 // rec[] (the maximal-run span records, returned as a record count rather
 // than the old member nrec). Reads each ROM word once, mirrors flipped rows
-// on the fly with nibrev() and classifies shadow per nibble during decode.
+// on the fly with nibrev() (when FLIP selects it) and classifies shadow per
+// nibble during decode.
 //
 // R1a de-glue vs HEAD's decode_row (SPRITE_R1_LLD.md sec. 3.1-3.6): every
 // field this needs (line, rec, run, wsum, rom, color, smask, pend, flip) is
@@ -386,9 +442,14 @@ void hwsprites::decode_row(const SpriteRec& r, int32_t j, int32_t pend)
 // per-nibble `color` reload after each line[] store); the eight run-length
 // bytes for a word are one 8-byte load instead of eight `run[]` byte reads
 // (sec. 3.4); the per-word ROM bounds test is a per-row window (wlimit)
-// instead of HEAD's per-word int64 compare-and-branch (sec. 3.6). Not yet
-// templated on FLIP/MAXRUN (R1b) and not yet using a fill narrower than
-// HEAD's 8-byte multiply-splat (R1b sec. 4.2) -- R1a only removes the glue.
+// instead of HEAD's per-word int64 compare-and-branch (sec. 3.6).
+//
+// R1b (sec. 4.1/4.2) adds: <FLIP, MAXRUN> template parameters -- FLIP in
+// {0, 1} compiles the nibrev()/reverse-index branch in or out entirely
+// (dead code eliminated, no runtime test), FLIP == 2 (the generic/K_GEN
+// instantiation only) reads c.flip at run time exactly as R1a's single
+// body did; MAXRUN selects store_fill<MAXRUN> above in place of HEAD's
+// multiply-splat fill (sec. 4.2's key change, replacing R0 item 1).
 //
 // SPRITE_IMPLEMENTATION_SPEC.md S4b: before any per-nibble work, classify
 // the whole word w. A GAP word (w == 0, every nibble transparent) or an
@@ -406,6 +467,7 @@ void hwsprites::decode_row(const SpriteRec& r, int32_t j, int32_t pend)
 // The terminator test runs after every class -- harmless (and required,
 // "keep the test anyway") for GAP/SHADOW words, which can never match it
 // (w & 0xF0 is 0x00 or 0xA0, never 0xF0).
+template <int FLIP, int MAXRUN>
 int32_t hwsprites::decode_row_k(const SpriteCtx& c, int32_t j)
 {
     // (a) hoist -- nothing below reads c.* or this->* inside a loop
@@ -421,7 +483,7 @@ int32_t hwsprites::decode_row_k(const SpriteCtx& c, int32_t j)
     const uint32_t        smask  = c.smask;
     const bool            shadow = c.shadow != 0;
     const int32_t         pend   = c.pend;
-    const bool            flip   = c.flip != 0;
+    const bool            flip   = (FLIP == 2) ? (c.flip != 0) : (FLIP == 1);
 
     // (b) per-row ROM window (sec. 3.6): replaces HEAD's per-word int64
     // widx compute-and-bounds-test with one per-row wlimit, so the word
@@ -459,9 +521,7 @@ int32_t hwsprites::decode_row_k(const SpriteCtx& c, int32_t j)
                 if (prev != SPR_COLOUR) { n = emit_l(rec, n, SPR_COLOUR, pos); prev = SPR_COLOUR; }
                 CB_UNROLL(8)
                 for (int k = 0; k < 8; k++) {
-                    const uint16_t v = (uint16_t)(((w >> (28 - 4 * k)) & 0xFu) | color);
-                    const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL; // (d) HEAD's fill, verbatim (R1b sec. 4.2 replaces this)
-                    std::memcpy(line + pos, &fill, 8);
+                    store_fill<MAXRUN>(line + pos, ((w >> (28 - 4 * k)) & 0xFu) | color); // (d) sec. 4.2
                     pos += (int32_t)((runs >> (8 * k)) & 0xFFu);
                 }
             } else {
@@ -473,9 +533,7 @@ int32_t hwsprites::decode_row_k(const SpriteCtx& c, int32_t j)
                                     : ((shadow && nib == 10) ? SPR_SHADOW : SPR_COLOUR);
                     if (t != prev) { n = emit_l(rec, n, t, pos); prev = t; }
 
-                    const uint16_t v = (uint16_t)(nib | color);
-                    const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL;
-                    std::memcpy(line + pos, &fill, 8);
+                    store_fill<MAXRUN>(line + pos, nib | color);
 
                     pos += (int32_t)((runs >> (8 * k)) & 0xFFu);
                 }
@@ -690,17 +748,25 @@ void hwsprites::replay_k(const SpriteCtx& c, int32_t nrec, int32_t da, int32_t d
 // colour_span_k/shadow_span_k (SPRITE_R1_LLD.md sec. 4.3/5.5): static so
 // replay_k can call them straight from a SpriteCtx without a `this` detour;
 // `line`/`mode` are passed explicitly since there is no `this` here (the
-// member wrappers below pass this->line/this->replay_mode). R1a: HEAD's
-// bodies verbatim, `replay_mode` -> the `mode` parameter -- the R1b copy
-// ladder for n < 8 (sec. 4.3) is a separate, later step, so this is still
-// exactly the S1 scalar form for the memcpy path.
+// member wrappers below pass this->line/this->replay_mode).
+//
+// R1b (sec. 4.3, R0 item 5): n >= 8 is completely unchanged from R1a/HEAD --
+// the NEON chunk loops (CB_HAVE_NEON) or, on a build without NEON, HEAD's
+// own memcpy-per-row (D) / 8-byte-chunk-plus-halfword-tail (D') scalar form,
+// verbatim. What changes is 1 <= n <= 7: instead of falling through to that
+// same scalar form (a `bl memcpy` per destination row on every build,
+// R0 item 5), a fixed-width copy ladder loads the (1, 2, or 2x4-halfword)
+// source once and stores it to every destination row with 2/4/8-byte
+// std::memcpy calls, each of which lowers to a plain load/store at a
+// constant size -- no libc call, D and D' coincide here (the ladder is
+// mode-independent, sec. 4.3's stated simplification).
 void hwsprites::colour_span_k(const uint16_t* line, uint16_t* base, int32_t stride,
                                int32_t da, int32_t db, int32_t lo, int32_t hi, int mode)
 {
     const int32_t n = hi - lo;
-#if defined(CB_HAVE_NEON)
+    const uint16_t* const src = line + lo;
     if (n >= 8) {
-        const uint16_t* src = line + lo;
+#if defined(CB_HAVE_NEON)
         if (mode == 0) {
             // D: span-copy, one wide-store loop per destination row.
             for (int32_t d = da; d < db; d++) {
@@ -723,28 +789,64 @@ void hwsprites::colour_span_k(const uint16_t* line, uint16_t* base, int32_t stri
                 p = std::min(p + 8, n - 8);
             }
         }
+#else
+        // HEAD's S1 scalar form, unchanged, now reached only for n >= 8
+        // (R1a/HEAD used this for every n on a non-NEON build).
+        if (mode == 0) {
+            // D: span-copy, one memcpy per destination row.
+            for (int32_t d = da; d < db; d++)
+                std::memcpy(base + (size_t)d * stride + lo, line + lo, (size_t)n * sizeof(uint16_t));
+        } else {
+            // D': load each chunk once, store it to every destination row.
+            int32_t p = lo;
+            for (; p + 4 <= hi; p += 4) {
+                uint64_t chunk;
+                std::memcpy(&chunk, line + p, 8);
+                for (int32_t d = da; d < db; d++)
+                    std::memcpy(base + (size_t)d * stride + p, &chunk, 8);
+            }
+            for (; p < hi; p++) {
+                const uint16_t v = line[p];
+                for (int32_t d = da; d < db; d++)
+                    (base + (size_t)d * stride)[p] = v;
+            }
+        }
+#endif
         return;
     }
-#endif
-    // S1 scalar form (also the CB_HAVE_NEON n < 8 fallback).
-    if (mode == 0) {
-        // D: span-copy, one memcpy per destination row.
+
+    // R1b ladder (SPRITE_R1_LLD.md sec. 4.3), 1 <= n <= 7. Source loaded
+    // once, stored to every row: D and D' coincide here, so `mode` is
+    // unused. Index math (sec. 4.3): for 4 <= n <= 7, [lo, lo+4) U
+    // [hi-4, hi) == [lo, hi) since hi-4 >= lo (n >= 4) and hi-4 <= lo+3 < lo+4
+    // (n <= 7); the [8-n, 8) overlap receives line[] copies of the same
+    // indices from both stores, so it is not a correctness concern. Same
+    // argument at half the width for 2 <= n <= 3. No halfword outside
+    // [lo, hi) is written; the destination is never read (a/b are loaded
+    // from line[], never from base[]).
+    (void)mode;
+    if (n >= 4) {                                   // 4..7: [lo, lo+4) U [hi-4, hi) == [lo, hi)
+        uint64_t a, b;
+        std::memcpy(&a, src, 8);
+        std::memcpy(&b, line + hi - 4, 8);
+        for (int32_t d = da; d < db; d++) {
+            uint16_t* const row = base + (ptrdiff_t)d * stride;
+            std::memcpy(row + lo,     &a, 8);
+            std::memcpy(row + hi - 4, &b, 8);
+        }
+    } else if (n >= 2) {                            // 2..3: [lo, lo+2) U [hi-2, hi) == [lo, hi)
+        uint32_t a, b;
+        std::memcpy(&a, src, 4);
+        std::memcpy(&b, line + hi - 2, 4);
+        for (int32_t d = da; d < db; d++) {
+            uint16_t* const row = base + (ptrdiff_t)d * stride;
+            std::memcpy(row + lo,     &a, 4);
+            std::memcpy(row + hi - 2, &b, 4);
+        }
+    } else {                                        // n == 1
+        const uint16_t a = *src;
         for (int32_t d = da; d < db; d++)
-            std::memcpy(base + (size_t)d * stride + lo, line + lo, (size_t)n * sizeof(uint16_t));
-    } else {
-        // D': load each chunk once, store it to every destination row.
-        int32_t p = lo;
-        for (; p + 4 <= hi; p += 4) {
-            uint64_t chunk;
-            std::memcpy(&chunk, line + p, 8);
-            for (int32_t d = da; d < db; d++)
-                std::memcpy(base + (size_t)d * stride + p, &chunk, 8);
-        }
-        for (; p < hi; p++) {
-            const uint16_t v = line[p];
-            for (int32_t d = da; d < db; d++)
-                (base + (size_t)d * stride)[p] = v;
-        }
+            (base + (ptrdiff_t)d * stride)[lo] = a;
     }
 }
 
@@ -913,8 +1015,8 @@ void hwsprites::make_ctx(const SpriteRec& r, uint16_t* pixels, int32_t pend, Spr
     c.replay_mode = replay_mode;
 }
 
-// draw_sprite_rows (SPRITE_R1_LLD.md sec. 3.5/5.6): the closed-form vertical
-// loop. Every destination row d in [d_lo, d_hi) reads source row
+// draw_sprite_rows_t (SPRITE_R1_LLD.md sec. 3.5/4.1/5.6): the closed-form
+// vertical loop. Every destination row d in [d_lo, d_hi) reads source row
 // src(d) = (d*zoom) >> 9 (division-free once zoom is fixed, exactly the
 // shipped accumulator's result -- unit s1a); consecutive d's sharing a
 // source row are grouped so that row is decoded exactly once and replayed
@@ -928,14 +1030,20 @@ void hwsprites::make_ctx(const SpriteRec& r, uint16_t* pixels, int32_t pend, Spr
 // via the schedule identities C1/C2/C5), falling back to HEAD's own scan,
 // unchanged, for zoom >= 0x200 (the run-0 regime the recurrence cannot
 // visit -- run[] entries there are 0 for most i, and the table itself is
-// only sized for the zoom < 0x200 side). `shrink` is a runtime test here
-// (R1b turns SHRINK into a template parameter, one of five specialised
-// instantiations); decode_row_k/replay_k are still non-template in R1a.
-void hwsprites::draw_sprite_rows(const SpriteCtx& c)
+// only sized for the zoom < 0x200 side).
+//
+// R1b (sec. 4.1) turns SHRINK into the template parameter that used to be
+// `shrink`'s runtime read, and passes <FLIP, MAXRUN> through to
+// decode_row_k so the templated fill/flip decisions are made once here per
+// sprite, not per row; replay_k stays a single non-template body (sec. 2.6:
+// it has no FLIP/MAXRUN-shaped work, only the record loop and copy/RMW
+// kernels, which are selected at run time by record type regardless of
+// kernel).
+template <int FLIP, int MAXRUN, bool SHRINK>
+void hwsprites::draw_sprite_rows_t(const SpriteCtx& c)
 {
     const int32_t d_hi = c.d_hi, zoom = c.zoom;
     const uint8_t* const run = c.run;
-    const bool shrink = zoom >= 0x200; // sec. 3.5: the run-0 regime keeps HEAD's own scan
 
     int32_t d  = c.d_lo;
     int32_t j  = (d * zoom) >> 9;      // HEAD 765/772, int32 (d <= 511, zoom <= 0xFFF -> < 2^21)
@@ -946,12 +1054,12 @@ void hwsprites::draw_sprite_rows(const SpriteCtx& c)
     int32_t db = d;
 
     for (;;) {
-        prefetch_rom_row_k(c, j + SPR_ROM_PF_ROWS);       // HEAD 778
-        const int32_t nrec = decode_row_k(c, j);          // HEAD 780, inlined, count in a local
-        replay_k(c, nrec, da, db);                        // HEAD 781, inlined
+        prefetch_rom_row_k(c, j + SPR_ROM_PF_ROWS);           // HEAD 778
+        const int32_t nrec = decode_row_k<FLIP, MAXRUN>(c, j); // HEAD 780, inlined, count in a local
+        replay_k(c, nrec, da, db);                             // HEAD 781, inlined
         if (db >= d_hi) break;
         da = db;
-        if (!shrink) {                    // zoom < 0x200: recurrence (sec. 3.5), no division
+        if constexpr (!SHRINK) {          // zoom < 0x200: recurrence (sec. 3.5), no division
             j++;
             db = std::min<int32_t>(da + (int32_t)run[j], d_hi);
         } else {                          // zoom >= 0x200 (run-0 regime): HEAD 772-776, unchanged
@@ -963,20 +1071,28 @@ void hwsprites::draw_sprite_rows(const SpriteCtx& c)
     }
 }
 
-// draw_sprite_fast (SPRITE_R1_LLD.md sec. 3.9): the fast in-envelope
+// draw_sprite_fast (SPRITE_R1_LLD.md sec. 3.9/4.1): the fast in-envelope
 // dispatch target. render()'s dispatch guarantees r.ydelta == 1 here
 // (ydelta == -1 routes to draw_sprite_px), so y = r.top + d and d_lo/d_hi
-// need only clip to [0, s16_height). R1a: an empty row range returns before
+// need only clip to [0, s16_height). An empty row range returns before
 // sched() is consulted, exactly as HEAD did (HEAD 756-758's d_lo >= d_hi
 // check ran before decode_row's first sched() call); otherwise one SpriteCtx
-// is built for the whole sprite and the row loop/glow flush run once each.
+// is built for the whole sprite and select_kernel picks one of the five
+// draw_sprite_rows_t instantiations to run (R1b sec. 4.1) before the glow
+// flush.
 void hwsprites::draw_sprite_fast(const SpriteRec& r, uint16_t* pixels, int32_t pend)
 {
     if (std::max<int32_t>(0, -r.top) >= std::min<int32_t>(r.H, (int32_t)config.s16_height - r.top)) return;
 
     SpriteCtx c;
     make_ctx(r, pixels, pend, c);
-    draw_sprite_rows(c);
+    switch (select_kernel(r.zoom, r.flip)) {
+        case K_F0R2: draw_sprite_rows_t<0, 2, false>(c); break;
+        case K_F1R2: draw_sprite_rows_t<1, 2, false>(c); break;
+        case K_F0R4: draw_sprite_rows_t<0, 4, false>(c); break;
+        case K_F1R4: draw_sprite_rows_t<1, 4, false>(c); break;
+        default:     draw_sprite_rows_t<2, 4, true >(c); break;   // K_GEN
+    }
 
     // SPRITE_IMPLEMENTATION_SPEC.md S2.2: flush the glow ring here, once per
     // sprite, never per frame (DESIGN_GLOW.md section 3). A no-op when glow

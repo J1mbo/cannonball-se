@@ -333,48 +333,71 @@ private:
     // -----------------------------------------------------------------------
     void make_ctx(const SpriteRec& r, uint16_t* pixels, int32_t pend, SpriteCtx& c);
 
+    // SPRITE_R1_LLD.md sec. 2.6/4.1 (R1b): per-sprite kernel selection.
+    // K_GEN is the generic path (runtime flip, 8-byte fill, HEAD's own
+    // closed-form-scan vertical loop) used for the run-0 regime
+    // zoom >= 0x200; the other four cover zoom < 0x200 (MAXRUN pinned by
+    // C5, sec. 4.1) crossed with flip, each using the division-free
+    // vertical recurrence.
+    enum Kernel : uint8_t { K_F0R2, K_F1R2, K_F0R4, K_F1R4, K_GEN };
+    static Kernel select_kernel(int32_t zoom, int32_t flip);
+
     // emit()'s replacement (sec. 2.5): the record count is a value in/value
     // out parameter (never a member) so its address is never taken inside
     // the row loop. Same drop/merge rules, same order.
     static CB_ALWAYS_INLINE int32_t emit_l(SpanRec* rec, int32_t n, uint8_t type, int32_t pos);
+
+    // SPRITE_R1_LLD.md sec. 4.2 (R1b): fill by shift-OR at the class width,
+    // replacing HEAD's `v * 0x0001000100010001ULL` (R0 item 1 -- 9 `mul`
+    // instructions per source word). Specialised for MAXRUN 2 (4-byte
+    // store, zoom >= 0x100) and 4 (8-byte store, zoom < 0x100 or the
+    // generic/run-0 path); no other MAXRUN is ever instantiated (sched()'s
+    // assertion below pins it). `v = nibble | color <= 0xFFF`, so neither
+    // specialisation needs to mask before widening.
+    template <int MAXRUN> static CB_ALWAYS_INLINE void store_fill(uint16_t* p, uint32_t v);
 
     // prefetch_rom_row's replacement (sec. 5.1): takes the ctx instead of a
     // SpriteRec/`this`; the set of two hinted addresses is direction-
     // independent so, unlike HEAD, it does not need its own flip test.
     static CB_ALWAYS_INLINE void prefetch_rom_row_k(const SpriteCtx& c, int32_t jrow);
 
-    // decode_row's kernel body (sec. 3.4/3.6/5.2): per-row ROM window
+    // decode_row's kernel body (sec. 3.4/3.6/4.2/5.2): per-row ROM window
     // (wlimit) instead of HEAD's per-word int64 bounds test, one 8-byte
-    // `run` load per word instead of eight `run[]` byte loads. R1a: not yet
-    // templated on FLIP/MAXRUN (R1b); returns the record count by value,
-    // static (no `this`).
-    static CB_ALWAYS_INLINE int32_t decode_row_k(const SpriteCtx& c, int32_t j);
+    // `run` load per word instead of eight `run[]` byte loads, fill via
+    // store_fill<MAXRUN> (R1b's shift-OR, sec. 4.2) instead of HEAD's
+    // multiply. FLIP is 0, 1, or 2 (= read c.flip at run time -- used only
+    // by the generic/K_GEN instantiation, sec. 2.6); static (no `this`).
+    template <int FLIP, int MAXRUN> static CB_ALWAYS_INLINE int32_t decode_row_k(const SpriteCtx& c, int32_t j);
 
     // replay's kernel body (sec. 3.7/5.4): the S3 shadow-prefetch scan
     // gated on ctx.shadow (HEAD ran it, harmlessly, for every sprite).
     // A member (not static): still owns glow_push/shadow_rows, exactly as
-    // HEAD's replay() did.
+    // HEAD's replay() did. Not templated: one body, called from every
+    // draw_sprite_rows_t instantiation (sec. 4.1).
     CB_ALWAYS_INLINE void replay_k(const SpriteCtx& c, int32_t nrec, int32_t da, int32_t db);
 
     // replay_colour_span/replay_shadow_span's shared bodies (sec. 4.3/5.5):
     // static so replay_k can call them without a SpriteCtx-to-`this` detour;
     // `line`/`mode` are passed explicitly since there is no `this` here (the
-    // public member wrappers above pass this->line/this->replay_mode). R1a:
-    // HEAD's bodies verbatim (NEON n >= 8 loops untouched, sec. 0.2 item 3;
-    // the R1b copy ladder for n < 8 is a separate, later step).
+    // public member wrappers above pass this->line/this->replay_mode).
+    // R1b: colour_span_k gains the 1..7-halfword copy ladder (sec. 4.3);
+    // the n >= 8 paths (NEON and the non-NEON HEAD-verbatim fallback) are
+    // unchanged from R1a.
     static CB_ALWAYS_INLINE void colour_span_k(const uint16_t* line, uint16_t* base, int32_t stride,
                                                 int32_t da, int32_t db, int32_t lo, int32_t hi, int mode);
     static CB_ALWAYS_INLINE void shadow_span_k(uint16_t* base, int32_t stride,
                                                 int32_t da, int32_t db, int32_t lo, int32_t hi);
 
-    // The vertical loop (sec. 3.5/5.6): HEAD's own scan for the first group,
-    // then the division-free recurrence da=db; db=min(da+run[j], d_hi) for
-    // zoom < 0x200, falling back to HEAD's scan (unchanged) for zoom >= 0x200
-    // (the run-0 regime the recurrence cannot visit). One real call per
-    // sprite from draw_sprite_fast -- R1b turns this into five
-    // <FLIP, MAXRUN, SHRINK> template instantiations; R1a has just this one
-    // non-template body.
-    void draw_sprite_rows(const SpriteCtx& c);
+    // The vertical loop (sec. 3.5/4.1/5.6): HEAD's own scan for the first
+    // group, then the division-free recurrence da=db; db=min(da+run[j], d_hi)
+    // for zoom < 0x200 (SHRINK == false), falling back to HEAD's scan
+    // (unchanged) for zoom >= 0x200 (SHRINK == true -- the run-0 regime the
+    // recurrence cannot visit). One real call per sprite from
+    // draw_sprite_fast, through select_kernel's switch -- five
+    // instantiations, one kernel source (sec. 4.1's deviation note: FLIP == 2
+    // reads c.flip at run time for the generic instantiation instead of a
+    // sixth template parameter).
+    template <int FLIP, int MAXRUN, bool SHRINK> void draw_sprite_rows_t(const SpriteCtx& c);
 
     // The fast in-envelope path (S1.2): closed-form vertical loop
     // (src(d) = (d*zoom) >> 9) grouping destination rows that share a source
