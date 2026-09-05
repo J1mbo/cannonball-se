@@ -672,13 +672,60 @@ static void main_loop() {
         // Update the next frame time.
         nextFrameTime += frameDuration;
 
+#ifdef CB_FRAME_CKSUM
+        // Test aid: run a fixed number of frames then quit, printing the rolling
+        // frame checksum. Deterministic under -t 1 -perftest, so a before/after
+        // build comparison proves bit-identical composited output.
+        {
+            const char* mx = getenv("CB_MAX_FRAMES");
+            if (mx && video.prof_frames >= (uint64_t)atoll(mx)) {
+                printf("\nCB_FRAME_CKSUM frames=%llu cksum=0x%016llx\n",
+                       (unsigned long long)video.prof_frames,
+                       (unsigned long long)video.prof_frame_cksum);
+                fflush(stdout);
+                cannonball::state = STATE_QUIT;
+            }
+        }
+#endif
+
         // Record FPS info on console (every 2 seconds) and FPS on-screen if enabled
         auto elapsed = std::chrono::steady_clock::now() - fpsTimer;
         if (elapsed >= std::chrono::seconds(2)) {
             int fps = renderedFrames / 2;
             int totalFrames = renderedFrames + droppedFrames;
             int droppedPercent = (totalFrames > 0) ? (droppedFrames * 100 / totalFrames) : 0;
-            printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
+            // --- measurement only (branch sprite-a53) -------------------------
+            // Per-frame cost of each prepare_frame() layer, measured in situ so
+            // it includes contention from the render threads, the audio thread
+            // and the GPU. Deltas since the last report.
+            {
+                static uint64_t l_tv = 0, l_rb = 0, l_tb = 0, l_tf = 0, l_rf = 0;
+                static uint64_t l_sp = 0, l_tx = 0, l_fr = 0;
+                uint64_t tv = video.prof_ns_tilevals, rb = video.prof_ns_road_bg;
+                uint64_t tb = video.prof_ns_tile_bg,  tf = video.prof_ns_tile_fg;
+                uint64_t rf = video.prof_ns_road_fg,  sp = video.prof_ns_sprites;
+                uint64_t tx = video.prof_ns_text,     fr = video.prof_frames;
+                uint64_t dfr = fr - l_fr;
+                if (dfr) {
+                    printf("\n%i FPS (drop %i%%, %llu frames) ms/frame:"
+                           " tilevals %.3f | road_bg %.3f | tile_bg %.3f | tile_fg %.3f"
+                           " | road_fg %.3f | SPRITES %.3f | text %.3f | TOTAL %.3f",
+                           fps, droppedPercent, (unsigned long long)dfr,
+                           (double)(tv - l_tv) / dfr / 1e6,
+                           (double)(rb - l_rb) / dfr / 1e6,
+                           (double)(tb - l_tb) / dfr / 1e6,
+                           (double)(tf - l_tf) / dfr / 1e6,
+                           (double)(rf - l_rf) / dfr / 1e6,
+                           (double)(sp - l_sp) / dfr / 1e6,
+                           (double)(tx - l_tx) / dfr / 1e6,
+                           (double)((tv-l_tv)+(rb-l_rb)+(tb-l_tb)+(tf-l_tf)+(rf-l_rf)
+                                    +(sp-l_sp)+(tx-l_tx)) / dfr / 1e6);
+                } else {
+                    printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
+                }
+                l_tv = tv; l_rb = rb; l_tb = tb; l_tf = tf; l_rf = rf;
+                l_sp = sp; l_tx = tx; l_fr = fr;
+            }
             fflush(stdout);
             fps_counter = fps;
             renderedFrames = 0;

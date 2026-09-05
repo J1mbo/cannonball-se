@@ -114,6 +114,7 @@ set(src_frontend
     )
 
 set(src_hwvideo
+    "${main_cpp_base}/hwvideo/hwarch.hpp"
     "${main_cpp_base}/hwvideo/hwroad.hpp"
     "${main_cpp_base}/hwvideo/hwsprites.hpp"
     "${main_cpp_base}/hwvideo/hwtiles.hpp"

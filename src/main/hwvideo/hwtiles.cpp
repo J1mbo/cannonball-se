@@ -2,6 +2,7 @@
 #include "globals.hpp"
 #include "romloader.hpp"
 #include "hwvideo/hwtiles.hpp"
+#include "hwvideo/hwarch.hpp"
 #include "frontend/config.hpp"
 
 /***************************************************************************
@@ -127,12 +128,26 @@ void hwtiles::init(uint8_t* src_tiles, const bool hires)
         s16_width_noscale = config.s16_width >> 1;
         render8x8_tile_mask      = &hwtiles::render8x8_tile_mask_hires;
         render8x8_tile_mask_clip = &hwtiles::render8x8_tile_mask_clip_hires;
+#ifdef CB_RENDER_TEST
+        render8x8_tile_mask_ref      = &hwtiles::render8x8_tile_mask_hires_ref;
+        render8x8_tile_mask_clip_ref = &hwtiles::render8x8_tile_mask_clip_hires_ref;
+#endif
     }
     else
     {
         s16_width_noscale = config.s16_width;
         render8x8_tile_mask      = &hwtiles::render8x8_tile_mask_lores;
         render8x8_tile_mask_clip = &hwtiles::render8x8_tile_mask_clip_lores;
+#ifdef CB_RENDER_TEST
+        // S0.3 lists _ref twins only for the hires kernels (they are the ones
+        // any future section optimises); the lores kernels are never touched,
+        // so they are their own faithful reference here -- pointing the _ref
+        // pair straight at them keeps render_tile_layer_ref/render_text_layer_ref
+        // usable (and correct) in lores mode without inventing an unspecified
+        // render8x8_tile_mask_lores_ref twin.
+        render8x8_tile_mask_ref      = &hwtiles::render8x8_tile_mask_lores;
+        render8x8_tile_mask_clip_ref = &hwtiles::render8x8_tile_mask_clip_lores;
+#endif
     }
 }
 
@@ -209,7 +224,7 @@ void hwtiles::render_all_tiles(uint16_t* buf)
     }
 }
 
-void hwtiles::render_tile_layer(uint16_t* buf, uint8_t page_index, uint8_t priority_draw)
+void hwtiles::render_tile_layer(uint16_t* buf, uint8_t page_index, uint8_t priority_draw, const uint8_t* dead_rows)
 {
     int16_t Colour, x, y, Priority = 0;
 
@@ -227,14 +242,41 @@ void hwtiles::render_tile_layer(uint16_t* buf, uint8_t page_index, uint8_t prior
     int x_decrement = (x_clamp - xScroll) & 0x3ff;
     int y_decrement = yScroll & 0x1ff;
 
-    int my8 = -8, mx8;
-    for (int my = 0; my < 64; my++)
+    int   xs[128]; uint8_t mxl[128]; int nmx = 0;
+    for (int mx = 0; mx < 128; mx++) {
+        int x = mx * 8 - x_decrement;
+        if (x < -x_clamp) x += 1024;
+        if (x > -8 && x < s16_width_noscale) { xs[nmx] = x; mxl[nmx++] = (uint8_t)mx; }
+    }
+    int   ys[64];  uint8_t myl[64];  int nmy = 0;
+    for (int my = 0; my < 64; my++) {
+        int y = my * 8 - y_decrement;
+        if (y < -288) y += 512;
+        if (y > -8 && y < S16_HEIGHT) {
+            // S5.2: skip this my only if every on-screen row of the tile is
+            // dead (fully overwritten later by the road foreground);
+            // partially-dead tiles render unchanged. Off-screen rows of a
+            // clip-path tile never count toward "dead", hence the clamp to
+            // [0, S16_HEIGHT).
+            if (dead_rows) {
+                const int r0 = y < 0 ? 0 : y;
+                const int r1 = (y + 8 > S16_HEIGHT) ? S16_HEIGHT : y + 8;
+                bool dead = true;
+                for (int r = r0; r < r1; r++) if (!dead_rows[r]) { dead = false; break; }
+                if (dead) continue;
+            }
+            ys[nmy] = y; myl[nmy++] = (uint8_t)my;
+        }
+    }
+
+    for (int j = 0; j < nmy; j++)
     {
-        my8 += 8;
-        mx8 = -8;
-        for (int mx = 0; mx < 128; mx++)
+        int my = myl[j];
+        y = ys[j];
+        for (int i = 0; i < nmx; i++)
         {
-            mx8 += 8;
+            int mx = mxl[i];
+            x = xs[i];
             const unsigned quad = ((unsigned)(my >= 32) << 1) | (unsigned)(mx >= 64);
             const uint16_t ActPage = (EffPage >> (quad * 4)) & 0x0F;
 /*            if (my < 32 && mx < 64)                    // top left
@@ -271,24 +313,6 @@ void hwtiles::render_tile_layer(uint16_t* buf, uint8_t page_index, uint8_t prior
 
                 Colour = (Data >> 6) & 0x7f;
 
-                x = mx8;
-                y = my8;
-
-                // We take into account the internal screen resolution here
-                // to account for widescreen mode.
-                x -= x_decrement;
-//                x -= (x_clamp - xScroll) & 0x3ff;
-
-                if (x < -x_clamp)
-                    x += 1024;
-
-                y -= y_decrement;
-//                y -= yScroll & 0x1ff;
-
-
-                if (y < -288)
-                    y += 512;
-
                 const uint16_t ColourOff = (uint16_t)((Colour >> 5) << 8) | TILEMAP_COLOUR_OFFSET;
 /*
                 uint16_t ColourOff = TILEMAP_COLOUR_OFFSET;
@@ -312,14 +336,26 @@ void hwtiles::render_text_layer(uint16_t* buf, uint8_t priority_draw)
 {
     uint16_t mx, my, Code, Colour, x, y, Priority, TileIndex = 0;
 
-    int my8 = -8, mx8;
-    for (my = 0; my < 32; my++) 
+    int    xs[64]; uint8_t mxl[64]; int nmx = 0;
+    for (int mx = 0; mx < 64; mx++) {
+        int x = 8 * mx - 192;
+        if (x > -8 && x < s16_width_noscale) { xs[nmx] = x; mxl[nmx++] = (uint8_t)mx; }
+    }
+    int    ys[32]; uint8_t myl[32]; int nmy = 0;
+    for (int my = 0; my < 32; my++) {
+        int y = 8 * my;
+        if (y >= 0 && y < S16_HEIGHT) { ys[nmy] = y; myl[nmy++] = (uint8_t)my; }
+    }
+
+    for (int j = 0; j < nmy; j++)
     {
-        my8 += 8;
-        mx8 = -8;
-        for (mx = 0; mx < 64; mx++) 
+        my = myl[j];
+        y = ys[j];
+        for (int i = 0; i < nmx; i++)
         {
-            mx8 += 8;
+            mx = mxl[i];
+            x = xs[i];
+            TileIndex = (my * 64 + mx) * 2;
             Code = (text_ram[TileIndex + 0] << 8) | text_ram[TileIndex + 1];
             Priority = (Code >> 15) & 1;
 
@@ -331,24 +367,16 @@ void hwtiles::render_text_layer(uint16_t* buf, uint8_t priority_draw)
                 Code += (tile_banks[0] << 12);
                 Code &= (NUM_TILES - 1);
 
-                if (Code != 0) 
+                if (Code != 0)
                 {
-//                    x = 8 * mx;
-//                    y = 8 * my;
-                    x = mx8;
-                    y = my8;
-
-                    x -= 192;
-
-                    // We also adjust the text layer for wide-screen below. But don't allow painting in the 
+                    // We also adjust the text layer for wide-screen below. But don't allow painting in the
                     // wide-screen areas to avoid graphical glitches.
                     if (x > 7 && x < (s16_width_noscale - 8) && y > 7 && y <= (S16_HEIGHT - 8))
                         (this->*render8x8_tile_mask)(buf, Code, x + config.s16_x_off, y, Colour, 3, 0, TILEMAP_COLOUR_OFFSET);
-                    else if (x > -8 && x < s16_width_noscale && y >= 0 && y < S16_HEIGHT) 
+                    else if (x > -8 && x < s16_width_noscale && y >= 0 && y < S16_HEIGHT)
                         (this->*render8x8_tile_mask_clip)(buf, Code, x + config.s16_x_off, y, Colour, 3, 0, TILEMAP_COLOUR_OFFSET);
                 }
             }
-            TileIndex += 2;
         }
     }
 }
@@ -454,6 +482,68 @@ inline void set_pixel_x4(uint16_t *buf, uint32_t data, uint16_t width)
     buf[0] = buf[1] = buf[width] = buf[1 + width] = data;
 }
 
+// ------------------------------------------------------------------------------------------------
+// S7: one tile row (16 hi-res pixels, on `buf` and `buf + width`), decoded from the packed nibble
+// word p0. Nibble c_k (k=0..7) is bits 28-4k..31-4k of p0 (c0 = leftmost = p0 >> 28); if c_k != 0
+// the halfword nPalette + c_k is written to buf[2k], buf[2k+1], buf[2k+width], buf[2k+1+width],
+// otherwise those four positions are left as they are. `buf` is only 4-byte aligned.
+// (IMPLEMENTATION_SPEC.md S7.2). Called from render8x8_tile_mask_hires only, inside its existing
+// p0 != nMaskColour test; the transparent test is nibble == 0, independent of nMaskColour.
+// ------------------------------------------------------------------------------------------------
+static inline void tile_row_hires(uint16_t* buf, uint32_t p0, uint32_t nPalette, uint16_t width)
+{
+#if defined(CB_HAVE_NEON)
+    const uint32_t sw = __builtin_bswap32(p0);                     // bytes: c0c1, c2c3, c4c5, c6c7
+    uint8x8_t  b   = vreinterpret_u8_u32(vdup_n_u32(sw));           // lanes 0..3 hold those bytes
+    uint8x8_t  hi  = vshr_n_u8(b, 4);                               // c0 c2 c4 c6 ..
+    uint8x8_t  lo  = vand_u8(b, vdup_n_u8(0x0F));                   // c1 c3 c5 c7 ..
+    uint8x8_t  nib = vzip1_u8(hi, lo);                              // c0 c1 c2 c3 c4 c5 c6 c7
+    uint16x8_t n16 = vmovl_u8(nib);
+    uint16x8_t col = vaddq_u16(n16, vdupq_n_u16((uint16_t)nPalette));
+    uint16x8_t L   = vzip1q_u16(col, col);                          // c0 c0 c1 c1 c2 c2 c3 c3
+    uint16x8_t R   = vzip2q_u16(col, col);                          // c4 c4 .. c7 c7
+    if (((((p0 & 0x77777777u) + 0x77777777u) | p0) & 0x88888888u) == 0x88888888u) {   // all 8 nibbles non-zero
+        vst1q_u16(buf, L); vst1q_u16(buf + 8, R);
+        vst1q_u16(buf + width, L); vst1q_u16(buf + width + 8, R);
+    } else {
+        uint16x8_t m  = vtstq_u16(n16, n16);                        // 0xFFFF where nibble != 0
+        uint16x8_t mL = vzip1q_u16(m, m), mR = vzip2q_u16(m, m);
+        uint16_t* r1 = buf + width;
+        vst1q_u16(buf,     vbslq_u16(mL, L, vld1q_u16(buf)));
+        vst1q_u16(buf + 8, vbslq_u16(mR, R, vld1q_u16(buf + 8)));
+        vst1q_u16(r1,      vbslq_u16(mL, L, vld1q_u16(r1)));
+        vst1q_u16(r1 + 8,  vbslq_u16(mR, R, vld1q_u16(r1 + 8)));
+    }
+#else
+    uint32_t c7 = p0 & 0xf;
+    uint32_t c6 = (p0 >> 4) & 0xf;
+    uint32_t c5 = (p0 >> 8) & 0xf;
+    uint32_t c4 = (p0 >> 12) & 0xf;
+    uint32_t c3 = (p0 >> 16) & 0xf;
+    uint32_t c2 = (p0 >> 20) & 0xf;
+    uint32_t c1 = (p0 >> 24) & 0xf;
+    uint32_t c0 = (p0 >> 28);
+
+    if (c0) set_pixel_x4(&buf[0],  nPalette + c0, width);
+    if (c1) set_pixel_x4(&buf[2],  nPalette + c1, width);
+    if (c2) set_pixel_x4(&buf[4],  nPalette + c2, width);
+    if (c3) set_pixel_x4(&buf[6],  nPalette + c3, width);
+    if (c4) set_pixel_x4(&buf[8],  nPalette + c4, width);
+    if (c5) set_pixel_x4(&buf[10], nPalette + c5, width);
+    if (c6) set_pixel_x4(&buf[12], nPalette + c6, width);
+    if (c7) set_pixel_x4(&buf[14], nPalette + c7, width);
+#endif
+}
+
+#ifdef CB_RENDER_TEST
+// S7.4: test-only forwarder -- see hwtiles.hpp for rationale. Lets the driver
+// call tile_row_hires directly, one row at a time, for its exhaustive p0 x
+// nTilePalette sweep. Not compiled into the game.
+void hwtiles::test_tile_row_hires(uint16_t* buf, uint32_t p0, uint32_t nPalette, uint16_t width)
+{
+    tile_row_hires(buf, p0, nPalette, width);
+}
+#endif
 
 void hwtiles::render8x8_tile_mask_hires(
     uint16_t *buf,
@@ -474,25 +564,9 @@ void hwtiles::render8x8_tile_mask_hires(
     {
         uint32_t p0 = *pTileData;
 
-        if (p0 != nMaskColour) 
+        if (p0 != nMaskColour)
         {
-            uint32_t c7 = p0 & 0xf;
-            uint32_t c6 = (p0 >> 4) & 0xf;
-            uint32_t c5 = (p0 >> 8) & 0xf;
-            uint32_t c4 = (p0 >> 12) & 0xf;
-            uint32_t c3 = (p0 >> 16) & 0xf;
-            uint32_t c2 = (p0 >> 20) & 0xf;
-            uint32_t c1 = (p0 >> 24) & 0xf;
-            uint32_t c0 = (p0 >> 28);
-
-            if (c0) set_pixel_x4(&buf[0],  nPalette + c0, s16width);
-            if (c1) set_pixel_x4(&buf[2],  nPalette + c1, s16width);
-            if (c2) set_pixel_x4(&buf[4],  nPalette + c2, s16width);
-            if (c3) set_pixel_x4(&buf[6],  nPalette + c3, s16width);
-            if (c4) set_pixel_x4(&buf[8],  nPalette + c4, s16width);
-            if (c5) set_pixel_x4(&buf[10], nPalette + c5, s16width);
-            if (c6) set_pixel_x4(&buf[12], nPalette + c6, s16width);
-            if (c7) set_pixel_x4(&buf[14], nPalette + c7, s16width);
+            tile_row_hires(buf, p0, nPalette, s16width);
         }
         buf += (s16width << 1);
         pTileData++;
@@ -546,3 +620,250 @@ void hwtiles::render8x8_tile_mask_clip_hires(
         pTileData++;
     }
 }
+
+#ifdef CB_RENDER_TEST
+// ------------------------------------------------------------------------------------------------
+// S0.3: reference twins. Verbatim copies of render_tile_layer, render_text_layer,
+// render8x8_tile_mask_hires and render8x8_tile_mask_clip_hires as they stand on
+// this branch (i.e. already post-S1: the two-stage precompute+iterate scan is
+// the current code, so it is the correct starting point for every section that
+// comes after S1). The only edit is that the two layer twins dispatch through
+// the _ref kernel pointer pair instead of render8x8_tile_mask/_clip, so a ref
+// scan never calls a new (post-S0) kernel. Not compiled into the game.
+// ------------------------------------------------------------------------------------------------
+
+void hwtiles::render_tile_layer_ref(uint16_t* buf, uint8_t page_index, uint8_t priority_draw)
+{
+    int16_t Colour, x, y, Priority = 0;
+
+    uint16_t ActPage = 0;
+    const uint16_t EffPage = page[page_index];
+    uint16_t xScroll = scroll_x[page_index];
+    uint16_t yScroll = scroll_y[page_index];
+
+    // Need to support this at each row/column
+    if ((xScroll & 0x8000) != 0)
+        xScroll = (text_ram[0xf80 + (0x40 * page_index) + 0] << 8) | text_ram[0xf80 + (0x40 * page_index) + 1];
+    if ((yScroll & 0x8000) != 0)
+        yScroll = (text_ram[0xf16 + (0x40 * page_index) + 0] << 8) | text_ram[0xf16 + (0x40 * page_index) + 1];
+
+    int x_decrement = (x_clamp - xScroll) & 0x3ff;
+    int y_decrement = yScroll & 0x1ff;
+
+    int   xs[128]; uint8_t mxl[128]; int nmx = 0;
+    for (int mx = 0; mx < 128; mx++) {
+        int x = mx * 8 - x_decrement;
+        if (x < -x_clamp) x += 1024;
+        if (x > -8 && x < s16_width_noscale) { xs[nmx] = x; mxl[nmx++] = (uint8_t)mx; }
+    }
+    int   ys[64];  uint8_t myl[64];  int nmy = 0;
+    for (int my = 0; my < 64; my++) {
+        int y = my * 8 - y_decrement;
+        if (y < -288) y += 512;
+        if (y > -8 && y < S16_HEIGHT) { ys[nmy] = y; myl[nmy++] = (uint8_t)my; }
+    }
+
+    for (int j = 0; j < nmy; j++)
+    {
+        int my = myl[j];
+        y = ys[j];
+        for (int i = 0; i < nmx; i++)
+        {
+            int mx = mxl[i];
+            x = xs[i];
+            const unsigned quad = ((unsigned)(my >= 32) << 1) | (unsigned)(mx >= 64);
+            const uint16_t ActPage = (EffPage >> (quad * 4)) & 0x0F;
+/*            if (my < 32 && mx < 64)                    // top left
+                ActPage = (EffPage >> 0) & 0x0f;
+            if (my < 32 && mx >= 64)                   // top right
+                ActPage = (EffPage >> 4) & 0x0f;
+            if (my >= 32 && mx < 64)                   // bottom left
+                ActPage = (EffPage >> 8) & 0x0f;
+            if (my >= 32 && mx >= 64)                  // bottom right page
+                ActPage = (EffPage >> 12) & 0x0f;
+*/
+
+            const uint32_t base   = (ActPage << 12) | ((unsigned(my) & 31u) << 7);
+            const uint32_t offset = (unsigned(mx) & 63u) << 1;
+            const uint32_t TileIndex = base | offset;
+/*
+            uint32_t TileIndex = 64 * 32 * 2 * ActPage + ((2 * 64 * my) & 0xfff) + ((2 * mx) & 0x7f);
+*/
+
+            uint16_t Data = (tile_ram[TileIndex + 0] << 8) | tile_ram[TileIndex + 1];
+
+            Priority = (Data >> 15) & 1;
+
+            if (Priority == priority_draw)
+            {
+                uint32_t Code = Data & 0x1fff;
+                Code = (tile_banks[Code >> 12] << 12) | (Code & 0xFFF);
+/*
+                Code = tile_banks[Code / 0x1000] * 0x1000 + Code % 0x1000;
+*/
+                Code &= (NUM_TILES - 1);
+
+                if (Code == 0) continue;
+
+                Colour = (Data >> 6) & 0x7f;
+
+                const uint16_t ColourOff = (uint16_t)((Colour >> 5) << 8) | TILEMAP_COLOUR_OFFSET;
+/*
+                uint16_t ColourOff = TILEMAP_COLOUR_OFFSET;
+                if (Colour >= 0x20)
+					ColourOff = 0x100 | TILEMAP_COLOUR_OFFSET;
+                if (Colour >= 0x40)
+					ColourOff = 0x200 | TILEMAP_COLOUR_OFFSET;
+                if (Colour >= 0x60)
+					ColourOff = 0x300 | TILEMAP_COLOUR_OFFSET;
+*/
+                if (x > 7 && x < (s16_width_noscale - 8) && y > 7 && y <= (S16_HEIGHT - 8))
+                    (this->*render8x8_tile_mask_ref)(buf, Code, x, y, Colour, 3, 0, ColourOff);
+                else if (x > -8 && x < s16_width_noscale && y > -8 && y < S16_HEIGHT)
+					(this->*render8x8_tile_mask_clip_ref)(buf, Code, x, y, Colour, 3, 0, ColourOff);
+            } // end priority check
+        } // end for mx loop
+    } // end for my loop
+}
+
+void hwtiles::render_text_layer_ref(uint16_t* buf, uint8_t priority_draw)
+{
+    uint16_t mx, my, Code, Colour, x, y, Priority, TileIndex = 0;
+
+    int    xs[64]; uint8_t mxl[64]; int nmx = 0;
+    for (int mx = 0; mx < 64; mx++) {
+        int x = 8 * mx - 192;
+        if (x > -8 && x < s16_width_noscale) { xs[nmx] = x; mxl[nmx++] = (uint8_t)mx; }
+    }
+    int    ys[32]; uint8_t myl[32]; int nmy = 0;
+    for (int my = 0; my < 32; my++) {
+        int y = 8 * my;
+        if (y >= 0 && y < S16_HEIGHT) { ys[nmy] = y; myl[nmy++] = (uint8_t)my; }
+    }
+
+    for (int j = 0; j < nmy; j++)
+    {
+        my = myl[j];
+        y = ys[j];
+        for (int i = 0; i < nmx; i++)
+        {
+            mx = mxl[i];
+            x = xs[i];
+            TileIndex = (my * 64 + mx) * 2;
+            Code = (text_ram[TileIndex + 0] << 8) | text_ram[TileIndex + 1];
+            Priority = (Code >> 15) & 1;
+
+            if (Priority == priority_draw)
+            {
+                Colour = (Code >> 9) & 0x07;
+                Code &= 0x1ff;
+//                Code += tile_banks[0] * 0x1000;
+                Code += (tile_banks[0] << 12);
+                Code &= (NUM_TILES - 1);
+
+                if (Code != 0)
+                {
+                    // We also adjust the text layer for wide-screen below. But don't allow painting in the
+                    // wide-screen areas to avoid graphical glitches.
+                    if (x > 7 && x < (s16_width_noscale - 8) && y > 7 && y <= (S16_HEIGHT - 8))
+                        (this->*render8x8_tile_mask_ref)(buf, Code, x + config.s16_x_off, y, Colour, 3, 0, TILEMAP_COLOUR_OFFSET);
+                    else if (x > -8 && x < s16_width_noscale && y >= 0 && y < S16_HEIGHT)
+                        (this->*render8x8_tile_mask_clip_ref)(buf, Code, x + config.s16_x_off, y, Colour, 3, 0, TILEMAP_COLOUR_OFFSET);
+                }
+            }
+        }
+    }
+}
+
+void hwtiles::render8x8_tile_mask_hires_ref(
+    uint16_t *buf,
+    uint16_t nTileNumber,
+    uint16_t StartX,
+    uint16_t StartY,
+    uint16_t nTilePalette,
+    uint16_t nColourDepth,
+    uint16_t nMaskColour,
+    uint16_t nPaletteOffset)
+{
+    uint32_t nPalette = (nTilePalette << nColourDepth) | nMaskColour;
+    uint32_t* pTileData = tiles + (nTileNumber << 3);
+    buf += ((StartY << 1) * config.s16_width) + (StartX << 1);
+
+    uint16_t s16width = config.s16_width;
+    for (int y = 0; y < 8; y++)
+    {
+        uint32_t p0 = *pTileData;
+
+        if (p0 != nMaskColour)
+        {
+            uint32_t c7 = p0 & 0xf;
+            uint32_t c6 = (p0 >> 4) & 0xf;
+            uint32_t c5 = (p0 >> 8) & 0xf;
+            uint32_t c4 = (p0 >> 12) & 0xf;
+            uint32_t c3 = (p0 >> 16) & 0xf;
+            uint32_t c2 = (p0 >> 20) & 0xf;
+            uint32_t c1 = (p0 >> 24) & 0xf;
+            uint32_t c0 = (p0 >> 28);
+
+            if (c0) set_pixel_x4(&buf[0],  nPalette + c0, s16width);
+            if (c1) set_pixel_x4(&buf[2],  nPalette + c1, s16width);
+            if (c2) set_pixel_x4(&buf[4],  nPalette + c2, s16width);
+            if (c3) set_pixel_x4(&buf[6],  nPalette + c3, s16width);
+            if (c4) set_pixel_x4(&buf[8],  nPalette + c4, s16width);
+            if (c5) set_pixel_x4(&buf[10], nPalette + c5, s16width);
+            if (c6) set_pixel_x4(&buf[12], nPalette + c6, s16width);
+            if (c7) set_pixel_x4(&buf[14], nPalette + c7, s16width);
+        }
+        buf += (s16width << 1);
+        pTileData++;
+    }
+}
+
+void hwtiles::render8x8_tile_mask_clip_hires_ref(
+    uint16_t *buf,
+    uint16_t nTileNumber,
+    int16_t StartX,
+    int16_t StartY,
+    uint16_t nTilePalette,
+    uint16_t nColourDepth,
+    uint16_t nMaskColour,
+    uint16_t nPaletteOffset)
+{
+    uint32_t nPalette = (nTilePalette << nColourDepth) | nMaskColour;
+    uint32_t* pTileData = tiles + (nTileNumber << 3);
+
+    uint16_t s16width = config.s16_width;
+    buf += ((StartY << 1) * s16width) + (StartX << 1);
+
+    for (int y = 0; y < 8; y++)
+    {
+        if ((StartY + y) >= 0 && (StartY + y) < S16_HEIGHT)
+        {
+            uint32_t p0 = *pTileData;
+
+            if (p0 != nMaskColour)
+            {
+                uint32_t c7 = p0 & 0xf;
+                uint32_t c6 = (p0 >> 4) & 0xf;
+                uint32_t c5 = (p0 >> 8) & 0xf;
+                uint32_t c4 = (p0 >> 12) & 0xf;
+                uint32_t c3 = (p0 >> 16) & 0xf;
+                uint32_t c2 = (p0 >> 20) & 0xf;
+                uint32_t c1 = (p0 >> 24) & 0xf;
+                uint32_t c0 = (p0 >> 28);
+
+                if (c0 && 0 + StartX >= 0 && 0 + StartX < s16_width_noscale) set_pixel_x4(&buf[0],  nPalette + c0, s16width);
+                if (c1 && 1 + StartX >= 0 && 1 + StartX < s16_width_noscale) set_pixel_x4(&buf[2],  nPalette + c1, s16width);
+                if (c2 && 2 + StartX >= 0 && 2 + StartX < s16_width_noscale) set_pixel_x4(&buf[4],  nPalette + c2, s16width);
+                if (c3 && 3 + StartX >= 0 && 3 + StartX < s16_width_noscale) set_pixel_x4(&buf[6],  nPalette + c3, s16width);
+                if (c4 && 4 + StartX >= 0 && 4 + StartX < s16_width_noscale) set_pixel_x4(&buf[8],  nPalette + c4, s16width);
+                if (c5 && 5 + StartX >= 0 && 5 + StartX < s16_width_noscale) set_pixel_x4(&buf[10], nPalette + c5, s16width);
+                if (c6 && 6 + StartX >= 0 && 6 + StartX < s16_width_noscale) set_pixel_x4(&buf[12], nPalette + c6, s16width);
+                if (c7 && 7 + StartX >= 0 && 7 + StartX < s16_width_noscale) set_pixel_x4(&buf[14], nPalette + c7, s16width);
+            }
+        }
+        buf += (s16width << 1);
+        pTileData++;
+    }
+}
+#endif // CB_RENDER_TEST
