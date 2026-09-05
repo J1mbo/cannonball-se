@@ -103,6 +103,35 @@ struct RoadTilesTestAccess
     static void text_layer_ref(hwtiles& t, uint16_t* buf, uint8_t priority_draw)
     { t.render_text_layer_ref(buf, priority_draw); }
 
+    // S7.4: exhaustive kernel sweep support.
+    //   - tile_word: reads a decoded ROM tile word straight out of the private
+    //     `tiles[]` array (0x10000 entries), for the "real ROM tiles[]" p0 set.
+    //   - set_synth_tile_row0: overwrites tile index 0's 8 rows with {p0, 0,
+    //     0, 0, 0, 0, 0, 0} -- a synthetic one-row tile, rows 1-7 == the
+    //     nMaskColour used below (0) so render8x8_tile_mask_hires_ref's own
+    //     8-row loop skips them, leaving only row 0's write for the memcmp.
+    //   - hires_ref: the 8-row scalar reference kernel, called on the
+    //     synthetic tile above.
+    //   - new_row: the new kernel (tile_row_hires), called directly, one row,
+    //     via the hwtiles::test_tile_row_hires forwarder.
+    static uint32_t tile_word(hwtiles& t, uint32_t idx) { return t.tiles[idx]; }
+    static uint32_t tile_length() { return (uint32_t)hwtiles::TILES_LENGTH; }
+    static void set_synth_tile_row0(hwtiles& t, uint32_t p0)
+    {
+        t.tiles[0] = p0;
+        for (int i = 1; i < 8; i++) t.tiles[i] = 0;
+    }
+    static void hires_ref(hwtiles& t, uint16_t* buf, uint16_t nTileNumber,
+                           uint16_t StartX, uint16_t StartY, uint16_t nTilePalette,
+                           uint16_t nColourDepth, uint16_t nMaskColour, uint16_t nPaletteOffset)
+    {
+        t.render8x8_tile_mask_hires_ref(buf, nTileNumber, StartX, StartY, nTilePalette, nColourDepth, nMaskColour, nPaletteOffset);
+    }
+    static void new_row(uint16_t* buf, uint32_t p0, uint32_t nPalette, uint16_t width)
+    {
+        hwtiles::test_tile_row_hires(buf, p0, nPalette, width);
+    }
+
     // S6: diagnostic peek at the decoded road bytes, used only to report
     // texel-value coverage (e.g. confirming value 7 shows up) for the s6d
     // synthetic ROM patterns; not used by any pass/fail comparison.
@@ -972,6 +1001,162 @@ static int run_unit_s6(const std::string& roms_dir, unsigned seed, const std::st
     return failures;
 }
 
+// ---------------------------------------------------------------------------
+// unit s7: NEON tile-row kernel (tile_row_hires) vs render8x8_tile_mask_hires_ref
+// (IMPLEMENTATION_SPEC.md S7.4).
+//
+// Scratch: 4 rows x 32 halfwords (S7_N = 128), width = 32, kernel target at
+// scratch + 32 + 8 -- one guard row above and below the two written rows,
+// 8 guard columns to the left of the 16-pixel row and 8 to the right
+// (32 - 8 - 16 = 8). config.s16_width is set to 32 for the whole unit so
+// render8x8_tile_mask_hires_ref's internal row stride (it reads
+// config.s16_width, not a caller-supplied width) matches the scratch.
+//
+// Each trial: fill the scratch with fresh seeded random halfwords, copy it,
+// run the reference 8-row kernel on a synthetic one-row tile (tile index 0:
+// row 0 = p0, rows 1-7 = 0 = nMaskColour, so the reference's own loop skips
+// them) into A, run the new kernel directly (hwtiles::test_tile_row_hires,
+// one row, no 8-row dispatch at all) into B, memcmp all 128 halfwords.
+//
+// p0 set (union, per the task):
+//   - all TILES_LENGTH (65536) decoded ROM tile words, only when --roms
+//     loaded real files (used_real_roms) -- else this set is skipped
+//     entirely, since a synthetic/random ROM image carries no more
+//     information than the "100,000 random words" set already does.
+//   - all 65536 words where each of the 8 nibbles is independently drawn
+//     from {0, 1, 8, 15} (4^8 = 65536 combinations) -- transparent, minimum,
+//     mid and maximum nibble values in every position.
+//   - 100,000 seeded random 32-bit words.
+//
+// Palette subsampling (30M invocations at 65536+65536+100000 candidates x
+// 128 palettes each is not needed for "seconds" runtime, so full coverage is
+// used instead of subsampling): the ROM set and the random set each sweep a
+// single fixed representative palette (91: nPalette = 91<<3 = 728, mid-range
+// and non-trivial-bit-pattern); the {0,1,8,15}^8 edge set sweeps all 128
+// palettes, since it is the deliberately-constructed "representative subset"
+// that already exercises every transparent/opaque and min/mid/max nibble
+// combination the palette add could interact with. Total invocations:
+// 65536 (ROM, if present) + 65536*128 (edge, all palettes) + 100000 (random)
+// = ~8.55M -- a few seconds on x86-64 scalar.
+// ---------------------------------------------------------------------------
+static const uint16_t S7_WIDTH  = 32;
+static const int      S7_ROWS   = 4;
+static const int      S7_N      = S7_WIDTH * S7_ROWS; // 128
+static const int      S7_TARGET = S7_WIDTH + 8;        // row 1, col 8
+static const uint32_t S7_FIXED_PALETTE = 91;            // 0..127, arbitrary mid-range
+
+static int run_unit_s7(const std::string& roms_dir, unsigned seed)
+{
+    std::vector<uint8_t> road_rom, tile_rom;
+    bool used_real_roms = load_roms(roms_dir, road_rom, tile_rom, seed);
+    std::mt19937 rng(seed ^ 0x53372121u); // "S7!!"
+
+    hwtiles tiles;
+    tiles.init(tile_rom.data(), /*hires=*/true);
+
+    config.s16_width  = S7_WIDTH;
+    config.s16_height = (uint16_t)S7_ROWS;
+    config.s16_x_off  = 0;
+
+    uint16_t A[S7_N], B[S7_N];
+    int failures = 0;
+    long long trials = 0;
+    int printed = 0;
+
+    auto trial = [&](uint32_t p0, uint32_t palette) {
+        RoadTilesTestAccess::set_synth_tile_row0(tiles, p0);
+        fill_random(A, S7_N, rng);
+        std::memcpy(B, A, sizeof(A));
+        RoadTilesTestAccess::hires_ref(tiles, A + S7_TARGET, 0, 0, 0, (uint16_t)palette, 3, 0, 0);
+        RoadTilesTestAccess::new_row(B + S7_TARGET, p0, palette << 3, S7_WIDTH);
+        trials++;
+        if (std::memcmp(A, B, sizeof(A)) != 0) {
+            failures++;
+            if (printed < 20) {
+                printed++;
+                std::size_t i = 0;
+                while (i < (std::size_t)S7_N && A[i] == B[i]) i++;
+                std::printf("  UNIT S7 FAIL: p0=0x%08x palette=%u halfword_index=%zu ref=0x%04x new=0x%04x\n",
+                            p0, palette, i, A[i], B[i]);
+            }
+        }
+    };
+
+    // Set 1: every decoded ROM tile word, fixed palette, only with real ROMs.
+    if (used_real_roms) {
+        const uint32_t n = RoadTilesTestAccess::tile_length();
+        for (uint32_t i = 0; i < n; i++)
+            trial(RoadTilesTestAccess::tile_word(tiles, i), S7_FIXED_PALETTE);
+    }
+
+    // Set 2: {0,1,8,15}^8 (65536 combinations), every palette 0..127.
+    static const uint32_t EDGE_VALS[4] = { 0, 1, 8, 15 };
+    for (uint32_t idx = 0; idx < 65536u; idx++) {
+        uint32_t p0 = 0, t = idx;
+        for (int k = 0; k < 8; k++) { p0 = (p0 << 4) | EDGE_VALS[t & 3u]; t >>= 2; }
+        for (uint32_t pal = 0; pal < 128; pal++) trial(p0, pal);
+    }
+
+    // Set 3: 100,000 seeded random words, fixed palette.
+    for (int i = 0; i < 100000; i++) trial((uint32_t)rng(), S7_FIXED_PALETTE);
+
+    std::printf("  s7: %s (%d/%lld mismatch(es); roms=%s)\n",
+                failures ? "FAIL" : "ok", failures, trials, used_real_roms ? "real" : "skipped ROM set (synthetic/random)");
+    return failures;
+}
+
+// ---------------------------------------------------------------------------
+// bench tiles: tile_row_hires vs render8x8_tile_mask_hires_ref timing
+// (IMPLEMENTATION_SPEC.md S7.5), ns/row, opaque (all 8 nibbles non-zero, the
+// fast vst1q path) and mixed (half the nibbles zero, the read-modify-write
+// vbslq path) rows separately.
+// ---------------------------------------------------------------------------
+static void run_bench_tiles(const std::string& roms_dir, unsigned seed)
+{
+    std::vector<uint8_t> road_rom, tile_rom;
+    load_roms(roms_dir, road_rom, tile_rom, seed);
+    std::mt19937 rng(seed ^ 0x62656e74u); // "bent"
+
+    hwtiles tiles;
+    tiles.init(tile_rom.data(), true);
+
+    config.s16_width  = S7_WIDTH;
+    config.s16_height = (uint16_t)S7_ROWS;
+    config.s16_x_off  = 0;
+
+    uint16_t A[S7_N], B[S7_N];
+    fill_random(A, S7_N, rng);
+    std::memcpy(B, A, sizeof(A));
+
+    const uint32_t opaque_p0 = 0x12345678u; // nibbles 1,2,3,4,5,6,7,8: all non-zero
+    const uint32_t mixed_p0  = 0x10203040u; // nibbles 1,0,2,0,3,0,4,0: half zero
+
+    const int iterations = 200000;
+    using clk = std::chrono::steady_clock;
+
+    std::printf("road_tiles_test bench tiles: arch=%s\n", CB_ARCH_NAME);
+
+    for (const auto& kase : { std::pair<const char*, uint32_t>{"opaque", opaque_p0}, std::pair<const char*, uint32_t>{"mixed", mixed_p0} }) {
+        const char* name = kase.first;
+        const uint32_t p0 = kase.second;
+        RoadTilesTestAccess::set_synth_tile_row0(tiles, p0);
+
+        auto t0 = clk::now();
+        for (int it = 0; it < iterations; it++)
+            RoadTilesTestAccess::new_row(B + S7_TARGET, p0, S7_FIXED_PALETTE << 3, S7_WIDTH);
+        auto t1 = clk::now();
+        for (int it = 0; it < iterations; it++)
+            RoadTilesTestAccess::hires_ref(tiles, A + S7_TARGET, 0, 0, 0, (uint16_t)S7_FIXED_PALETTE, 3, 0, 0);
+        auto t2 = clk::now();
+
+        double ns_new = std::chrono::duration<double, std::nano>(t1 - t0).count() / (double)iterations;
+        double ns_ref = std::chrono::duration<double, std::nano>(t2 - t1).count() / (double)iterations;
+
+        std::printf("  %-6s row: new=%7.1f ns/row  ref=%7.1f ns/row  speedup=%.2fx\n",
+                    name, ns_new, ns_ref, ns_ref / ns_new);
+    }
+}
+
 static bool run_unit(const std::string& roms_dir, unsigned seed, const std::string& focus)
 {
     std::printf("road_tiles_test unit: arch=%s focus=%s\n", CB_ARCH_NAME, focus.empty() ? "(all)" : focus.c_str());
@@ -979,6 +1164,7 @@ static bool run_unit(const std::string& roms_dir, unsigned seed, const std::stri
     if (focus.empty() || focus == "s3") failures += run_unit_s3(roms_dir, seed);
     if (focus.empty() || focus == "s5") failures += run_unit_s5(roms_dir, seed);
     if (focus.empty() || focus == "s6" || focus.rfind("s6", 0) == 0) failures += run_unit_s6(roms_dir, seed, focus);
+    if (focus.empty() || focus == "s7") failures += run_unit_s7(roms_dir, seed);
     if (failures == 0) {
         std::printf("unit PASS (arch=%s)\n", CB_ARCH_NAME);
         return true;
@@ -1047,7 +1233,7 @@ static void run_bench_fg(const std::string& roms_dir, unsigned seed)
 static void print_usage(const char* argv0)
 {
     std::fprintf(stderr,
-        "usage: %s [selftest|unit [s3|s5|s6|s6a|s6b|s6c|s6d]|replay|bench fg|golden] "
+        "usage: %s [selftest|unit [s3|s5|s6|s6a|s6b|s6c|s6d|s7]|replay|bench fg|bench tiles|golden] "
         "[--roms <dir>] [--frames <dir>] [--seed N]\n"
         "  (default sub-command: selftest)\n", argv0);
 }
@@ -1075,8 +1261,9 @@ int main(int argc, char** argv)
         return run_unit(roms_dir, seed, subcmd) ? 0 : 1;
     }
     if (cmd == "bench") {
-        if (subcmd == "fg") { run_bench_fg(roms_dir, seed); return 0; }
-        std::fprintf(stderr, "bench: unknown or missing target '%s' (try 'bench fg')\n", subcmd.c_str());
+        if (subcmd == "fg")    { run_bench_fg(roms_dir, seed); return 0; }
+        if (subcmd == "tiles") { run_bench_tiles(roms_dir, seed); return 0; }
+        std::fprintf(stderr, "bench: unknown or missing target '%s' (try 'bench fg' or 'bench tiles')\n", subcmd.c_str());
         return 2;
     }
     if (cmd == "replay" || cmd == "golden") {

@@ -44,6 +44,13 @@ public:
     // private state and the _ref reference twins below without
     // "#define private public". Never defined by the game build.
     friend struct RoadTilesTestAccess;
+
+    // S7.4: test-only entry point for tile_row_hires (a file-scope function in
+    // hwtiles.cpp, not a class member) so the driver's exhaustive kernel sweep
+    // can call it directly, one row at a time, bypassing the 8-row dispatch
+    // and the tile/RAM plumbing entirely. Defined in hwtiles.cpp next to
+    // tile_row_hires. Not compiled into the game.
+    static void test_tile_row_hires(uint16_t* buf, uint32_t p0, uint32_t nPalette, uint16_t width);
 #endif
 
 private:

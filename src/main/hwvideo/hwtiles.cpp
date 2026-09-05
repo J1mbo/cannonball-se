@@ -482,6 +482,68 @@ inline void set_pixel_x4(uint16_t *buf, uint32_t data, uint16_t width)
     buf[0] = buf[1] = buf[width] = buf[1 + width] = data;
 }
 
+// ------------------------------------------------------------------------------------------------
+// S7: one tile row (16 hi-res pixels, on `buf` and `buf + width`), decoded from the packed nibble
+// word p0. Nibble c_k (k=0..7) is bits 28-4k..31-4k of p0 (c0 = leftmost = p0 >> 28); if c_k != 0
+// the halfword nPalette + c_k is written to buf[2k], buf[2k+1], buf[2k+width], buf[2k+1+width],
+// otherwise those four positions are left as they are. `buf` is only 4-byte aligned.
+// (IMPLEMENTATION_SPEC.md S7.2). Called from render8x8_tile_mask_hires only, inside its existing
+// p0 != nMaskColour test; the transparent test is nibble == 0, independent of nMaskColour.
+// ------------------------------------------------------------------------------------------------
+static inline void tile_row_hires(uint16_t* buf, uint32_t p0, uint32_t nPalette, uint16_t width)
+{
+#if defined(CB_HAVE_NEON)
+    const uint32_t sw = __builtin_bswap32(p0);                     // bytes: c0c1, c2c3, c4c5, c6c7
+    uint8x8_t  b   = vreinterpret_u8_u32(vdup_n_u32(sw));           // lanes 0..3 hold those bytes
+    uint8x8_t  hi  = vshr_n_u8(b, 4);                               // c0 c2 c4 c6 ..
+    uint8x8_t  lo  = vand_u8(b, vdup_n_u8(0x0F));                   // c1 c3 c5 c7 ..
+    uint8x8_t  nib = vzip1_u8(hi, lo);                              // c0 c1 c2 c3 c4 c5 c6 c7
+    uint16x8_t n16 = vmovl_u8(nib);
+    uint16x8_t col = vaddq_u16(n16, vdupq_n_u16((uint16_t)nPalette));
+    uint16x8_t L   = vzip1q_u16(col, col);                          // c0 c0 c1 c1 c2 c2 c3 c3
+    uint16x8_t R   = vzip2q_u16(col, col);                          // c4 c4 .. c7 c7
+    if (((((p0 & 0x77777777u) + 0x77777777u) | p0) & 0x88888888u) == 0x88888888u) {   // all 8 nibbles non-zero
+        vst1q_u16(buf, L); vst1q_u16(buf + 8, R);
+        vst1q_u16(buf + width, L); vst1q_u16(buf + width + 8, R);
+    } else {
+        uint16x8_t m  = vtstq_u16(n16, n16);                        // 0xFFFF where nibble != 0
+        uint16x8_t mL = vzip1q_u16(m, m), mR = vzip2q_u16(m, m);
+        uint16_t* r1 = buf + width;
+        vst1q_u16(buf,     vbslq_u16(mL, L, vld1q_u16(buf)));
+        vst1q_u16(buf + 8, vbslq_u16(mR, R, vld1q_u16(buf + 8)));
+        vst1q_u16(r1,      vbslq_u16(mL, L, vld1q_u16(r1)));
+        vst1q_u16(r1 + 8,  vbslq_u16(mR, R, vld1q_u16(r1 + 8)));
+    }
+#else
+    uint32_t c7 = p0 & 0xf;
+    uint32_t c6 = (p0 >> 4) & 0xf;
+    uint32_t c5 = (p0 >> 8) & 0xf;
+    uint32_t c4 = (p0 >> 12) & 0xf;
+    uint32_t c3 = (p0 >> 16) & 0xf;
+    uint32_t c2 = (p0 >> 20) & 0xf;
+    uint32_t c1 = (p0 >> 24) & 0xf;
+    uint32_t c0 = (p0 >> 28);
+
+    if (c0) set_pixel_x4(&buf[0],  nPalette + c0, width);
+    if (c1) set_pixel_x4(&buf[2],  nPalette + c1, width);
+    if (c2) set_pixel_x4(&buf[4],  nPalette + c2, width);
+    if (c3) set_pixel_x4(&buf[6],  nPalette + c3, width);
+    if (c4) set_pixel_x4(&buf[8],  nPalette + c4, width);
+    if (c5) set_pixel_x4(&buf[10], nPalette + c5, width);
+    if (c6) set_pixel_x4(&buf[12], nPalette + c6, width);
+    if (c7) set_pixel_x4(&buf[14], nPalette + c7, width);
+#endif
+}
+
+#ifdef CB_RENDER_TEST
+// S7.4: test-only forwarder -- see hwtiles.hpp for rationale. Lets the driver
+// call tile_row_hires directly, one row at a time, for its exhaustive p0 x
+// nTilePalette sweep. Not compiled into the game.
+void hwtiles::test_tile_row_hires(uint16_t* buf, uint32_t p0, uint32_t nPalette, uint16_t width)
+{
+    tile_row_hires(buf, p0, nPalette, width);
+}
+#endif
 
 void hwtiles::render8x8_tile_mask_hires(
     uint16_t *buf,
@@ -502,25 +564,9 @@ void hwtiles::render8x8_tile_mask_hires(
     {
         uint32_t p0 = *pTileData;
 
-        if (p0 != nMaskColour) 
+        if (p0 != nMaskColour)
         {
-            uint32_t c7 = p0 & 0xf;
-            uint32_t c6 = (p0 >> 4) & 0xf;
-            uint32_t c5 = (p0 >> 8) & 0xf;
-            uint32_t c4 = (p0 >> 12) & 0xf;
-            uint32_t c3 = (p0 >> 16) & 0xf;
-            uint32_t c2 = (p0 >> 20) & 0xf;
-            uint32_t c1 = (p0 >> 24) & 0xf;
-            uint32_t c0 = (p0 >> 28);
-
-            if (c0) set_pixel_x4(&buf[0],  nPalette + c0, s16width);
-            if (c1) set_pixel_x4(&buf[2],  nPalette + c1, s16width);
-            if (c2) set_pixel_x4(&buf[4],  nPalette + c2, s16width);
-            if (c3) set_pixel_x4(&buf[6],  nPalette + c3, s16width);
-            if (c4) set_pixel_x4(&buf[8],  nPalette + c4, s16width);
-            if (c5) set_pixel_x4(&buf[10], nPalette + c5, s16width);
-            if (c6) set_pixel_x4(&buf[12], nPalette + c6, s16width);
-            if (c7) set_pixel_x4(&buf[14], nPalette + c7, s16width);
+            tile_row_hires(buf, p0, nPalette, s16width);
         }
         buf += (s16width << 1);
         pTileData++;
