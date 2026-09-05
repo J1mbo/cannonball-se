@@ -37,8 +37,8 @@
                  non-matching directory (no capture was made available to
                  this run) -- see the task report for how to produce one.
 
-      unit [s1a|s1b|s1c|s2a|s2b|s2c|s3] - S1.4's schedule/nibrev/record-
-                 partition proofs against the LINEBUF core
+      unit [s1a|s1b|s1c|s2a|s2b|s2c|s3|s4a|s4b] - S1.4's schedule/nibrev/
+                 record-partition proofs against the LINEBUF core
                  (hwsprites::sched/decode_row), plus S2.4's glow proofs (s2a:
                  DESIGN_GLOW.md Test 1, output-pixel space, against
                  draw_sprite_fast; s2b: the source-space companion, real
@@ -47,10 +47,17 @@
                  fail), plus S3.4's per-row shadow bitmap proof (s3:
                  dest_clean=true/false against render_px(true) over 10,000
                  random lists per replay_mode, plus a dest_clean=true-on-a-
-                 dirty-background negative control that must fail). No
-                 subcmd runs all seven. bench is not yet implemented (S1.5
-                 lands with the D/D' measurement pass; use in-game
-                 prof_ns_sprites/CB_SPRITE_PMU meanwhile).
+                 dirty-background negative control that must fail), plus
+                 S4.4's proofs (s4a: decode_row's SWAR word classifier,
+                 exhaustive over all 2^32 words x both smask values, vs the
+                 per-nibble reference definition; s4b: replay's colour/shadow
+                 span primitives -- NEON on an AArch64+CB_HAVE_NEON build,
+                 scalar everywhere else -- vs their pinned-scalar _s1 twins,
+                 over every (lo, hi) with 0 <= lo < hi <= 96, both replay
+                 modes, da..db of 1-4 rows). No subcmd runs all nine. bench
+                 is not yet implemented (S1.5 lands with the D/D'
+                 measurement pass; use in-game prof_ns_sprites/CB_SPRITE_PMU
+                 meanwhile).
 
       fuzz [n]  - n (default 200000) random sprite lists of 1-122 records
                  per trial, edge-biased (S0.7), against render_px(false);
@@ -160,9 +167,35 @@ struct SpriteTestAccess
     static int32_t nrec(hwsprites& hw) { return hw.nrec; }
     static SpanRec rec_at(hwsprites& hw, int32_t i) { return hw.rec[i]; }
     static uint16_t line_at(hwsprites& hw, int32_t i) { return hw.line[i]; }
+    static void set_line_at(hwsprites& hw, int32_t i, uint16_t v) { hw.line[i] = v; }
     static uint32_t nibrev(uint32_t w) { return hwsprites::nibrev(w); }
     static uint32_t* sprites_ptr(hwsprites& hw) { return hw.sprites; }
     static uint32_t sprites_length() { return hwsprites::SPRITES_LENGTH; }
+
+    // ---------------------------------------------------------------------
+    // SPRITE_IMPLEMENTATION_SPEC.md S4.4: hooks for unit s4a (the SWAR word
+    // classifier) and unit s4b (the replay span primitives vs their _s1
+    // twins).
+    // ---------------------------------------------------------------------
+    static bool classify_mixed(uint32_t w, uint32_t smask) { return hwsprites::classify_mixed(w, smask); }
+    static const uint8_t* wsum(hwsprites& hw, uint32_t zoom) { return hw.wsum(zoom); }
+
+    static void replay_colour_span(hwsprites& hw, uint16_t* base, int32_t scrn_width,
+                                    int32_t da, int32_t db, int32_t lo, int32_t hi) {
+        hw.replay_colour_span(base, scrn_width, da, db, lo, hi);
+    }
+    static void replay_shadow_span(hwsprites& hw, uint16_t* base, int32_t scrn_width,
+                                    int32_t da, int32_t db, int32_t lo, int32_t hi) {
+        hw.replay_shadow_span(base, scrn_width, da, db, lo, hi);
+    }
+    static void replay_colour_span_s1(hwsprites& hw, uint16_t* base, int32_t scrn_width,
+                                       int32_t da, int32_t db, int32_t lo, int32_t hi) {
+        hw.replay_colour_span_s1(base, scrn_width, da, db, lo, hi);
+    }
+    static void replay_shadow_span_s1(hwsprites& hw, uint16_t* base, int32_t scrn_width,
+                                       int32_t da, int32_t db, int32_t lo, int32_t hi) {
+        hw.replay_shadow_span_s1(base, scrn_width, da, db, lo, hi);
+    }
 
     static int32_t sched_len()     { return hwsprites::SPR_SCHED_LEN; }
     static int32_t wmax()          { return hwsprites::SPR_WMAX; }
@@ -1746,6 +1779,133 @@ static bool run_unit_s2c(unsigned seed)
     return ok;
 }
 
+// ---------------------------------------------------------------------------
+// unit s4a (SPRITE_IMPLEMENTATION_SPEC.md S4.4): hwsprites::classify_mixed
+// (decode_row's SWAR "does word w need the per-nibble MIXED loop" test)
+// against an independent per-nibble reference definition, exhaustive over
+// all 2^32 words and both smask values (shadow flag clear/set) -- the "all
+// 2^32 words, both smask values" the spec calls for.
+// ---------------------------------------------------------------------------
+static bool reference_classify_mixed(uint32_t w, uint32_t smask)
+{
+    for (int k = 0; k < 8; k++) {
+        const unsigned n = (w >> (4 * k)) & 0xF;
+        if (n == 0 || n == 0xF) return true;
+        if (smask != 0 && n == 0xA) return true;
+    }
+    return false;
+}
+
+static bool run_unit_s4a()
+{
+    std::printf("unit s4a: exhaustive SWAR classifier over 2^32 words x 2 smask values "
+                "(this takes a while)...\n");
+    std::fflush(stdout);
+    int fails = 0;
+    for (int pass = 0; pass < 2 && fails < 20; pass++) {
+        const uint32_t smask = (pass == 0) ? 0u : 0xFFFFFFFFu;
+        uint64_t w = 0;
+        do {
+            const bool got  = SpriteTestAccess::classify_mixed((uint32_t)w, smask);
+            const bool want = reference_classify_mixed((uint32_t)w, smask);
+            if (got != want) {
+                std::printf("  s4a FAIL: w=0x%08x smask=0x%08x got=%d want=%d\n",
+                            (uint32_t)w, smask, (int)got, (int)want);
+                if (++fails >= 20) break;
+            }
+            w++;
+        } while (w <= 0xFFFFFFFFull);
+    }
+
+    if (fails == 0) { std::printf("unit s4a PASS (2^32 words x 2 smask values exhaustive)\n"); return true; }
+    std::printf("unit s4a FAIL: %d mismatch(es) (further reports suppressed)\n", fails);
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// unit s4b (SPRITE_IMPLEMENTATION_SPEC.md S4.4): replay_colour_span/
+// replay_shadow_span (whatever CB_HAVE_NEON selects on this build) against
+// their pinned-scalar _s1 twins, for every (lo, hi) with 0 <= lo < hi <= 96,
+// both replay modes (colour only -- the shadow span ignores replay_mode),
+// and da..db spanning 1-4 rows, on a 4-row scratch with guard rows above/
+// below and guard columns either side. Random content each trial (line[]
+// for the colour test, the destination buffer for both); the whole
+// allocation -- guard rows/columns included -- is memcmp'd each time, so a
+// write landing even one halfword outside [lo, hi) x [da, db) is caught,
+// exactly like fuzz's whole-allocation check (S1.4).
+// ---------------------------------------------------------------------------
+static bool run_unit_s4b(unsigned seed)
+{
+    std::mt19937 rng(seed ^ 0x53344230u); // "S4B0"
+
+    const int32_t COLS = 96, GUARD_COLS = 16, ROWS = 4, GUARD_ROWS = 2;
+    const int32_t width  = COLS + 2 * GUARD_COLS;
+    const int32_t height = ROWS + 2 * GUARD_ROWS;
+    const std::size_t npx = (std::size_t)width * height;
+
+    hwsprites hw;
+
+    std::vector<uint16_t> bufA(npx), bufB(npx);
+    uint16_t* row0_A = bufA.data() + (std::size_t)GUARD_ROWS * width + GUARD_COLS;
+    uint16_t* row0_B = bufB.data() + (std::size_t)GUARD_ROWS * width + GUARD_COLS;
+
+    long long trials_colour = 0, fails_colour = 0;
+    long long trials_shadow = 0, fails_shadow = 0;
+
+    for (int replay_mode = 0; replay_mode <= 1; replay_mode++) {
+        hw.set_replay_mode(replay_mode);
+        for (int32_t lo = 0; lo < COLS; lo++) {
+            for (int32_t hi = lo + 1; hi <= COLS; hi++) {
+                for (int32_t rows = 1; rows <= ROWS; rows++) {
+                    const int32_t da = 0, db = rows;
+
+                    for (int32_t i = 0; i < COLS; i++)
+                        SpriteTestAccess::set_line_at(hw, i, (uint16_t)rng());
+                    fill_random(bufA.data(), npx, rng);
+                    std::memcpy(bufB.data(), bufA.data(), npx * sizeof(uint16_t));
+
+                    SpriteTestAccess::replay_colour_span(hw, row0_A, width, da, db, lo, hi);
+                    SpriteTestAccess::replay_colour_span_s1(hw, row0_B, width, da, db, lo, hi);
+                    trials_colour++;
+                    if (std::memcmp(bufA.data(), bufB.data(), npx * sizeof(uint16_t)) != 0) {
+                        fails_colour++;
+                        if (fails_colour <= 20)
+                            std::printf("  s4b COLOUR FAIL mode=%d lo=%d hi=%d da=%d db=%d\n",
+                                        replay_mode, lo, hi, da, db);
+                    }
+                }
+            }
+        }
+    }
+
+    // SHADOW span: independent of replay_mode and of line[] (pure RMW).
+    for (int32_t lo = 0; lo < COLS; lo++) {
+        for (int32_t hi = lo + 1; hi <= COLS; hi++) {
+            for (int32_t rows = 1; rows <= ROWS; rows++) {
+                const int32_t da = 0, db = rows;
+
+                fill_random(bufA.data(), npx, rng);
+                std::memcpy(bufB.data(), bufA.data(), npx * sizeof(uint16_t));
+
+                SpriteTestAccess::replay_shadow_span(hw, row0_A, width, da, db, lo, hi);
+                SpriteTestAccess::replay_shadow_span_s1(hw, row0_B, width, da, db, lo, hi);
+                trials_shadow++;
+                if (std::memcmp(bufA.data(), bufB.data(), npx * sizeof(uint16_t)) != 0) {
+                    fails_shadow++;
+                    if (fails_shadow <= 20)
+                        std::printf("  s4b SHADOW FAIL lo=%d hi=%d da=%d db=%d\n", lo, hi, da, db);
+                }
+            }
+        }
+    }
+
+    std::printf("unit s4b: colour fails=%lld/%lld, shadow fails=%lld/%lld\n",
+                fails_colour, trials_colour, fails_shadow, trials_shadow);
+    const bool ok = (fails_colour == 0) && (fails_shadow == 0);
+    std::printf(ok ? "unit s4b PASS\n" : "unit s4b FAIL\n");
+    return ok;
+}
+
 // unit s3 is defined below, after the fuzz-list generator it reuses
 // (fuzz_build_record/fuzz_fill_background); forward-declared here so
 // run_unit can dispatch to it.
@@ -1761,6 +1921,8 @@ static bool run_unit(const std::string& subcmd, unsigned seed)
     if (subcmd.empty() || subcmd == "s2b") ok &= run_unit_s2b(seed);
     if (subcmd.empty() || subcmd == "s2c") ok &= run_unit_s2c(seed);
     if (subcmd.empty() || subcmd == "s3")  ok &= run_unit_s3(seed);
+    if (subcmd.empty() || subcmd == "s4a") ok &= run_unit_s4a();
+    if (subcmd.empty() || subcmd == "s4b") ok &= run_unit_s4b(seed);
     return ok;
 }
 

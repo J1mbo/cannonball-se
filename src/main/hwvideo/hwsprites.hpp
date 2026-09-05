@@ -157,9 +157,33 @@ private:
     // sched(zoom): run[SPR_SCHED_LEN] for this (already post-halving) zoom,
     // built on first use by the reference accumulator (S1.2) and cached.
     // zoom is 12 bits (parse_record masks with 0xfff), so 0x1000 slots covers
-    // every value; about 160 are ever populated in a real session.
+    // every value; about 160 are ever populated in a real session. Each
+    // cached slot is actually SPR_SCHED_LEN + SPR_WMAX bytes: the run[]
+    // table followed by S4b's wsum[] table (wsum(zoom) below just offsets
+    // into the same allocation), so sched() remains the sole builder/cache
+    // and its own signature/callers are untouched by S4.
     const uint8_t* sched(uint32_t zoom);
     std::unique_ptr<uint8_t[]> sched_tab[0x1000];
+
+    // SPRITE_IMPLEMENTATION_SPEC.md S4b: wsum(zoom)[m] = sum(run[8m..8m+7]),
+    // the total output run of source word m at this zoom -- lets decode_row's
+    // GAP/all-SHADOW word classes advance `pos` by a whole word in one step
+    // (pos += wsum(zoom)[words]) instead of the 8-step per-nibble loop,
+    // landing on exactly the same `pos` decode_row's slow path would reach
+    // (S4.3: the record sequence and every position are unchanged, only the
+    // per-word work is). Built alongside run[] by sched() on first use.
+    const uint8_t* wsum(uint32_t zoom) { return sched(zoom) + SPR_SCHED_LEN; }
+
+    // SPRITE_IMPLEMENTATION_SPEC.md S4b (DESIGN_FABLE.md 2.4): the exact
+    // "does word w need decode_row's per-nibble MIXED loop" test, via SWAR --
+    // true iff any nibble of w is 0 (GAP), 0xF (terminator/GAP), or, when
+    // smask is all-ones (the shadow flag is set), 0xA (SHADOW). smask must be
+    // 0 (shadow flag clear -- 0xA nibbles are plain colour) or 0xFFFFFFFF
+    // (shadow flag set). False means every nibble of w is safely a COLOUR
+    // pixel under decode_row's fast path. The any-zero-nibble SWAR form has
+    // no false positives/negatives (DESIGN_FABLE.md 2.4), so this is exact,
+    // not a filter -- unit s4a proves it exhaustively over all 2^32 words.
+    static bool classify_mixed(uint32_t w, uint32_t smask);
 
     // Per-row decode/replay scratch. Spec fact: "line, rec, nrec are per
     // row; the only per-frame state is S3's" -- kept as members purely so
@@ -186,6 +210,17 @@ private:
     // (max(x1-xpos,0 not applied here -- callers pass x1-xpos/pend directly)
     // so every store/RMW lands only in [max(cx0,rec.pos), min(cx1,next.pos)).
     void replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t db, int32_t cx0, int32_t cx1);
+
+    // SPRITE_IMPLEMENTATION_SPEC.md S4a: replay()'s two span primitives,
+    // factored out so the (possibly NEON) code and the pinned-scalar _s1
+    // twins below can be compared bitwise at the granularity the spec tests
+    // (one span, any (lo, hi, da, db)). base/scrn_width/da/db/lo/hi have
+    // exactly replay()'s meaning; both read/write only row-major halfwords
+    // at base + d*scrn_width + p for p in [lo, hi), d in [da, db) -- never
+    // outside that span (S4.3). replay_colour_span reads line[lo, hi);
+    // replay_shadow_span is a pure read-modify-write of the destination.
+    void replay_colour_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi);
+    void replay_shadow_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi);
 
     // Bounds-checked read prefetch of ROM row jrow's first and last word
     // (S1.2: "the words at k = 0 and k = pitch - 1"), mirrored for flip so
@@ -276,6 +311,19 @@ private:
     // filtered) and non-zero over real in-game frames with dest_clean true
     // (sky rows above any shadow-casting sprite).
     long long stat_shadow_bitmap_filtered = 0;
+#endif
+
+#ifdef CB_RENDER_TEST
+    // SPRITE_IMPLEMENTATION_SPEC.md S4.4: pinned-scalar twins of
+    // replay_colour_span/replay_shadow_span above, verbatim copies of their
+    // pre-S4 (always-scalar) bodies, compiled only for the test driver. On a
+    // NEON build, replay_colour_span/replay_shadow_span take the NEON branch
+    // and this pair is the only remaining way to exercise "the S1 scalar
+    // form" directly, so unit s4b compares the (possibly-NEON) production
+    // helpers against these at every (lo, hi, da, db) rather than trusting
+    // the #else branch never diverges from what these twins pin down.
+    void replay_colour_span_s1(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi);
+    void replay_shadow_span_s1(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi);
 #endif
 
 #ifdef CB_RENDER_TEST

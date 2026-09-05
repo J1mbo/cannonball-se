@@ -291,7 +291,7 @@ const uint8_t* hwsprites::sched(uint32_t zoom)
 {
     std::unique_ptr<uint8_t[]>& slot = sched_tab[zoom & 0xfff];
     if (!slot) {
-        slot.reset(new uint8_t[SPR_SCHED_LEN]);
+        slot.reset(new uint8_t[SPR_SCHED_LEN + SPR_WMAX]);
         uint32_t xacc = 0;
         for (int32_t i = 0; i < SPR_SCHED_LEN; i++) {
             int32_t r = 0;
@@ -299,6 +299,16 @@ const uint8_t* hwsprites::sched(uint32_t zoom)
             xacc -= 0x200;
             assert(zoom < (uint32_t)SPR_FAST_ZOOM_MIN || r <= 4);
             slot[i] = (uint8_t)r;
+        }
+        // SPRITE_IMPLEMENTATION_SPEC.md S4b: wsum[m] = sum(run[8m..8m+7]),
+        // appended after run[] in the same allocation (wsum(zoom) above just
+        // offsets into it). Every run[] entry here is 1-4 (the assert above,
+        // decode_row's fast envelope), so the sum is at most 32 -- fits
+        // uint8_t with margin.
+        for (int32_t m = 0; m < SPR_WMAX; m++) {
+            uint32_t sum = 0;
+            for (int32_t k = 0; k < 8; k++) sum += slot[m * 8 + k];
+            slot[SPR_SCHED_LEN + m] = (uint8_t)sum;
         }
     }
     return slot.get();
@@ -322,6 +332,26 @@ void hwsprites::emit(uint8_t type, int32_t pos)
     nrec++;
 }
 
+// SPRITE_IMPLEMENTATION_SPEC.md S4b (DESIGN_FABLE.md 2.4): the exact "any
+// nibble is 0, 0xF, or (smask set) 0xA" test via SWAR. C1 = 0x11111111,
+// C8 = C1 << 3 = 0x88888888. z detects a zero nibble in w (any GAP nibble);
+// f detects a zero nibble in ~w, i.e. a 0xF nibble in w (also GAP); a
+// detects a zero nibble in w^0xAAAAAAAA, i.e. a 0xA nibble in w, masked by
+// smask so it is only consulted when the shadow flag is set (a clear
+// smask makes 0xA a plain colour nibble, per S4.3). The "any zero nibble"
+// SWAR form has no false positives or negatives (only the "which nibble"
+// variant does), so this is an exact classifier, not a filter.
+bool hwsprites::classify_mixed(uint32_t w, uint32_t smask)
+{
+    constexpr uint32_t C1 = 0x11111111u;
+    constexpr uint32_t C8 = C1 << 3; // 0x88888888
+    const uint32_t z  = (w - C1) & ~w;
+    const uint32_t f  = (~w - C1) & w;
+    const uint32_t xa = w ^ 0xAAAAAAAAu;
+    const uint32_t a  = ((xa - C1) & ~xa) & smask;
+    return ((z | f | a) & C8) != 0;
+}
+
 // decode_row: expands source row j of sprite r into line[] (output-order
 // n|color halfwords, always written four-at-a-time regardless of this
 // nibble's own run length -- safe because any overrun lands on positions
@@ -330,13 +360,32 @@ void hwsprites::emit(uint8_t type, int32_t pos)
 // span records). Reads each ROM word once, mirrors flipped rows on the fly
 // with nibrev() (no sprites_flipped side table) and classifies shadow per
 // nibble during decode (no sprites_shadowinfo side table).
+//
+// SPRITE_IMPLEMENTATION_SPEC.md S4b: before any per-nibble work, classify
+// the whole word w. A GAP word (w == 0, every nibble transparent) or an
+// all-SHADOW word (w == 0xAAAAAAAA with the shadow flag set) needs no
+// per-nibble loop at all: at most one emit() (decode_row's own prev-type
+// dedupe already made every other nibble's emit() call in the slow path a
+// no-op for a uniform word) and a single wsum-table jump that lands `pos`
+// on exactly the same value the 8-step loop would have reached. Otherwise
+// classify_mixed()'s SWAR test decides between the COLOUR fast path (no
+// GAP/terminator/shadow nibble present -- one emit(), then eight
+// {value, wide store, pos += run} steps with no per-nibble type work) and
+// the MIXED path (the original S1 per-nibble loop, needed only when a word
+// actually mixes types). Every branch reaches the identical `pos` and
+// record sequence the S1 per-nibble loop would have produced (S4.3); only
+// the *work* done per word changes. The terminator test runs after every
+// class -- harmless (and required, "keep the test anyway") for GAP/SHADOW
+// words, which can never match it (w & 0xF0 is 0x00 or 0xA0, never 0xF0).
 void hwsprites::decode_row(const SpriteRec& r, int32_t j, int32_t pend)
 {
     int32_t pos = 0;
     int32_t words = 0;
     nrec = 0;
     uint8_t prev = SPR_GAP;
-    const uint8_t* run = sched((uint32_t)r.zoom);
+    const uint8_t* run  = sched((uint32_t)r.zoom);
+    const uint8_t* wsum_tab = wsum((uint32_t)r.zoom);
+    const uint32_t smask = r.shadow ? 0xFFFFFFFFu : 0u;
     const int64_t rowbase = (int64_t)r.bank * 0x10000 + r.addr + (int64_t)r.pitch * j;
 
     for (;;) {
@@ -347,17 +396,38 @@ void hwsprites::decode_row(const SpriteRec& r, int32_t j, int32_t pend)
         uint32_t w = sprites[widx];
         if (r.flip) w = nibrev(w);
 
-        for (int k = 0; k < 8; k++) {
-            const unsigned n = (w >> (28 - 4 * k)) & 0xF;
-            const uint8_t t = (n == 0 || n == 15) ? SPR_GAP
-                             : ((r.shadow && n == 10) ? SPR_SHADOW : SPR_COLOUR);
-            if (t != prev) { emit(t, pos); prev = t; }
+        if (w == 0) {
+            // GAP word: every nibble transparent, no stores needed.
+            if (prev != SPR_GAP) { emit(SPR_GAP, pos); prev = SPR_GAP; }
+            pos += wsum_tab[words];
+        } else if (r.shadow && w == 0xAAAAAAAAu) {
+            // All-SHADOW word.
+            if (prev != SPR_SHADOW) { emit(SPR_SHADOW, pos); prev = SPR_SHADOW; }
+            pos += wsum_tab[words];
+        } else if (!classify_mixed(w, smask)) {
+            // COLOUR word: no GAP/terminator/(shadow) nibble present.
+            if (prev != SPR_COLOUR) { emit(SPR_COLOUR, pos); prev = SPR_COLOUR; }
+            for (int k = 0; k < 8; k++) {
+                const unsigned n = (w >> (28 - 4 * k)) & 0xF;
+                const uint16_t v = (uint16_t)(n | r.color);
+                const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL;
+                std::memcpy(line + pos, &fill, 8);
+                pos += run[words * 8 + k];
+            }
+        } else {
+            // MIXED word: the S1 per-nibble loop (type lookup needed).
+            for (int k = 0; k < 8; k++) {
+                const unsigned n = (w >> (28 - 4 * k)) & 0xF;
+                const uint8_t t = (n == 0 || n == 15) ? SPR_GAP
+                                 : ((r.shadow && n == 10) ? SPR_SHADOW : SPR_COLOUR);
+                if (t != prev) { emit(t, pos); prev = t; }
 
-            const uint16_t v = (uint16_t)(n | r.color);
-            const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL;
-            std::memcpy(line + pos, &fill, 8);
+                const uint16_t v = (uint16_t)(n | r.color);
+                const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL;
+                std::memcpy(line + pos, &fill, 8);
 
-            pos += run[words * 8 + k];
+                pos += run[words * 8 + k];
+            }
         }
 
         words++;
@@ -455,26 +525,7 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
         if (hi <= lo) continue;
 
         if (rec[k].type == SPR_COLOUR) {
-            if (replay_mode == 0) {
-                // D: span-copy, one memcpy per destination row.
-                for (int32_t d = da; d < db; d++)
-                    std::memcpy(base + (size_t)d * scrn_width + lo, line + lo,
-                                (size_t)(hi - lo) * sizeof(uint16_t));
-            } else {
-                // D': load each chunk once, store it to every destination row.
-                int32_t p = lo;
-                for (; p + 4 <= hi; p += 4) {
-                    uint64_t chunk;
-                    std::memcpy(&chunk, line + p, 8);
-                    for (int32_t d = da; d < db; d++)
-                        std::memcpy(base + (size_t)d * scrn_width + p, &chunk, 8);
-                }
-                for (; p < hi; p++) {
-                    const uint16_t v = line[p];
-                    for (int32_t d = da; d < db; d++)
-                        (base + (size_t)d * scrn_width)[p] = v;
-                }
-            }
+            replay_colour_span(base, scrn_width, da, db, lo, hi);
 
             // SPRITE_IMPLEMENTATION_SPEC.md S2.2 (DESIGN_GLOW.md section 1):
             // one deferred bit-12 clear at the left neighbour of this run's
@@ -518,22 +569,146 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
                 }
             }
         } else { // SPR_SHADOW: inline read-modify-write, never deferred, never batched across rows
+            // SPRITE_IMPLEMENTATION_SPEC.md S3.2: mark every destination row
+            // in [da, db) as shadow-touched before any of this span's RMW
+            // writes below, so any glow push depending on it (this row, this
+            // sprite, or a later one) sees the bit set. Marking the whole
+            // group first (rather than interleaved row-by-row) still
+            // guarantees each row's own bit is set before its own OR -- the
+            // only ordering S3.3 requires -- since the two loops touch
+            // disjoint state (shadow_rows vs pixel data).
             for (int32_t d = da; d < db; d++) {
-                // SPRITE_IMPLEMENTATION_SPEC.md S3.2: mark this destination
-                // row as shadow-touched before the RMW below, so any glow
-                // push depending on it (this row, this sprite, or a later
-                // one) sees the bit set. Setting it here, before the OR,
-                // guarantees this for the same row (the only ordering S3.3
-                // requires).
                 const int32_t y = r.top + d;
                 shadow_rows[y >> 6] |= 1ull << (y & 63);
-                uint16_t* rowp = base + (size_t)d * scrn_width;
-                for (int32_t p = lo; p < hi; p++)
-                    rowp[p] |= S16_PALETTE_ENTRIES;
             }
+            replay_shadow_span(base, scrn_width, da, db, lo, hi);
         }
     }
 }
+
+// =============================================================================================
+// SPRITE_IMPLEMENTATION_SPEC.md S4a: replay()'s two span primitives. Both
+// touch only row-major halfwords at base + d*scrn_width + p for p in
+// [lo, hi), d in [da, db) -- never outside that span (S2's glow ring and
+// canaries assume the span is the exact write set). NEON builds (AArch64,
+// CB_HAVE_NEON) use 16-byte vector loads/stores over full 8-halfword chunks
+// with the final chunk re-based to hi - 8 so it overlaps the previous chunk
+// and never passes hi; spans under 8 halfwords keep the S1 scalar form
+// unconditionally (the #else branch below on every target, and also the
+// NEON branch's own n < 8 fallthrough). CB_FORCE_SCALAR/non-AArch64 builds
+// never define CB_HAVE_NEON (hwarch.hpp), so the #else branch is exactly
+// the pre-S4 scalar code, unchanged.
+// =============================================================================================
+
+void hwsprites::replay_colour_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi)
+{
+    const int32_t n = hi - lo;
+#if defined(CB_HAVE_NEON)
+    if (n >= 8) {
+        const uint16_t* src = line + lo;
+        if (replay_mode == 0) {
+            // D: span-copy, one wide-store loop per destination row.
+            for (int32_t d = da; d < db; d++) {
+                uint16_t* dst = base + (size_t)d * scrn_width + lo;
+                int32_t p = 0;
+                for (;;) {
+                    vst1q_u16(dst + p, vld1q_u16(src + p));
+                    if (p + 8 >= n) break;
+                    p = std::min(p + 8, n - 8); // final chunk re-based to n - 8; never passes n
+                }
+            }
+        } else {
+            // D': load each 16-byte chunk once, store it to every destination row.
+            int32_t p = 0;
+            for (;;) {
+                const uint16x8_t chunk = vld1q_u16(src + p);
+                for (int32_t d = da; d < db; d++)
+                    vst1q_u16(base + (size_t)d * scrn_width + lo + p, chunk);
+                if (p + 8 >= n) break;
+                p = std::min(p + 8, n - 8);
+            }
+        }
+        return;
+    }
+#endif
+    // S1 scalar form (also the CB_HAVE_NEON n < 8 fallback).
+    if (replay_mode == 0) {
+        // D: span-copy, one memcpy per destination row.
+        for (int32_t d = da; d < db; d++)
+            std::memcpy(base + (size_t)d * scrn_width + lo, line + lo, (size_t)n * sizeof(uint16_t));
+    } else {
+        // D': load each chunk once, store it to every destination row.
+        int32_t p = lo;
+        for (; p + 4 <= hi; p += 4) {
+            uint64_t chunk;
+            std::memcpy(&chunk, line + p, 8);
+            for (int32_t d = da; d < db; d++)
+                std::memcpy(base + (size_t)d * scrn_width + p, &chunk, 8);
+        }
+        for (; p < hi; p++) {
+            const uint16_t v = line[p];
+            for (int32_t d = da; d < db; d++)
+                (base + (size_t)d * scrn_width)[p] = v;
+        }
+    }
+}
+
+void hwsprites::replay_shadow_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi)
+{
+    for (int32_t d = da; d < db; d++) {
+        uint16_t* rowp = base + (size_t)d * scrn_width;
+#if defined(CB_HAVE_NEON)
+        const uint16x8_t maskv = vdupq_n_u16((uint16_t)S16_PALETTE_ENTRIES);
+        int32_t p = lo;
+        for (; p + 8 <= hi; p += 8)
+            vst1q_u16(rowp + p, vorrq_u16(vld1q_u16(rowp + p), maskv));
+        for (; p < hi; p++) // scalar tail: never reads/writes outside [lo, hi)
+            rowp[p] |= S16_PALETTE_ENTRIES;
+#else
+        for (int32_t p = lo; p < hi; p++)
+            rowp[p] |= S16_PALETTE_ENTRIES;
+#endif
+    }
+}
+
+#ifdef CB_RENDER_TEST
+// SPRITE_IMPLEMENTATION_SPEC.md S4.4: pinned-scalar twins of the two
+// functions above, verbatim copies of their pre-S4 bodies (the S0.3 house
+// style for "_ref"/"_s1" twins: literal duplication, not a shared #ifdef
+// branch, so this pins down "the S1 scalar form" independently of whatever
+// replay_colour_span/replay_shadow_span above happen to compile to on this
+// build). unit s4b compares the two pairs bitwise over every (lo, hi, da, db)
+// it exercises.
+void hwsprites::replay_colour_span_s1(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi)
+{
+    if (replay_mode == 0) {
+        for (int32_t d = da; d < db; d++)
+            std::memcpy(base + (size_t)d * scrn_width + lo, line + lo, (size_t)(hi - lo) * sizeof(uint16_t));
+    } else {
+        int32_t p = lo;
+        for (; p + 4 <= hi; p += 4) {
+            uint64_t chunk;
+            std::memcpy(&chunk, line + p, 8);
+            for (int32_t d = da; d < db; d++)
+                std::memcpy(base + (size_t)d * scrn_width + p, &chunk, 8);
+        }
+        for (; p < hi; p++) {
+            const uint16_t v = line[p];
+            for (int32_t d = da; d < db; d++)
+                (base + (size_t)d * scrn_width)[p] = v;
+        }
+    }
+}
+
+void hwsprites::replay_shadow_span_s1(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi)
+{
+    for (int32_t d = da; d < db; d++) {
+        uint16_t* rowp = base + (size_t)d * scrn_width;
+        for (int32_t p = lo; p < hi; p++)
+            rowp[p] |= S16_PALETTE_ENTRIES;
+    }
+}
+#endif
 
 // glow_push/glow_flush (S2.2): the per-sprite deferred glow-clear ring.
 // Pushing when the ring is already full flushes it first (never grows past
