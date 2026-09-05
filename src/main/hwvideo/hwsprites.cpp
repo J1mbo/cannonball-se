@@ -314,22 +314,25 @@ const uint8_t* hwsprites::sched(uint32_t zoom)
     return slot.get();
 }
 
-// emit(type, pos): appends a span-type change at output position pos to
-// rec[]/nrec, applying the two rules that keep records the maximal runs of
-// one type (S2's glow depends on this): a zero-length record -- a run-0
+// SPRITE_R1_LLD.md sec. 2.5: emit_l(rec, n, type, pos) replaces the old
+// member emit(type, pos). Same two rules, same order, appending a span-type
+// change at output position pos to rec[]: a zero-length record -- a run-0
 // pixel landed exactly on the previous boundary -- is dropped by
-// decrementing nrec first; a record whose type equals the (possibly
-// just-uncovered) previous record's type is a no-op merge.
-void hwsprites::emit(uint8_t type, int32_t pos)
+// decrementing n first; a record whose type equals the (possibly
+// just-uncovered) previous record's type is a no-op merge. The record count
+// is now value in/value out (never a member read back through memory
+// inside the row loop), so decode_row_k's local `n` stays a register for
+// the whole row (sec. 2.4's alias-reload fix).
+int32_t hwsprites::emit_l(SpanRec* rec, int32_t n, uint8_t type, int32_t pos)
 {
-    if (nrec > 0 && rec[nrec - 1].pos == (uint16_t)pos)
-        nrec--;
-    if (nrec > 0 && rec[nrec - 1].type == type)
-        return;
-    rec[nrec].pos = (uint16_t)pos;
-    rec[nrec].type = type;
-    rec[nrec].flags = 0;
-    nrec++;
+    if (n > 0 && rec[n - 1].pos == (uint16_t)pos)
+        n--;
+    if (n > 0 && rec[n - 1].type == type)
+        return n;
+    rec[n].pos = (uint16_t)pos;
+    rec[n].type = type;
+    rec[n].flags = 0;
+    return n + 1;
 }
 
 // SPRITE_IMPLEMENTATION_SPEC.md S4b (DESIGN_FABLE.md 2.4): the exact "any
@@ -352,117 +355,174 @@ bool hwsprites::classify_mixed(uint32_t w, uint32_t smask)
     return ((z | f | a) & C8) != 0;
 }
 
-// decode_row: expands source row j of sprite r into line[] (output-order
-// n|color halfwords, always written four-at-a-time regardless of this
-// nibble's own run length -- safe because any overrun lands on positions
-// the next source pixel overwrites, or beyond the sentinel where replay
-// never reads, per SPR_LB_LEN's margin) and into rec[]/nrec (the maximal-run
-// span records). Reads each ROM word once, mirrors flipped rows on the fly
-// with nibrev() (no sprites_flipped side table) and classifies shadow per
-// nibble during decode (no sprites_shadowinfo side table).
+// SPRITE_R1_LLD.md sec. 2.7: decode_row is now a thin wrapper -- only the
+// driver's SpriteTestAccess::decode_row hook calls this (the game path goes
+// through draw_sprite_rows -> decode_row_k directly via the ctx built once
+// per sprite in draw_sprite_fast). Builds a SpriteCtx (pixels == nullptr:
+// decode never touches the destination) and stores decode_row_k's returned
+// record count into the member nrec -- the only place nrec is written, so
+// the replay() wrapper below and the driver's own nrec(hw) hook keep seeing
+// exactly HEAD's decode_row/replay hand-off.
+void hwsprites::decode_row(const SpriteRec& r, int32_t j, int32_t pend)
+{
+    SpriteCtx c;
+    make_ctx(r, nullptr, pend, c);
+    nrec = decode_row_k(c, j);
+}
+
+// decode_row_k (SPRITE_R1_LLD.md sec. 3/5.2): expands source row j into
+// line[] (output-order n|color halfwords, always written eight-at-a-time
+// regardless of this nibble's own run length -- safe because any overrun
+// lands on positions the next source pixel overwrites, or beyond the
+// sentinel where replay never reads, per SPR_LB_LEN's margin) and into
+// rec[] (the maximal-run span records, returned as a record count rather
+// than the old member nrec). Reads each ROM word once, mirrors flipped rows
+// on the fly with nibrev() and classifies shadow per nibble during decode.
+//
+// R1a de-glue vs HEAD's decode_row (SPRITE_R1_LLD.md sec. 3.1-3.6): every
+// field this needs (line, rec, run, wsum, rom, color, smask, pend, flip) is
+// copied from the ctx into a local at entry and never has its address taken
+// (sec. 2.4 -- this, not passing the ctx by reference, is what stops the
+// per-nibble `color` reload after each line[] store); the eight run-length
+// bytes for a word are one 8-byte load instead of eight `run[]` byte reads
+// (sec. 3.4); the per-word ROM bounds test is a per-row window (wlimit)
+// instead of HEAD's per-word int64 compare-and-branch (sec. 3.6). Not yet
+// templated on FLIP/MAXRUN (R1b) and not yet using a fill narrower than
+// HEAD's 8-byte multiply-splat (R1b sec. 4.2) -- R1a only removes the glue.
 //
 // SPRITE_IMPLEMENTATION_SPEC.md S4b: before any per-nibble work, classify
 // the whole word w. A GAP word (w == 0, every nibble transparent) or an
 // all-SHADOW word (w == 0xAAAAAAAA with the shadow flag set) needs no
-// per-nibble loop at all: at most one emit() (decode_row's own prev-type
-// dedupe already made every other nibble's emit() call in the slow path a
-// no-op for a uniform word) and a single wsum-table jump that lands `pos`
-// on exactly the same value the 8-step loop would have reached. Otherwise
-// classify_mixed()'s SWAR test decides between the COLOUR fast path (no
-// GAP/terminator/shadow nibble present -- one emit(), then eight
-// {value, wide store, pos += run} steps with no per-nibble type work) and
-// the MIXED path (the original S1 per-nibble loop, needed only when a word
-// actually mixes types). Every branch reaches the identical `pos` and
-// record sequence the S1 per-nibble loop would have produced (S4.3); only
-// the *work* done per word changes. The terminator test runs after every
-// class -- harmless (and required, "keep the test anyway") for GAP/SHADOW
-// words, which can never match it (w & 0xF0 is 0x00 or 0xA0, never 0xF0).
-void hwsprites::decode_row(const SpriteRec& r, int32_t j, int32_t pend)
+// per-nibble loop at all: at most one emit_l() (the prev-type dedupe already
+// made every other nibble's emit in the slow path a no-op for a uniform
+// word) and a single wsum-table jump that lands `pos` on exactly the same
+// value the 8-step loop would have reached. Otherwise classify_mixed()'s
+// SWAR test decides between the COLOUR fast path (no GAP/terminator/shadow
+// nibble present -- one emit_l(), then eight {value, wide store, pos += run}
+// steps with no per-nibble type work) and the MIXED path (the original S1
+// per-nibble loop, needed only when a word actually mixes types). Every
+// branch reaches the identical `pos` and record sequence the S1 per-nibble
+// loop would have produced (S4.3); only the *work* done per word changes.
+// The terminator test runs after every class -- harmless (and required,
+// "keep the test anyway") for GAP/SHADOW words, which can never match it
+// (w & 0xF0 is 0x00 or 0xA0, never 0xF0).
+int32_t hwsprites::decode_row_k(const SpriteCtx& c, int32_t j)
 {
-    int32_t pos = 0;
-    int32_t words = 0;
-    nrec = 0;
+    // (a) hoist -- nothing below reads c.* or this->* inside a loop
+    // (SPRITE_R1_LLD.md sec. 2.4): these are the locals whose address is
+    // never taken, so no store to line[]/rec[] can force any of them to be
+    // reloaded from memory.
+    uint16_t*       const line   = c.line;
+    SpanRec*        const rec    = c.rec;
+    const uint8_t*  const run    = c.run;
+    const uint8_t*  const wsum   = c.wsum;
+    const uint32_t* const rom    = c.rom;
+    const uint32_t        color  = c.color;
+    const uint32_t        smask  = c.smask;
+    const bool            shadow = c.shadow != 0;
+    const int32_t         pend   = c.pend;
+    const bool            flip   = c.flip != 0;
+
+    // (b) per-row ROM window (sec. 3.6): replaces HEAD's per-word int64
+    // widx compute-and-bounds-test with one per-row wlimit, so the word
+    // loop's only per-iteration bound is `words < wlimit`.
+    const int32_t rowbase = c.rowoff0 + c.pitch * j;
+    const int32_t first   = flip ? rowbase + c.pitch - 1 : rowbase;
+    int32_t wlimit = 0;
+    if ((uint32_t)first < (uint32_t)SPRITES_LENGTH)
+        wlimit = flip ? std::min<int32_t>(SPR_WMAX, first + 1)
+                      : std::min<int32_t>(SPR_WMAX, (int32_t)SPRITES_LENGTH - first);
+    const int32_t wstep = flip ? -1 : 1;
+
+    int32_t pos = 0, words = 0, n = 0, widx = first;
     uint8_t prev = SPR_GAP;
-    const uint8_t* run  = sched((uint32_t)r.zoom);
-    const uint8_t* wsum_tab = wsum((uint32_t)r.zoom);
-    const uint32_t smask = r.shadow ? 0xFFFFFFFFu : 0u;
-    const int64_t rowbase = (int64_t)r.bank * 0x10000 + r.addr + (int64_t)r.pitch * j;
 
-    for (;;) {
-        if (pos >= pend || words == SPR_WMAX) break;
-        const int64_t widx = r.flip ? (rowbase + r.pitch - 1 - words) : (rowbase + words);
-        if (widx < 0 || widx >= (int64_t)SPRITES_LENGTH) break;
-
-        uint32_t w = sprites[widx];
-        if (r.flip) w = nibrev(w);
+    while (pos < pend && words < wlimit) {
+        uint32_t w = rom[widx];
+        if (flip) w = nibrev(w);
 
         if (w == 0) {
             // GAP word: every nibble transparent, no stores needed.
-            if (prev != SPR_GAP) { emit(SPR_GAP, pos); prev = SPR_GAP; }
-            pos += wsum_tab[words];
-        } else if (r.shadow && w == 0xAAAAAAAAu) {
+            if (prev != SPR_GAP) { n = emit_l(rec, n, SPR_GAP, pos); prev = SPR_GAP; }
+            pos += wsum[words];
+        } else if (shadow && w == 0xAAAAAAAAu) {
             // All-SHADOW word.
-            if (prev != SPR_SHADOW) { emit(SPR_SHADOW, pos); prev = SPR_SHADOW; }
-            pos += wsum_tab[words];
-        } else if (!classify_mixed(w, smask)) {
-            // COLOUR word: no GAP/terminator/(shadow) nibble present.
-            if (prev != SPR_COLOUR) { emit(SPR_COLOUR, pos); prev = SPR_COLOUR; }
-            for (int k = 0; k < 8; k++) {
-                const unsigned n = (w >> (28 - 4 * k)) & 0xF;
-                const uint16_t v = (uint16_t)(n | r.color);
-                const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL;
-                std::memcpy(line + pos, &fill, 8);
-                pos += run[words * 8 + k];
-            }
+            if (prev != SPR_SHADOW) { n = emit_l(rec, n, SPR_SHADOW, pos); prev = SPR_SHADOW; }
+            pos += wsum[words];
         } else {
-            // MIXED word: the S1 per-nibble loop (type lookup needed).
-            for (int k = 0; k < 8; k++) {
-                const unsigned n = (w >> (28 - 4 * k)) & 0xF;
-                const uint8_t t = (n == 0 || n == 15) ? SPR_GAP
-                                 : ((r.shadow && n == 10) ? SPR_SHADOW : SPR_COLOUR);
-                if (t != prev) { emit(t, pos); prev = t; }
+            // (c) one 8-byte load for all eight run lengths of this word
+            // (sec. 3.4), instead of HEAD's eight separate run[] byte reads.
+            uint64_t runs;
+            std::memcpy(&runs, run + (size_t)words * 8, 8);
+            if (!classify_mixed(w, smask)) {
+                // COLOUR word: no GAP/terminator/(shadow) nibble present.
+                if (prev != SPR_COLOUR) { n = emit_l(rec, n, SPR_COLOUR, pos); prev = SPR_COLOUR; }
+                CB_UNROLL(8)
+                for (int k = 0; k < 8; k++) {
+                    const uint16_t v = (uint16_t)(((w >> (28 - 4 * k)) & 0xFu) | color);
+                    const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL; // (d) HEAD's fill, verbatim (R1b sec. 4.2 replaces this)
+                    std::memcpy(line + pos, &fill, 8);
+                    pos += (int32_t)((runs >> (8 * k)) & 0xFFu);
+                }
+            } else {
+                // MIXED word: the S1 per-nibble loop (type lookup needed).
+                CB_UNROLL(8)
+                for (int k = 0; k < 8; k++) {
+                    const uint32_t nib = (w >> (28 - 4 * k)) & 0xFu;
+                    const uint8_t t = (nib == 0 || nib == 15) ? SPR_GAP
+                                    : ((shadow && nib == 10) ? SPR_SHADOW : SPR_COLOUR);
+                    if (t != prev) { n = emit_l(rec, n, t, pos); prev = t; }
 
-                const uint16_t v = (uint16_t)(n | r.color);
-                const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL;
-                std::memcpy(line + pos, &fill, 8);
+                    const uint16_t v = (uint16_t)(nib | color);
+                    const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL;
+                    std::memcpy(line + pos, &fill, 8);
 
-                pos += run[words * 8 + k];
+                    pos += (int32_t)((runs >> (8 * k)) & 0xFFu);
+                }
             }
         }
 
         words++;
+        widx += wstep;
         if ((w & 0xF0) == 0xF0) break; // terminator, tested on the (mirrored) word after it is fully drawn
     }
-    emit(SPR_GAP, pos); // sentinel; guarantees the last record is a GAP
+    return emit_l(rec, n, SPR_GAP, pos); // sentinel; guarantees the last record is a GAP
 }
 
-// prefetch_rom_row: read-prefetch the two ROM words decode_row will touch
-// first and last for source row jrow ("the words at k = 0 and k = pitch -
-// 1"), mirrored for flip so the two hinted addresses are always the row's
-// actual first/last read regardless of direction. Bounds-checked; a row
-// that will never be decoded, or whose hinted words fall outside the ROM
-// image, simply prefetches nothing.
-void hwsprites::prefetch_rom_row(const SpriteRec& r, int32_t jrow) const
+// prefetch_rom_row_k (SPRITE_R1_LLD.md sec. 5.1): replaces prefetch_rom_row.
+// Read-prefetch the two ROM words decode_row_k will touch first and last for
+// source row jrow ("the words at k = 0 and k = pitch - 1"). The *set* of two
+// hinted addresses is the same regardless of direction, so (unlike HEAD)
+// this needs no flip test of its own. Bounds-checked; a row whose hinted
+// words fall outside the ROM image simply prefetches nothing. jrow is never
+// negative at either call site (draw_sprite_rows only ever passes
+// src(d_lo) or a value derived by adding to it), so HEAD's `if (jrow < 0)
+// return` was dead and is dropped.
+void hwsprites::prefetch_rom_row_k(const SpriteCtx& c, int32_t jrow)
 {
-    if (jrow < 0) return;
-    const int64_t rowbase = (int64_t)r.bank * 0x10000 + r.addr + (int64_t)r.pitch * jrow;
-    const int64_t w_first = r.flip ? (rowbase + r.pitch - 1) : rowbase;
-    const int64_t w_last  = r.flip ? rowbase : (rowbase + r.pitch - 1);
-    if (w_first >= 0 && w_first < (int64_t)SPRITES_LENGTH) cb_prefetch_r(&sprites[w_first]);
-    if (w_last  >= 0 && w_last  < (int64_t)SPRITES_LENGTH) cb_prefetch_r(&sprites[w_last]);
+    const int32_t rowbase = c.rowoff0 + c.pitch * jrow;
+    const int32_t a = rowbase, b = rowbase + c.pitch - 1;
+    if ((uint32_t)a < (uint32_t)SPRITES_LENGTH) cb_prefetch_r(c.rom + a);
+    if ((uint32_t)b < (uint32_t)SPRITES_LENGTH) cb_prefetch_r(c.rom + b);
 }
 
-// replay: writes the just-decoded row's records onto destination rows
-// [da, db) of sprite r. COLOUR spans are store-only -- D copies the whole
-// span once per row (memcpy); D' loads each 4-halfword chunk of the span
-// exactly once and stores it to every destination row, with a scalar
-// halfword tail -- the destination is never read by either. SHADOW spans
-// are an inline read-modify-write, one pixel at a time, and are never
-// deferred or batched across rows. Both modes write exactly [lo, hi) and
-// nothing outside it; replay_mode just selects between them (measured, not
-// verified separately -- S1.5 picks the shipped default).
+// SPRITE_R1_LLD.md sec. 2.7: replay is now a thin wrapper -- only the
+// driver's SpriteTestAccess::replay hook calls this (the game path goes
+// through draw_sprite_rows -> replay_k directly). Builds a SpriteCtx via
+// make_ctx (passing the caller's cx1 through as make_ctx's `pend` argument,
+// exactly as draw_sprite_fast's own dispatch does when da/db/cx0/cx1 come
+// from the same values decode_row was just called with), then installs the
+// caller's own cx0/cx1 -- s2c relies on being able to pass a cx0/cx1
+// unrelated to what decode_row used (cx0 = -xpos, cx1 = 1) -- exactly as
+// HEAD's replay() used its own arguments rather than anything decode_row
+// computed. replay_k reads the member nrec set by the decode_row wrapper
+// above.
 void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t db, int32_t cx0, int32_t cx1)
 {
+    SpriteCtx c;
+    make_ctx(r, pixels, cx1, c);
+    c.cx0 = cx0;
+    c.cx1 = cx1;
 #ifdef CB_RENDER_TEST
     // S1.4 negative control only (never set by the game, never true unless
     // the driver's own negative-control test sets it): widen the right edge
@@ -481,11 +541,35 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
     // often enough for fuzz's whole-allocation memcmp to reliably catch it,
     // which is the property this control exists to demonstrate, without
     // crashing the harness before it can report that.
-    if (debug_disable_clip) { cx1 += 32; }
+    if (debug_disable_clip) { c.cx1 += 32; }
 #endif
+    replay_k(c, nrec, da, db);
+}
 
-    const int32_t scrn_width = (int32_t)config.s16_width;
-    uint16_t* const base = pixels + (size_t)r.top * scrn_width + r.xpos;
+// replay_k (SPRITE_R1_LLD.md sec. 3.7/5.4): writes the just-decoded row's
+// records onto destination rows [da, db) of the sprite the ctx was built
+// for. COLOUR spans are store-only -- D copies the whole span once per row
+// (memcpy); D' loads each 4-halfword chunk of the span exactly once and
+// stores it to every destination row, with a scalar halfword tail -- the
+// destination is never read by either. SHADOW spans are an inline
+// read-modify-write, one pixel at a time, and are never deferred or batched
+// across rows. Both modes write exactly [lo, hi) and nothing outside it;
+// c.replay_mode just selects between them (measured, not verified
+// separately -- S1.5 picks the shipped default).
+//
+// R1a de-glue vs HEAD's replay (SPRITE_R1_LLD.md sec. 3.1/3.7): every ctx
+// field is copied into a local at entry (sec. 2.4); the S3 shadow-prefetch
+// scan below only runs `if (c.shadow)` -- HEAD ran it, harmlessly, for
+// every sprite (it `continue`s on every non-SHADOW record, and a non-shadow
+// sprite's decode_row_k never emits a SPR_SHADOW record at all, sec. 3.7),
+// so gating it changes no output, only skips provably-dead work.
+void hwsprites::replay_k(const SpriteCtx& c, int32_t nrec, int32_t da, int32_t db)
+{
+    const SpanRec* const rec     = c.rec;
+    uint16_t*      const base    = c.base;
+    const int32_t        stride  = c.stride, cx0 = c.cx0, cx1 = c.cx1, top = c.top;
+    const bool           glow_on = c.glow != 0, rtl = c.rtl != 0;
+    const int            mode    = c.replay_mode;
 
     // SPRITE_IMPLEMENTATION_SPEC.md S3.2: shadow-destination prefetch, up to
     // SPR_SHADOW_PF_ROWS destination-row-groups' worth ahead of this one, at
@@ -497,9 +581,8 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
     // head start; touches nothing (cb_prefetch_w only, PRFM PSTL1KEEP /
     // __builtin_prefetch(p,1,3), a no-op on MSVC), and is bounds-checked
     // against d_hi so it never names a row past the sprite's own extent.
-    {
-        const int32_t d_hi = std::min<int32_t>(r.H, (int32_t)config.s16_height - r.top);
-        const int32_t pf_hi = std::min<int32_t>(db + SPR_SHADOW_PF_ROWS * (db - da), d_hi);
+    if (c.shadow) {
+        const int32_t pf_hi = std::min<int32_t>(db + SPR_SHADOW_PF_ROWS * (db - da), c.d_hi);
         if (pf_hi > db) {
             for (int32_t k = 0; k + 1 < nrec; k++) {
                 if (rec[k].type != SPR_SHADOW) continue;
@@ -507,7 +590,7 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
                 const int32_t hi = std::min<int32_t>(rec[k + 1].pos, cx1);
                 if (hi <= lo) continue;
                 for (int32_t d = db; d < pf_hi; d++) {
-                    uint16_t* const rowp = base + (size_t)d * scrn_width;
+                    uint16_t* const rowp = base + (ptrdiff_t)d * stride;
                     uintptr_t p = (uintptr_t)(rowp + lo) & ~(uintptr_t)63;
                     const uintptr_t p_last = (uintptr_t)(rowp + hi - 1);
                     for (; p <= p_last; p += 64)
@@ -525,14 +608,14 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
         if (hi <= lo) continue;
 
         if (rec[k].type == SPR_COLOUR) {
-            replay_colour_span(base, scrn_width, da, db, lo, hi);
+            colour_span_k(c.line, base, stride, da, db, lo, hi, mode);
 
             // SPRITE_IMPLEMENTATION_SPEC.md S2.2 (DESIGN_GLOW.md section 1):
             // one deferred bit-12 clear at the left neighbour of this run's
             // first drawn pixel, per destination row, iff that neighbour is
             // inside the clip window (lo > cx0, i.e. x(lo) > x1). Records
-            // are maximal runs (emit()'s drop/merge rule, S1.2) walked left
-            // to right, so rec[k-1] -- when non-empty -- is always the
+            // are maximal runs (emit_l()'s drop/merge rule, S1.2) walked
+            // left to right, so rec[k-1] -- when non-empty -- is always the
             // screen pixel at lo-1; DESIGN_GLOW.md section 2's amendment
             // suppresses the clear for a right-to-left sprite when that
             // neighbour is a SHADOW run of this same sprite row (the
@@ -540,8 +623,8 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
             // is the only destination read the colour path adds, and it
             // happens later, at the flush -- the copy above never reads the
             // destination.
-            if (glow && lo > cx0) {
-                const bool suppress = r.rtl && k > 0 && rec[k - 1].type == SPR_SHADOW;
+            if (glow_on && lo > cx0) {
+                const bool suppress = rtl && k > 0 && rec[k - 1].type == SPR_SHADOW;
                 uint16_t* const col = base + (lo - 1);
                 for (int32_t d = da; d < db; d++) {
                     if (suppress) {
@@ -550,15 +633,15 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
 #endif
                     } else {
                         // SPRITE_IMPLEMENTATION_SPEC.md S3.2: bit 12 can only
-                        // ever have been set by a shadow OR (replay's SHADOW
+                        // ever have been set by a shadow OR (the SHADOW
                         // branch below, or an all-ones bitmap when the frame
                         // is not provably clean), so a clear on a row whose
                         // shadow_rows bit is still 0 is a provable no-op --
                         // skip the push (and its eventual destination load
                         // at the flush) entirely.
-                        const int32_t y = r.top + d;
+                        const int32_t y = top + d;
                         if ((shadow_rows[y >> 6] >> (y & 63)) & 1ull) {
-                            glow_push(col + (size_t)d * scrn_width);
+                            glow_push(col + (ptrdiff_t)d * stride);
                         }
 #ifdef CB_SPRITE_STATS
                         else {
@@ -569,6 +652,10 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
                 }
             }
         } else { // SPR_SHADOW: inline read-modify-write, never deferred, never batched across rows
+            // (unreachable when !c.shadow, sec. 3.7 -- but this branch is
+            // unconditional, matching HEAD, so no behaviour depends on the
+            // gate above besides skipping the prefetch scan.)
+            //
             // SPRITE_IMPLEMENTATION_SPEC.md S3.2: mark every destination row
             // in [da, db) as shadow-touched before any of this span's RMW
             // writes below, so any glow push depending on it (this row, this
@@ -578,10 +665,10 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
             // only ordering S3.3 requires -- since the two loops touch
             // disjoint state (shadow_rows vs pixel data).
             for (int32_t d = da; d < db; d++) {
-                const int32_t y = r.top + d;
+                const int32_t y = top + d;
                 shadow_rows[y >> 6] |= 1ull << (y & 63);
             }
-            replay_shadow_span(base, scrn_width, da, db, lo, hi);
+            shadow_span_k(base, stride, da, db, lo, hi);
         }
     }
 }
@@ -600,16 +687,24 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
 // the pre-S4 scalar code, unchanged.
 // =============================================================================================
 
-void hwsprites::replay_colour_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi)
+// colour_span_k/shadow_span_k (SPRITE_R1_LLD.md sec. 4.3/5.5): static so
+// replay_k can call them straight from a SpriteCtx without a `this` detour;
+// `line`/`mode` are passed explicitly since there is no `this` here (the
+// member wrappers below pass this->line/this->replay_mode). R1a: HEAD's
+// bodies verbatim, `replay_mode` -> the `mode` parameter -- the R1b copy
+// ladder for n < 8 (sec. 4.3) is a separate, later step, so this is still
+// exactly the S1 scalar form for the memcpy path.
+void hwsprites::colour_span_k(const uint16_t* line, uint16_t* base, int32_t stride,
+                               int32_t da, int32_t db, int32_t lo, int32_t hi, int mode)
 {
     const int32_t n = hi - lo;
 #if defined(CB_HAVE_NEON)
     if (n >= 8) {
         const uint16_t* src = line + lo;
-        if (replay_mode == 0) {
+        if (mode == 0) {
             // D: span-copy, one wide-store loop per destination row.
             for (int32_t d = da; d < db; d++) {
-                uint16_t* dst = base + (size_t)d * scrn_width + lo;
+                uint16_t* dst = base + (size_t)d * stride + lo;
                 int32_t p = 0;
                 for (;;) {
                     vst1q_u16(dst + p, vld1q_u16(src + p));
@@ -623,7 +718,7 @@ void hwsprites::replay_colour_span(uint16_t* base, int32_t scrn_width, int32_t d
             for (;;) {
                 const uint16x8_t chunk = vld1q_u16(src + p);
                 for (int32_t d = da; d < db; d++)
-                    vst1q_u16(base + (size_t)d * scrn_width + lo + p, chunk);
+                    vst1q_u16(base + (size_t)d * stride + lo + p, chunk);
                 if (p + 8 >= n) break;
                 p = std::min(p + 8, n - 8);
             }
@@ -632,10 +727,10 @@ void hwsprites::replay_colour_span(uint16_t* base, int32_t scrn_width, int32_t d
     }
 #endif
     // S1 scalar form (also the CB_HAVE_NEON n < 8 fallback).
-    if (replay_mode == 0) {
+    if (mode == 0) {
         // D: span-copy, one memcpy per destination row.
         for (int32_t d = da; d < db; d++)
-            std::memcpy(base + (size_t)d * scrn_width + lo, line + lo, (size_t)n * sizeof(uint16_t));
+            std::memcpy(base + (size_t)d * stride + lo, line + lo, (size_t)n * sizeof(uint16_t));
     } else {
         // D': load each chunk once, store it to every destination row.
         int32_t p = lo;
@@ -643,20 +738,20 @@ void hwsprites::replay_colour_span(uint16_t* base, int32_t scrn_width, int32_t d
             uint64_t chunk;
             std::memcpy(&chunk, line + p, 8);
             for (int32_t d = da; d < db; d++)
-                std::memcpy(base + (size_t)d * scrn_width + p, &chunk, 8);
+                std::memcpy(base + (size_t)d * stride + p, &chunk, 8);
         }
         for (; p < hi; p++) {
             const uint16_t v = line[p];
             for (int32_t d = da; d < db; d++)
-                (base + (size_t)d * scrn_width)[p] = v;
+                (base + (size_t)d * stride)[p] = v;
         }
     }
 }
 
-void hwsprites::replay_shadow_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi)
+void hwsprites::shadow_span_k(uint16_t* base, int32_t stride, int32_t da, int32_t db, int32_t lo, int32_t hi)
 {
     for (int32_t d = da; d < db; d++) {
-        uint16_t* rowp = base + (size_t)d * scrn_width;
+        uint16_t* rowp = base + (size_t)d * stride;
 #if defined(CB_HAVE_NEON)
         const uint16x8_t maskv = vdupq_n_u16((uint16_t)S16_PALETTE_ENTRIES);
         int32_t p = lo;
@@ -669,6 +764,21 @@ void hwsprites::replay_shadow_span(uint16_t* base, int32_t scrn_width, int32_t d
             rowp[p] |= S16_PALETTE_ENTRIES;
 #endif
     }
+}
+
+// SPRITE_R1_LLD.md sec. 4.3: replay_colour_span/replay_shadow_span keep
+// their exact HEAD signature (the driver's SpriteTestAccess hooks call
+// these) and are now one-line forwarders onto the static kernels above,
+// passing this->line/this->replay_mode explicitly since the kernels have no
+// `this`.
+void hwsprites::replay_colour_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi)
+{
+    colour_span_k(line, base, scrn_width, da, db, lo, hi, replay_mode);
+}
+
+void hwsprites::replay_shadow_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi)
+{
+    shadow_span_k(base, scrn_width, da, db, lo, hi);
 }
 
 #ifdef CB_RENDER_TEST
@@ -732,54 +842,141 @@ void hwsprites::glow_push(uint16_t* p)
 #endif
 }
 
+// SPRITE_R1_LLD.md sec. 3.8: unrolled x4 -- four loads issued (into locals,
+// so the compiler can keep them in flight) before any of the four stores.
+// Ring entries within one flush are always distinct addresses (each is
+// lo-1 of a distinct (row, maximal colour run); runs on one row are
+// disjoint, separated by a non-colour pixel, and the ring is flushed at
+// least at every sprite end, DESIGN_GLOW.md section 3), so reordering the
+// loads ahead of the stores reads the same values it would have serially;
+// `&= 0xfff` is idempotent, so even a duplicate address would still give
+// the same result. glow_push (above) is unchanged.
 void hwsprites::glow_flush()
 {
-    for (int32_t i = 0; i < glow_n; i++) {
+    const int32_t n = glow_n;
+    int32_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        uint16_t* const p0 = glow_ring[i],     * const p1 = glow_ring[i + 1],
+                * const p2 = glow_ring[i + 2], * const p3 = glow_ring[i + 3];
+        const uint16_t v0 = *p0, v1 = *p1, v2 = *p2, v3 = *p3; // four loads in flight before any store
+#ifdef CB_SPRITE_STATS
+        stat_glow_changed += (v0 & S16_PALETTE_ENTRIES ? 1 : 0) + (v1 & S16_PALETTE_ENTRIES ? 1 : 0)
+                            + (v2 & S16_PALETTE_ENTRIES ? 1 : 0) + (v3 & S16_PALETTE_ENTRIES ? 1 : 0);
+#endif
+        *p0 = (uint16_t)(v0 & 0xfff); *p1 = (uint16_t)(v1 & 0xfff); // matches draw_sprite_px's glow branch exactly
+        *p2 = (uint16_t)(v2 & 0xfff); *p3 = (uint16_t)(v3 & 0xfff);
+    }
+    for (; i < n; i++) {
 #ifdef CB_SPRITE_STATS
         if (*glow_ring[i] & S16_PALETTE_ENTRIES) stat_glow_changed++;
 #endif
-        *glow_ring[i] &= 0xfff; // matches draw_sprite_px's glow branch exactly
+        *glow_ring[i] &= 0xfff;
     }
     glow_n = 0;
 }
 
-// draw_sprite_fast: the closed-form LINEBUF vertical loop. Every destination
-// row d in [d_lo, d_hi) reads source row src(d) = (d*zoom) >> 9
-// (division-free once zoom is fixed, exactly the shipped accumulator's
-// result -- unit s1a); consecutive d's sharing a source row are grouped so
-// that row is decoded exactly once and replayed onto every row in the
-// group. render()'s dispatch guarantees r.ydelta == 1 here (ydelta == -1
-// routes to draw_sprite_px), so y = r.top + d and d_lo/d_hi need only clip
-// to [0, s16_height).
+// make_ctx (SPRITE_R1_LLD.md sec. 2.3): builds the per-sprite SpriteCtx once
+// -- the only sched() call for this sprite (R0 item 4; HEAD's decode_row and
+// replay each independently reread sched()/wsum(), which fold to the same
+// cached-slot lookup, once per *row*). Every field here is a pure function
+// of (r, pixels, pend, this->{x1, glow, replay_mode}, config), none of which
+// draw_sprite_fast's loop ever mutates mid-sprite, so computing each once
+// equals HEAD recomputing it every row/word/nibble (sec. 3.1's invariant).
+// Non-const: sched() may populate a cache slot on first use for this zoom.
+void hwsprites::make_ctx(const SpriteRec& r, uint16_t* pixels, int32_t pend, SpriteCtx& c)
+{
+    c.line    = line;
+    c.rec     = rec;
+    c.run     = sched((uint32_t)r.zoom);
+    c.wsum    = c.run + SPR_SCHED_LEN;
+    c.rom     = sprites;
+    c.rowoff0 = r.bank * 0x10000 + r.addr;  // int32: |bank*0x10000 + addr| <= 3*65536 + 65790
+    c.pitch   = r.pitch;
+    c.color   = (uint32_t)r.color;
+    c.smask   = r.shadow ? 0xFFFFFFFFu : 0u; // HEAD 388 (decode_row's smask)
+    c.pend    = pend;
+    c.zoom    = r.zoom;
+    c.shadow  = r.shadow ? 1 : 0;
+    c.flip    = r.flip   ? 1 : 0;
+    c.rtl     = r.rtl    ? 1 : 0;
+    c.glow    = glow     ? 1 : 0;
+    c.stride  = (int32_t)config.s16_width;   // HEAD's replay() scrn_width
+    c.base    = pixels ? pixels + (ptrdiff_t)r.top * c.stride + r.xpos : nullptr; // same address as HEAD's replay() base; ptrdiff_t instead of size_t for a negative top
+    c.top     = r.top;
+    c.d_lo    = std::max<int32_t>(0, -r.top);                                 // HEAD 756 (draw_sprite_fast)
+    c.d_hi    = std::min<int32_t>(r.H, (int32_t)config.s16_height - r.top);   // HEAD 757 == HEAD's replay() d_hi
+    c.cx0     = (int32_t)x1 - r.xpos;                                         // HEAD 760
+    c.cx1     = pend;                                                         // HEAD 761
+#ifdef CB_RENDER_TEST
+    if (debug_disable_clip) c.cx1 += 32; // HEAD 484, moved from replay (per sprite == per call: cx1 is constant per sprite)
+#endif
+    c.replay_mode = replay_mode;
+}
+
+// draw_sprite_rows (SPRITE_R1_LLD.md sec. 3.5/5.6): the closed-form vertical
+// loop. Every destination row d in [d_lo, d_hi) reads source row
+// src(d) = (d*zoom) >> 9 (division-free once zoom is fixed, exactly the
+// shipped accumulator's result -- unit s1a); consecutive d's sharing a
+// source row are grouped so that row is decoded exactly once and replayed
+// onto every row in the group.
+//
+// R1a vs HEAD's draw_sprite_fast loop (sec. 3.5): the first group is found
+// by HEAD's own scan (identical code, so (j, da, db) start identically);
+// every later group uses the division-free recurrence
+// da = db; db = min(da + run[j], d_hi) when zoom < 0x200 (SPRITE_R1_LLD.md
+// sec. 3.5 proves this produces the same (j, da, db) sequence as HEAD's scan
+// via the schedule identities C1/C2/C5), falling back to HEAD's own scan,
+// unchanged, for zoom >= 0x200 (the run-0 regime the recurrence cannot
+// visit -- run[] entries there are 0 for most i, and the table itself is
+// only sized for the zoom < 0x200 side). `shrink` is a runtime test here
+// (R1b turns SHRINK into a template parameter, one of five specialised
+// instantiations); decode_row_k/replay_k are still non-template in R1a.
+void hwsprites::draw_sprite_rows(const SpriteCtx& c)
+{
+    const int32_t d_hi = c.d_hi, zoom = c.zoom;
+    const uint8_t* const run = c.run;
+    const bool shrink = zoom >= 0x200; // sec. 3.5: the run-0 regime keeps HEAD's own scan
+
+    int32_t d  = c.d_lo;
+    int32_t j  = (d * zoom) >> 9;      // HEAD 765/772, int32 (d <= 511, zoom <= 0xFFF -> < 2^21)
+    prefetch_rom_row_k(c, j);          // HEAD 766-767: the first two source rows this sprite will read
+    prefetch_rom_row_k(c, j + 1);
+    int32_t da = d; d++;
+    while (d < d_hi && ((d * zoom) >> 9) == j) d++; // first group: HEAD's own scan
+    int32_t db = d;
+
+    for (;;) {
+        prefetch_rom_row_k(c, j + SPR_ROM_PF_ROWS);       // HEAD 778
+        const int32_t nrec = decode_row_k(c, j);          // HEAD 780, inlined, count in a local
+        replay_k(c, nrec, da, db);                        // HEAD 781, inlined
+        if (db >= d_hi) break;
+        da = db;
+        if (!shrink) {                    // zoom < 0x200: recurrence (sec. 3.5), no division
+            j++;
+            db = std::min<int32_t>(da + (int32_t)run[j], d_hi);
+        } else {                          // zoom >= 0x200 (run-0 regime): HEAD 772-776, unchanged
+            j = (da * zoom) >> 9;
+            d = da + 1;
+            while (d < d_hi && ((d * zoom) >> 9) == j) d++;
+            db = d;
+        }
+    }
+}
+
+// draw_sprite_fast (SPRITE_R1_LLD.md sec. 3.9): the fast in-envelope
+// dispatch target. render()'s dispatch guarantees r.ydelta == 1 here
+// (ydelta == -1 routes to draw_sprite_px), so y = r.top + d and d_lo/d_hi
+// need only clip to [0, s16_height). R1a: an empty row range returns before
+// sched() is consulted, exactly as HEAD did (HEAD 756-758's d_lo >= d_hi
+// check ran before decode_row's first sched() call); otherwise one SpriteCtx
+// is built for the whole sprite and the row loop/glow flush run once each.
 void hwsprites::draw_sprite_fast(const SpriteRec& r, uint16_t* pixels, int32_t pend)
 {
-    const int32_t d_lo = std::max<int32_t>(0, -r.top);
-    const int32_t d_hi = std::min<int32_t>(r.H, (int32_t)config.s16_height - r.top);
-    if (d_lo >= d_hi) return;
+    if (std::max<int32_t>(0, -r.top) >= std::min<int32_t>(r.H, (int32_t)config.s16_height - r.top)) return;
 
-    const int32_t cx0 = (int32_t)x1 - r.xpos;
-    const int32_t cx1 = pend;
-
-    // Initial ROM prefetch: the first two source rows this sprite will read.
-    {
-        const int32_t j0 = (int32_t)(((int64_t)d_lo * r.zoom) >> 9);
-        prefetch_rom_row(r, j0);
-        prefetch_rom_row(r, j0 + 1);
-    }
-
-    int32_t d = d_lo;
-    while (d < d_hi) {
-        const int32_t j = (int32_t)(((int64_t)d * r.zoom) >> 9);
-        const int32_t da = d;
-        d++;
-        while (d < d_hi && (int32_t)(((int64_t)d * r.zoom) >> 9) == j) d++;
-        const int32_t db = d;
-
-        prefetch_rom_row(r, j + SPR_ROM_PF_ROWS);
-
-        decode_row(r, j, pend);
-        replay(r, pixels, da, db, cx0, cx1);
-    }
+    SpriteCtx c;
+    make_ctx(r, pixels, pend, c);
+    draw_sprite_rows(c);
 
     // SPRITE_IMPLEMENTATION_SPEC.md S2.2: flush the glow ring here, once per
     // sprite, never per frame (DESIGN_GLOW.md section 3). A no-op when glow

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stdint.hpp"
+#include "hwvideo/hwarch.hpp" // SPRITE_R1_LLD.md sec. 2.1: CB_ALWAYS_INLINE, used below
 #include <memory>
 
 class video;
@@ -154,6 +155,40 @@ private:
     enum : uint8_t { SPR_GAP = 0, SPR_COLOUR = 1, SPR_SHADOW = 2 };
     struct SpanRec { uint16_t pos; uint8_t type; uint8_t flags; };
 
+    // SPRITE_R1_LLD.md sec. 2.2: per-sprite context, built once by make_ctx
+    // (R1a: one sched() call, all per-sprite constants computed once instead
+    // of being reread from `r`/`this`/`config` inside decode_row/replay's
+    // per-row and per-nibble loops). Plain data, no methods; the kernels
+    // below copy the fields they use into locals at entry (sec. 2.4) -- the
+    // struct itself is a convenience (one sched() call, one argument, `this`
+    // kept out of the static kernels), not the alias-reload fix.
+    struct SpriteCtx
+    {
+        // scratch (this object's own per-row buffers)
+        uint16_t*       line;       // = this->line
+        SpanRec*        rec;        // = this->rec
+        // schedule: ONE sched() call per sprite (R0 item 4)
+        const uint8_t*  run;        // sched(zoom)
+        const uint8_t*  wsum;       // run + SPR_SCHED_LEN
+        // ROM
+        const uint32_t* rom;        // = this->sprites
+        int32_t         rowoff0;    // bank*0x10000 + addr: word index of row 0 (may be negative, S0.4)
+        int32_t         pitch;      // 0..255
+        // decode constants
+        uint32_t        color;      // 0x800..0xFF0
+        uint32_t        smask;      // shadow ? 0xFFFFFFFF : 0
+        int32_t         pend;       // x2 - xpos (decode's horizontal stop)
+        int32_t         zoom;       // post-halving, 0x80..0xFFF
+        uint8_t         shadow, flip, rtl, glow;   // 0/1
+        // destination
+        uint16_t*       base;       // pixels + top*stride + xpos (nullptr when built for decode only)
+        int32_t         stride;     // config.s16_width
+        int32_t         top;        // r.top (shadow_rows / glow filter use y = top + d)
+        int32_t         d_lo, d_hi; // destination row range (HEAD 756-757)
+        int32_t         cx0, cx1;   // row-local clip window (HEAD 760-761; cx1 widened under debug_disable_clip)
+        int32_t         replay_mode;
+    };
+
     // sched(zoom): run[SPR_SCHED_LEN] for this (already post-halving) zoom,
     // built on first use by the reference accumulator (S1.2) and cached.
     // zoom is 12 bits (parse_record masks with 0xfff), so 0x1000 slots covers
@@ -187,28 +222,34 @@ private:
 
     // Per-row decode/replay scratch. Spec fact: "line, rec, nrec are per
     // row; the only per-frame state is S3's" -- kept as members purely so
-    // decode_row/replay/emit (and the S0.5 test hooks) can share them
-    // without threading extra parameters; nothing here survives, or needs
-    // to survive, past the sprite currently being drawn.
+    // decode_row/replay (and the S0.5 test hooks) can share them without
+    // threading extra parameters; nothing here survives, or needs to
+    // survive, past the sprite currently being drawn. R1a (SPRITE_R1_LLD.md
+    // sec. 2.5/5.7): the old member emit() is gone -- decode_row_k keeps its
+    // running record count in a local and appends via the static emit_l(),
+    // so its address is never taken; nrec itself remains a member solely
+    // because the decode_row/replay harness wrappers hand a record count
+    // from one call to the other exactly as HEAD did (sec. 2.7).
     uint16_t line[SPR_LB_LEN];
     SpanRec  rec[SPR_REC_LEN];
     int32_t  nrec = 0;
 
-    // Appends a span-type change at output position pos to rec[], applying
-    // S1.2's drop (zero-length) and merge (equal-to-previous) rules so
-    // records are always maximal runs of one type (S2's glow depends on
-    // this).
-    void emit(uint8_t type, int32_t pos);
-
     // Decodes source row j of sprite r into line[]/rec[] (S1.2). pend is
     // x2 - r.xpos, i.e. the same value draw_sprite_fast used to choose this
-    // sprite for the fast path.
+    // sprite for the fast path. R1a: thin wrapper (SPRITE_R1_LLD.md sec.
+    // 2.7) -- builds a SpriteCtx and calls decode_row_k, storing the
+    // returned record count into the member nrec (the only place nrec is
+    // written; only the driver's SpriteTestAccess::decode_row/nrec hooks and
+    // this file's own replay() wrapper ever see it).
     void decode_row(const SpriteRec& r, int32_t j, int32_t pend);
 
     // Replays the just-decoded row's records onto destination rows [da, db)
     // of sprite r (S1.2). cx0/cx1 are the row-local clip window
     // (max(x1-xpos,0 not applied here -- callers pass x1-xpos/pend directly)
     // so every store/RMW lands only in [max(cx0,rec.pos), min(cx1,next.pos)).
+    // R1a: thin wrapper -- builds a SpriteCtx (with the caller's own cx0/cx1,
+    // exactly as HEAD used its arguments) and calls replay_k with the member
+    // nrec set by the decode_row wrapper above (SPRITE_R1_LLD.md sec. 2.7).
     void replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t db, int32_t cx0, int32_t cx1);
 
     // SPRITE_IMPLEMENTATION_SPEC.md S4a: replay()'s two span primitives,
@@ -219,14 +260,11 @@ private:
     // at base + d*scrn_width + p for p in [lo, hi), d in [da, db) -- never
     // outside that span (S4.3). replay_colour_span reads line[lo, hi);
     // replay_shadow_span is a pure read-modify-write of the destination.
+    // R1a: same signature/behaviour, now one-line forwarders to the static
+    // colour_span_k/shadow_span_k kernels below (SPRITE_R1_LLD.md sec. 4.3),
+    // which replay_k also calls directly.
     void replay_colour_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi);
     void replay_shadow_span(uint16_t* base, int32_t scrn_width, int32_t da, int32_t db, int32_t lo, int32_t hi);
-
-    // Bounds-checked read prefetch of ROM row jrow's first and last word
-    // (S1.2: "the words at k = 0 and k = pitch - 1"), mirrored for flip so
-    // it always names the two words decode_row will actually touch first/
-    // last for that row.
-    void prefetch_rom_row(const SpriteRec& r, int32_t jrow) const;
 
     // ---------------------------------------------------------------------
     // SPRITE_IMPLEMENTATION_SPEC.md S2 -- glow (PIXEL_ACCURACY), deferred
@@ -278,10 +316,71 @@ private:
     // ---------------------------------------------------------------------
     uint64_t shadow_rows[8];
 
+    // -----------------------------------------------------------------------
+    // SPRITE_R1_LLD.md sec. 2.6/3 -- R1a "de-glue": make_ctx builds a
+    // SpriteCtx once per sprite (one sched() call, every other per-sprite
+    // constant HEAD used to reread from `r`/`this`/`config` inside the
+    // per-row/per-nibble loops); decode_row_k/replay_k are the row/replay
+    // kernels, force-inlined into draw_sprite_rows (one real call per
+    // sprite, not per row -- R0 item 2) and written to copy every ctx field
+    // they use into a local at entry, so no store inside the row loop can
+    // alias it back into memory (sec. 2.4 -- passing the ctx by reference is
+    // not what fixes the reload; the locals are). R1a writes these
+    // non-templated (R1b's <FLIP, MAXRUN, SHRINK> specialisation is a
+    // separate, later step); the harness wrappers above (decode_row/replay/
+    // replay_colour_span/replay_shadow_span) are unchanged in signature and
+    // now just build a ctx and call these.
+    // -----------------------------------------------------------------------
+    void make_ctx(const SpriteRec& r, uint16_t* pixels, int32_t pend, SpriteCtx& c);
+
+    // emit()'s replacement (sec. 2.5): the record count is a value in/value
+    // out parameter (never a member) so its address is never taken inside
+    // the row loop. Same drop/merge rules, same order.
+    static CB_ALWAYS_INLINE int32_t emit_l(SpanRec* rec, int32_t n, uint8_t type, int32_t pos);
+
+    // prefetch_rom_row's replacement (sec. 5.1): takes the ctx instead of a
+    // SpriteRec/`this`; the set of two hinted addresses is direction-
+    // independent so, unlike HEAD, it does not need its own flip test.
+    static CB_ALWAYS_INLINE void prefetch_rom_row_k(const SpriteCtx& c, int32_t jrow);
+
+    // decode_row's kernel body (sec. 3.4/3.6/5.2): per-row ROM window
+    // (wlimit) instead of HEAD's per-word int64 bounds test, one 8-byte
+    // `run` load per word instead of eight `run[]` byte loads. R1a: not yet
+    // templated on FLIP/MAXRUN (R1b); returns the record count by value,
+    // static (no `this`).
+    static CB_ALWAYS_INLINE int32_t decode_row_k(const SpriteCtx& c, int32_t j);
+
+    // replay's kernel body (sec. 3.7/5.4): the S3 shadow-prefetch scan
+    // gated on ctx.shadow (HEAD ran it, harmlessly, for every sprite).
+    // A member (not static): still owns glow_push/shadow_rows, exactly as
+    // HEAD's replay() did.
+    CB_ALWAYS_INLINE void replay_k(const SpriteCtx& c, int32_t nrec, int32_t da, int32_t db);
+
+    // replay_colour_span/replay_shadow_span's shared bodies (sec. 4.3/5.5):
+    // static so replay_k can call them without a SpriteCtx-to-`this` detour;
+    // `line`/`mode` are passed explicitly since there is no `this` here (the
+    // public member wrappers above pass this->line/this->replay_mode). R1a:
+    // HEAD's bodies verbatim (NEON n >= 8 loops untouched, sec. 0.2 item 3;
+    // the R1b copy ladder for n < 8 is a separate, later step).
+    static CB_ALWAYS_INLINE void colour_span_k(const uint16_t* line, uint16_t* base, int32_t stride,
+                                                int32_t da, int32_t db, int32_t lo, int32_t hi, int mode);
+    static CB_ALWAYS_INLINE void shadow_span_k(uint16_t* base, int32_t stride,
+                                                int32_t da, int32_t db, int32_t lo, int32_t hi);
+
+    // The vertical loop (sec. 3.5/5.6): HEAD's own scan for the first group,
+    // then the division-free recurrence da=db; db=min(da+run[j], d_hi) for
+    // zoom < 0x200, falling back to HEAD's scan (unchanged) for zoom >= 0x200
+    // (the run-0 regime the recurrence cannot visit). One real call per
+    // sprite from draw_sprite_fast -- R1b turns this into five
+    // <FLIP, MAXRUN, SHRINK> template instantiations; R1a has just this one
+    // non-template body.
+    void draw_sprite_rows(const SpriteCtx& c);
+
     // The fast in-envelope path (S1.2): closed-form vertical loop
     // (src(d) = (d*zoom) >> 9) grouping destination rows that share a source
     // row, decode-once/replay-many per group. pend is passed in from
-    // render()'s dispatch (already computed there to pick this path).
+    // render()'s dispatch (already computed there to pick this path). R1a:
+    // builds one SpriteCtx and calls draw_sprite_rows (sec. 3.9).
     void draw_sprite_fast(const SpriteRec& r, uint16_t* pixels, int32_t pend);
 
 #ifdef CB_SPRITE_STATS

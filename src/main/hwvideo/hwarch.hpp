@@ -75,6 +75,33 @@ static inline void cb_prefetch_w(const void* p)
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// SPRITE_R1_LLD.md sec. 2.1: force-inline and loop-unroll hints. Present on
+// every target (no-op fallback where the compiler offers nothing) so calling
+// code never has to #ifdef around a missing symbol. always_inline is needed
+// because R1's decode_row_k/replay_k kernels must not become out-of-line
+// calls from the per-sprite row loop -- both -O2 (the standalone driver) and
+// -O3 -Ofast (the game) decline to inline them on their own (measured, see
+// MEASURED_R0_ATTRIBUTION.md). CB_UNROLL(n) keeps the driver's -O2 build
+// structurally aligned with the game's -O3 build for the fixed 8-nibble
+// decode loop; GCC 14 does not unroll it at -O2 without the pragma.
+// ---------------------------------------------------------------------------
+#if defined(__GNUC__) || defined(__clang__)
+  #define CB_ALWAYS_INLINE inline __attribute__((always_inline))
+#elif defined(_MSC_VER)
+  #define CB_ALWAYS_INLINE __forceinline
+#else
+  #define CB_ALWAYS_INLINE inline
+#endif
+#define CB_STR_(x) #x
+#if defined(__clang__)
+  #define CB_UNROLL(n) _Pragma("clang loop unroll(full)")
+#elif defined(__GNUC__)
+  #define CB_UNROLL(n) _Pragma(CB_STR_(GCC unroll n))
+#else
+  #define CB_UNROLL(n)
+#endif
+
 // Rules: 32-bit ARM (ARMv6/ARMv7, __ARM_NEON under -mfpu=neon) is deliberately
 // *not* given NEON, because the tile kernel uses AArch64-only intrinsics; it
 // takes the scalar path. MSVC ARM64 (_M_ARM64) is not a supported target and
