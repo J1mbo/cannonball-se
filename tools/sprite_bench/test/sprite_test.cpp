@@ -37,15 +37,20 @@
                  non-matching directory (no capture was made available to
                  this run) -- see the task report for how to produce one.
 
-      unit [s1a|s1b|s1c|s2a|s2b|s2c] - S1.4's schedule/nibrev/record-partition
-                 proofs against the LINEBUF core (hwsprites::sched/decode_row),
-                 plus S2.4's glow proofs (s2a: DESIGN_GLOW.md Test 1, output-
-                 pixel space, against draw_sprite_fast; s2b: the source-space
-                 companion, real zoom/flip variety; s2c: DESIGN_GLOW.md Test 2,
-                 deferral granularity, with an end-of-frame negative control
-                 that must fail). No subcmd runs all six. bench is not yet
-                 implemented (S1.5 lands with the D/D' measurement pass; use
-                 in-game prof_ns_sprites/CB_SPRITE_PMU meanwhile).
+      unit [s1a|s1b|s1c|s2a|s2b|s2c|s3] - S1.4's schedule/nibrev/record-
+                 partition proofs against the LINEBUF core
+                 (hwsprites::sched/decode_row), plus S2.4's glow proofs (s2a:
+                 DESIGN_GLOW.md Test 1, output-pixel space, against
+                 draw_sprite_fast; s2b: the source-space companion, real
+                 zoom/flip variety; s2c: DESIGN_GLOW.md Test 2, deferral
+                 granularity, with an end-of-frame negative control that must
+                 fail), plus S3.4's per-row shadow bitmap proof (s3:
+                 dest_clean=true/false against render_px(true) over 10,000
+                 random lists per replay_mode, plus a dest_clean=true-on-a-
+                 dirty-background negative control that must fail). No
+                 subcmd runs all seven. bench is not yet implemented (S1.5
+                 lands with the D/D' measurement pass; use in-game
+                 prof_ns_sprites/CB_SPRITE_PMU meanwhile).
 
       fuzz [n]  - n (default 200000) random sprite lists of 1-122 records
                  per trial, edge-biased (S0.7), against render_px(false);
@@ -1741,6 +1746,11 @@ static bool run_unit_s2c(unsigned seed)
     return ok;
 }
 
+// unit s3 is defined below, after the fuzz-list generator it reuses
+// (fuzz_build_record/fuzz_fill_background); forward-declared here so
+// run_unit can dispatch to it.
+static bool run_unit_s3(unsigned seed);
+
 static bool run_unit(const std::string& subcmd, unsigned seed)
 {
     bool ok = true;
@@ -1750,6 +1760,7 @@ static bool run_unit(const std::string& subcmd, unsigned seed)
     if (subcmd.empty() || subcmd == "s2a") ok &= run_unit_s2a(seed);
     if (subcmd.empty() || subcmd == "s2b") ok &= run_unit_s2b(seed);
     if (subcmd.empty() || subcmd == "s2c") ok &= run_unit_s2c(seed);
+    if (subcmd.empty() || subcmd == "s3")  ok &= run_unit_s3(seed);
     return ok;
 }
 
@@ -1836,6 +1847,134 @@ static void fuzz_fill_background(uint16_t* buf, std::size_t n, uint16_t width, s
         if ((row & 7) < 3) v |= 0x1000; // stripe every few rows
         buf[i] = v;
     }
+}
+
+// A genuinely clean background: bit 12 clear on every halfword of the
+// *entire* allocation (front pad and spare rows included, like fuzz's own
+// whole-allocation memcmp) -- the only background dest_clean may honestly
+// be true against. Low 12 bits are still randomised so a colour/shadow
+// mismatch is as visible as it would be against fuzz's own backgrounds.
+static void fuzz_fill_background_clean(uint16_t* buf, std::size_t n, std::mt19937& rng)
+{
+    for (std::size_t i = 0; i < n; i++)
+        buf[i] = (uint16_t)(rng() % 0x1000);
+}
+
+// ---------------------------------------------------------------------------
+// unit s3 (SPRITE_IMPLEMENTATION_SPEC.md S3.4): the per-row shadow bitmap
+// and dest_clean. Reuses fuzz's own random-list generator (fuzz_build_record
+// -- the bitmap's correctness must hold across the same record variety fuzz
+// already exercises: flip, xdelta, shadow, hiresprites, edge xpos/top, every
+// zoom band including the render_px fallback envelope, ydelta==-1 in 5% of
+// records) but drives render() through dest_clean against three
+// background/flag combinations, all at glow=true (S3's filter has no effect
+// at glow=false -- S2's own no-op guarantee) and both replay_mode values:
+//
+//   (a) dest_clean=true onto a background with bit 12 clear everywhere --
+//       the only background dest_clean may honestly be true against. Must
+//       match render_px(true) exactly: the bitmap starts all-zero, so every
+//       push it filters out is a provable no-op here.
+//   (b) dest_clean=false onto the same bit-12-striped background fuzz uses
+//       -- the bitmap starts all-ones, disabling the filter entirely, so
+//       this is a pure regression check that S3 has not changed
+//       dest_clean=false behaviour at all. Must match render_px(true).
+//   (c) negative control: dest_clean=true claimed on that same striped
+//       (NOT actually clean) background -- the bitmap starts all-zero even
+//       though bit 12 is not clear everywhere, so the filter can skip a
+//       clear render_px(true) still performs. Expected to diverge from the
+//       oracle at least once across all trials: proof the bitmap actually
+//       filters real work rather than being an always-safe no-op.
+// ---------------------------------------------------------------------------
+static bool run_unit_s3(unsigned seed)
+{
+    const uint16_t W = S16_WIDTH, H = S16_HEIGHT;
+    config.s16_width  = W;
+    config.s16_height = H;
+    config.s16_x_off  = 0;
+    config.video.hires = 0;
+
+    std::mt19937 rom_rng(seed ^ 0x53334330u); // "S3C0"
+    std::vector<uint8_t> rom(SPR_ROM_TOTAL);
+    fill_random(reinterpret_cast<uint16_t*>(rom.data()), rom.size() / 2, rom_rng);
+
+    hwsprites hw;
+    hw.init(rom.data());
+    hw.set_glow(true);
+
+    std::mt19937 rng(seed ^ 0x53334331u); // "S3C1"
+    const int trials = 10000;
+
+    PixelBuffer A, E;
+    A.allocate(W, H);
+    E.allocate(W, H);
+    const std::size_t npx = A.halfwords;
+    std::vector<uint16_t> dirty(npx);
+    std::vector<uint16_t> ram(SPR_RAM_SIZE, 0);
+
+    long long tested = 0, fails_clean = 0, fails_dirty_dc_false = 0, fails_negctrl = 0;
+
+    for (int replay_mode = 0; replay_mode <= 1; replay_mode++) {
+        hw.set_replay_mode(replay_mode);
+        for (int trial = 0; trial < trials; trial++) {
+            hw.set_x_clip(false);
+            config.video.hiresprites = (rng() % 4 == 0) ? 1 : 0;
+
+            std::fill(ram.begin(), ram.end(), (uint16_t)0);
+            const int nrecs = 1 + (int)(rng() % 122);
+            for (int i = 0; i < nrecs; i++)
+                fuzz_build_record(ram, (uint16_t)(i * 16), rng, W, H);
+            if (nrecs * 16 < (int)SPR_RAM_SIZE)
+                ram[(std::size_t)nrecs * 16] = 0x8000;
+            hw.load_sprite_ram(ram.data());
+            tested++;
+
+            // (a) dest_clean=true onto a genuinely clean background.
+            fuzz_fill_background_clean(A.base, npx, rng);
+            std::memcpy(E.base, A.base, npx * sizeof(uint16_t));
+            hw.render(A.pixels, 8, /*dest_clean=*/true);
+            hw.render_px(E.pixels, 8, /*glow=*/true);
+            if (std::memcmp(A.base, E.base, npx * sizeof(uint16_t)) != 0) fails_clean++;
+
+            // (b) dest_clean=false onto a striped (dirty) background: pure
+            // regression, the filter is disabled so this must still match.
+            fuzz_fill_background(dirty.data(), npx, W, rng);
+            std::memcpy(A.base, dirty.data(), npx * sizeof(uint16_t));
+            std::memcpy(E.base, dirty.data(), npx * sizeof(uint16_t));
+            hw.render(A.pixels, 8, /*dest_clean=*/false);
+            hw.render_px(E.pixels, 8, /*glow=*/true);
+            if (std::memcmp(A.base, E.base, npx * sizeof(uint16_t)) != 0) fails_dirty_dc_false++;
+
+            // (c) negative control: dest_clean=true is a lie on the same
+            // dirty background used in (b).
+            std::memcpy(A.base, dirty.data(), npx * sizeof(uint16_t));
+            std::memcpy(E.base, dirty.data(), npx * sizeof(uint16_t));
+            hw.render(A.pixels, 8, /*dest_clean=*/true);
+            hw.render_px(E.pixels, 8, /*glow=*/true);
+            if (std::memcmp(A.base, E.base, npx * sizeof(uint16_t)) != 0) fails_negctrl++;
+        }
+    }
+
+    std::printf("unit s3: dest_clean=true/clean fails=%lld/%lld, dest_clean=false/dirty fails=%lld/%lld, "
+                "negative control (dest_clean=true/dirty) mismatches=%lld/%lld (must be > 0)\n",
+                fails_clean, tested, fails_dirty_dc_false, tested, fails_negctrl, tested);
+
+    bool ok = true;
+    if (fails_clean != 0) {
+        std::printf("unit s3 FAIL: dest_clean=true on a clean background diverged from render_px(true)\n");
+        ok = false;
+    }
+    if (fails_dirty_dc_false != 0) {
+        std::printf("unit s3 FAIL: dest_clean=false diverged from render_px(true) -- S3 must not change "
+                     "observable behaviour when the filter is disabled\n");
+        ok = false;
+    }
+    if (fails_negctrl == 0) {
+        std::printf("unit s3 FAIL: negative control (dest_clean=true claimed on a dirty background) never "
+                     "diverged -- the suite is not detecting that the bitmap filters real work\n");
+        ok = false;
+    }
+    if (ok) std::printf("unit s3 PASS\n");
+    return ok;
 }
 
 static bool run_fuzz_pass(int n, int replay_mode, const std::string& roms_dir, unsigned seed, bool negctrl,
@@ -1960,7 +2099,7 @@ static void print_usage(const char* argv0)
         "usage: %s [selftest|unit|fuzz|replay|golden|bench] [subcmd] [--roms <dir>] "
         "[--frames <dir>] [--seed N] [--negctrl]\n"
         "  selftest (default)  - S0.7 twin-fidelity + oracle-fidelity check\n"
-        "  unit [s1a|s1b|s1c|s2a|s2b|s2c]  - S1.4/S2.4 proofs (all six if omitted)\n"
+        "  unit [s1a|s1b|s1c|s2a|s2b|s2c|s3]  - S1.4/S2.4/S3.4 proofs (all seven if omitted)\n"
         "  fuzz [n]            - n random sprite lists vs render_px (S1.4); --negctrl for the negative control\n"
         "  replay              - F1/F2 classifier over a -dumpspr capture set\n"
         "  golden              - print render_px FNV-1a hashes over a capture set\n"

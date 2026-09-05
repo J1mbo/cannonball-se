@@ -146,6 +146,7 @@ private:
     static const int32_t SPR_PEND_MAX      = SPR_LB_LEN - 64;  // above this, render_px (line buffer margin)
     static const int32_t SPR_ROM_PF_ROWS   = 2;                // ROM source-row read-ahead
     static const int32_t SPR_GLOW_RING     = 64;                // S2.1: per-sprite deferred glow-clear ring depth
+    static const int32_t SPR_SHADOW_PF_ROWS = 2;                // S3.2: shadow-destination prefetch depth, in destination-row-groups ahead
 
     // Span record type. GAP produces no output and is never replayed;
     // COLOUR is a store-only run; SHADOW is an inline read-modify-write run.
@@ -216,6 +217,32 @@ private:
     // frame end.
     void glow_flush();
 
+    // ---------------------------------------------------------------------
+    // SPRITE_IMPLEMENTATION_SPEC.md S3 -- per-row shadow-seen bitmap, the
+    // frame-level state the S1 scratch comment above already flagged
+    // ("the only per-frame state is S3's"). Bit d of shadow_rows[d >> 6] is
+    // set the first time this frame a shadow OR touches destination row d
+    // (replay()'s SHADOW branch, before its RMW loop -- and, for the same
+    // reason, draw_sprite_px's two shadow branches: it is render()'s
+    // out-of-envelope fallback within the same dispatch loop, S1.2, so its
+    // shadow writes must be visible to a later fast-path sprite's push on
+    // the same row just as replay()'s own are; empirically required, S3
+    // task notes -- 10,000-list unit s3 failed at ~7% without it, every
+    // failure on a row a fallback record had shadow-written). Bit 12 of a
+    // pixel can only ever be set by such an OR, so a colour glow-clear at a
+    // row whose bit is still 0 is a provable no-op and replay()'s glow push
+    // skips it (S2's push, gated on this bitmap). render() resets the whole
+    // bitmap at the top of every frame: all-zero when the caller proves the
+    // destination's bit 12 is already clear everywhere (dest_clean, i.e.
+    // video.cpp's fg_enabled -- the road foreground repainted every row
+    // this frame), all-ones otherwise (every row "already touched," which
+    // disables the filter -- the conservative choice whenever a stale bit
+    // 12 from an earlier frame cannot be ruled out, e.g. map/music screens
+    // where fg_enabled is false). 8*64 = 512 rows covers every s16_height
+    // this game ships (max S16_HEIGHT*2 hires, globals.hpp) with margin.
+    // ---------------------------------------------------------------------
+    uint64_t shadow_rows[8];
+
     // The fast in-envelope path (S1.2): closed-form vertical loop
     // (src(d) = (d*zoom) >> 9) grouping destination rows that share a source
     // row, decode-once/replay-many per group. pend is passed in from
@@ -241,6 +268,14 @@ private:
     long long stat_glow_suppressed_rtl = 0;
     long long stat_glow_changed = 0;
     long long stat_glow_flush_full = 0;
+
+    // S3.5 coverage counter: colour glow-clears skipped because the target
+    // row's shadow_rows bit was still 0 (no shadow OR has touched that row
+    // this frame -- a provable no-op). Expected mostly-zero when
+    // dest_clean is false (the bitmap starts all-ones, nothing is ever
+    // filtered) and non-zero over real in-game frames with dest_clean true
+    // (sky rows above any shadow-casting sprite).
+    long long stat_shadow_bitmap_filtered = 0;
 #endif
 
 #ifdef CB_RENDER_TEST

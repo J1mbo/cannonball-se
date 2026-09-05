@@ -74,6 +74,14 @@
 
 hwsprites::hwsprites() : glow(PIXEL_ACCURACY != 0)
 {
+    // SPRITE_IMPLEMENTATION_SPEC.md S3.2: default shadow_rows to all-ones
+    // (the "not provably clean" state, disabling the filter) so any caller
+    // that drives decode_row/replay/draw_sprite_fast directly -- the S1/S2
+    // unit tests, and S2's own draw_sprite_fast(glow=true) target chief
+    // among them -- sees the same unfiltered push behaviour as before S3
+    // without having to call render() first. render() itself overwrites the
+    // whole array at the top of every frame regardless.
+    std::fill_n(shadow_rows, std::size(shadow_rows), ~0ull);
 }
 
 hwsprites::~hwsprites()
@@ -222,9 +230,14 @@ void hwsprites::load_sprite_ram(const uint16_t* buf)
 
 void hwsprites::render(uint16_t* pixels, uint8_t priority, bool dest_clean)
 {
-    // SPRITE_IMPLEMENTATION_SPEC.md S1.2/S3.2: dest_clean will gate S3's
-    // shadow_rows bitmap; S1 does not use it yet.
-    (void)dest_clean;
+    // SPRITE_IMPLEMENTATION_SPEC.md S3.2: reset the per-row shadow-seen
+    // bitmap for this frame. All-zero only when the caller proves bit 12 is
+    // already clear on every row before the sprite pass starts (dest_clean,
+    // video.cpp's fg_enabled); otherwise all-ones, so every row reads as
+    // "already touched" and replay()'s glow-push filter below never skips
+    // anything (the conservative default whenever a stale bit 12 from an
+    // earlier frame cannot be ruled out).
+    std::memset(shadow_rows, dest_clean ? 0x00 : 0xff, sizeof(shadow_rows));
 
     // ---------------------------------------------------------------------
     // SPRITE_IMPLEMENTATION_SPEC.md S1.2: dispatch. Each engine-emitted
@@ -404,6 +417,36 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
     const int32_t scrn_width = (int32_t)config.s16_width;
     uint16_t* const base = pixels + (size_t)r.top * scrn_width + r.xpos;
 
+    // SPRITE_IMPLEMENTATION_SPEC.md S3.2: shadow-destination prefetch, up to
+    // SPR_SHADOW_PF_ROWS destination-row-groups' worth ahead of this one, at
+    // this row's own SHADOW spans' x-range -- consecutive source rows lie at
+    // nearly the same x (DESIGN_REVIEW_BANDWIDTH.md section 4, amendment 2:
+    // a plain one-row-ahead prefetch undersizes a 200-250 cycle miss under
+    // bus contention; two rows' worth of decode time covers it). Issued
+    // before any of this row's own RMW work below, for the longest possible
+    // head start; touches nothing (cb_prefetch_w only, PRFM PSTL1KEEP /
+    // __builtin_prefetch(p,1,3), a no-op on MSVC), and is bounds-checked
+    // against d_hi so it never names a row past the sprite's own extent.
+    {
+        const int32_t d_hi = std::min<int32_t>(r.H, (int32_t)config.s16_height - r.top);
+        const int32_t pf_hi = std::min<int32_t>(db + SPR_SHADOW_PF_ROWS * (db - da), d_hi);
+        if (pf_hi > db) {
+            for (int32_t k = 0; k + 1 < nrec; k++) {
+                if (rec[k].type != SPR_SHADOW) continue;
+                const int32_t lo = std::max<int32_t>(rec[k].pos, cx0);
+                const int32_t hi = std::min<int32_t>(rec[k + 1].pos, cx1);
+                if (hi <= lo) continue;
+                for (int32_t d = db; d < pf_hi; d++) {
+                    uint16_t* const rowp = base + (size_t)d * scrn_width;
+                    uintptr_t p = (uintptr_t)(rowp + lo) & ~(uintptr_t)63;
+                    const uintptr_t p_last = (uintptr_t)(rowp + hi - 1);
+                    for (; p <= p_last; p += 64)
+                        cb_prefetch_w((const void*)p);
+                }
+            }
+        }
+    }
+
     for (int32_t k = 0; k + 1 < nrec; k++) {
         if (rec[k].type == SPR_GAP) continue;
 
@@ -455,12 +498,35 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
                         stat_glow_suppressed_rtl++;
 #endif
                     } else {
-                        glow_push(col + (size_t)d * scrn_width);
+                        // SPRITE_IMPLEMENTATION_SPEC.md S3.2: bit 12 can only
+                        // ever have been set by a shadow OR (replay's SHADOW
+                        // branch below, or an all-ones bitmap when the frame
+                        // is not provably clean), so a clear on a row whose
+                        // shadow_rows bit is still 0 is a provable no-op --
+                        // skip the push (and its eventual destination load
+                        // at the flush) entirely.
+                        const int32_t y = r.top + d;
+                        if ((shadow_rows[y >> 6] >> (y & 63)) & 1ull) {
+                            glow_push(col + (size_t)d * scrn_width);
+                        }
+#ifdef CB_SPRITE_STATS
+                        else {
+                            stat_shadow_bitmap_filtered++;
+                        }
+#endif
                     }
                 }
             }
         } else { // SPR_SHADOW: inline read-modify-write, never deferred, never batched across rows
             for (int32_t d = da; d < db; d++) {
+                // SPRITE_IMPLEMENTATION_SPEC.md S3.2: mark this destination
+                // row as shadow-touched before the RMW below, so any glow
+                // push depending on it (this row, this sprite, or a later
+                // one) sees the bit set. Setting it here, before the OR,
+                // guarantees this for the same row (the only ordering S3.3
+                // requires).
+                const int32_t y = r.top + d;
+                shadow_rows[y >> 6] |= 1ull << (y & 63);
                 uint16_t* rowp = base + (size_t)d * scrn_width;
                 for (int32_t p = lo; p < hi; p++)
                     rowp[p] |= S16_PALETTE_ENTRIES;
@@ -692,6 +758,18 @@ void hwsprites::draw_sprite_px(const SpriteRec& r, uint16_t* pixels, bool glow)
                     if (x < x1 || x >= x2) continue;
                     const unsigned n = ex[q];
                     if (r.shadow && n == 0xA) {
+                        // SPRITE_IMPLEMENTATION_SPEC.md S3.2/S3.3: mark this
+                        // destination row shadow-touched, exactly as
+                        // replay()'s SHADOW branch does, so a later fast-path
+                        // sprite's glow push on this same row (this function
+                        // is the out-of-envelope fallback within the same
+                        // render() dispatch loop replay() serves) is never
+                        // filtered by a bitmap this function's own shadow
+                        // writes left stale. Harmless when draw_sprite_px is
+                        // called standalone via render_px() -- nothing reads
+                        // shadow_rows outside a render() call, which resets
+                        // the whole bitmap at its own top regardless.
+                        shadow_rows[y >> 6] |= 1ull << (y & 63);
                         row[x] |= S16_PALETTE_ENTRIES;
                     } else if (n != 0 && n != 15) {
                         if (glow && x > x1) row[x - 1] &= 0xfff;
@@ -704,6 +782,18 @@ void hwsprites::draw_sprite_px(const SpriteRec& r, uint16_t* pixels, bool glow)
                     if (x < x1 || x >= x2) continue;
                     const unsigned n = ex[q];
                     if (r.shadow && n == 0xA) {
+                        // SPRITE_IMPLEMENTATION_SPEC.md S3.2/S3.3: mark this
+                        // destination row shadow-touched, exactly as
+                        // replay()'s SHADOW branch does, so a later fast-path
+                        // sprite's glow push on this same row (this function
+                        // is the out-of-envelope fallback within the same
+                        // render() dispatch loop replay() serves) is never
+                        // filtered by a bitmap this function's own shadow
+                        // writes left stale. Harmless when draw_sprite_px is
+                        // called standalone via render_px() -- nothing reads
+                        // shadow_rows outside a render() call, which resets
+                        // the whole bitmap at its own top regardless.
+                        shadow_rows[y >> 6] |= 1ull << (y & 63);
                         row[x] |= S16_PALETTE_ENTRIES;
                     } else if (n != 0 && n != 15) {
                         if (glow && x > x1) row[x - 1] &= 0xfff;

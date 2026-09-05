@@ -347,7 +347,12 @@ void Video::prepare_frame()
         // build.
         sprite_layer->render_px(pixels, 8, sprite_layer->get_glow());
 #else
-        sprite_layer->render(pixels, 8);
+        // SPRITE_IMPLEMENTATION_SPEC.md S3.2: dest_clean == fg_enabled --
+        // when the road foreground repainted every row this frame, bit 12
+        // is already clear everywhere before the sprite pass starts, so
+        // render()'s per-row shadow bitmap can start all-zero (map/music
+        // screens leave fg_enabled false, the conservative path).
+        sprite_layer->render(pixels, 8, fg_enabled);
 #endif
         const clk::time_point t2 = clk::now();
 
