@@ -1,0 +1,3 @@
+tools/sprite_bench/test/build/
+tools/sprite_bench/test/*_test
+tools/sprite_bench/test/*_test_scalar

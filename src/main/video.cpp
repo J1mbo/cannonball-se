@@ -33,6 +33,14 @@
 
 #include "sdl2/rendersurface.hpp"
 
+#ifdef CB_SPR_DUMP
+#include "main.hpp"   // -dumpspr command-line option (cannonball::dumpspr_*)
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+#endif
+
 Video video;
 
 Video::Video(void)
@@ -175,6 +183,73 @@ void Video::set_shadow_intensity(float f)
     renderer->set_shadow_intensity(f);
 }
 
+#ifdef CB_SPR_DUMP
+// ---------------------------------------------------------------------------
+// Sprite capture (-dumpspr <dir> <interval> <count> command-line option;
+// SPRITE_IMPLEMENTATION_SPEC.md S0.6). Captures the sprite RAM plus the S16
+// buffer immediately before and after the sprite pass, so real sprite lists
+// (with their real lazy-table history, which reproduces F1) can be replayed
+// against the tools/sprite_bench/test driver's oracle later. One call site,
+// in prepare_frame() around sprite_layer->render() below; parsed in
+// main.cpp next to -dump.
+//
+// File format v1, little-endian, one file per captured frame,
+// "<dir>/spr_%06u.bin":
+//   offset  size          field
+//   0       8             magic "CBSPRD01"
+//   8       2             s16_width      10  2   s16_height     12  2   s16_x_off
+//   14      1             hires          15  1   widescreen     16  1   hiresprites
+//   17      1             fg_enabled (the dest_clean value, S3)   18  1   glow
+//   19      1             reserved 0
+//   20      2             x1             22  2   x2
+//   24      4             frame_no (video.prof_frames)
+//   28      4096          ramBuff (0x800 x uint16, sprite_ram_buffer())
+//   4124    W*H*2         pixels before the sprite pass
+//   +       W*H*2         pixels after the sprite pass (the shipped output,
+//                         real session history)
+// ---------------------------------------------------------------------------
+static void write_sprdump_frame(const std::string& dir, uint32_t frame_no,
+                                 uint16_t s16_width, uint16_t s16_height, uint16_t s16_x_off,
+                                 bool hires, bool widescreen, bool hiresprites,
+                                 bool fg_enabled, bool glow, uint16_t x1, uint16_t x2,
+                                 const uint16_t* ram, const uint16_t* pre, const uint16_t* post)
+{
+    char path[1024];
+    std::snprintf(path, sizeof(path), "%s/spr_%06u.bin", dir.c_str(), frame_no);
+
+    FILE* f = std::fopen(path, "wb");
+    if (!f) {
+        std::fprintf(stderr, "dumpspr: unable to open '%s' for writing\n", path);
+        return;
+    }
+
+    unsigned char hdr[28] = {0};
+    std::memcpy(&hdr[0], "CBSPRD01", 8);
+    hdr[8]  = (unsigned char)(s16_width & 0xff);       hdr[9]  = (unsigned char)(s16_width >> 8);
+    hdr[10] = (unsigned char)(s16_height & 0xff);      hdr[11] = (unsigned char)(s16_height >> 8);
+    hdr[12] = (unsigned char)(s16_x_off & 0xff);       hdr[13] = (unsigned char)(s16_x_off >> 8);
+    hdr[14] = hires ? 1 : 0;
+    hdr[15] = widescreen ? 1 : 0;
+    hdr[16] = hiresprites ? 1 : 0;
+    hdr[17] = fg_enabled ? 1 : 0;
+    hdr[18] = glow ? 1 : 0;
+    hdr[19] = 0; // reserved
+    hdr[20] = (unsigned char)(x1 & 0xff);              hdr[21] = (unsigned char)(x1 >> 8);
+    hdr[22] = (unsigned char)(x2 & 0xff);              hdr[23] = (unsigned char)(x2 >> 8);
+    hdr[24] = (unsigned char)(frame_no & 0xff);
+    hdr[25] = (unsigned char)((frame_no >> 8) & 0xff);
+    hdr[26] = (unsigned char)((frame_no >> 16) & 0xff);
+    hdr[27] = (unsigned char)((frame_no >> 24) & 0xff);
+
+    const std::size_t px = (std::size_t)s16_width * (std::size_t)s16_height;
+    std::fwrite(hdr, 1, sizeof(hdr), f);
+    std::fwrite(ram, sizeof(uint16_t), 0x800, f);
+    std::fwrite(pre, sizeof(uint16_t), px, f);
+    std::fwrite(post, sizeof(uint16_t), px, f);
+    std::fclose(f);
+}
+#endif // CB_SPR_DUMP
+
 void Video::prepare_frame()
 {
     // Renderer Specific Frame Setup
@@ -243,8 +318,50 @@ void Video::prepare_frame()
         }
 #endif
 
+#ifdef CB_SPR_DUMP
+        // S0.6: decide up front whether this frame is being captured, and if
+        // so snapshot the pre-sprite S16 buffer now (before the pass
+        // overwrites it) plus the frame's config/ramBuff. The post-sprite
+        // snapshot and the actual file write happen right after the render
+        // call below, once we have the shipped output too.
+        static uint32_t cb_sprdump_seen = 0;
+        static uint32_t cb_sprdump_written = 0;
+        std::vector<uint16_t> cb_sprdump_pre;
+        bool cb_sprdump_capture_this_frame = false;
+        if (cannonball::dumpspr_enabled && cb_sprdump_written < (uint32_t)cannonball::dumpspr_count) {
+            cb_sprdump_seen++;
+            if (cb_sprdump_seen % (uint32_t)cannonball::dumpspr_interval == 0) {
+                cb_sprdump_capture_this_frame = true;
+                const std::size_t px = (std::size_t)config.s16_width * config.s16_height;
+                cb_sprdump_pre.assign(pixels, pixels + px);
+            }
+        }
+#endif
+
+#ifdef CB_SPRITE_REF_PX
+        // S0.8 whole-game reference gate: route the sprite pass through the
+        // pixel-serial oracle instead of the shipped renderer, so the
+        // CB_FRAME_CKSUM checksum can be compared against the shipped
+        // build's at the same glow setting (-noglow / default). CMake
+        // option SPRITE_REF_PX, default OFF; never defined for a release
+        // build.
+        sprite_layer->render_px(pixels, 8, sprite_layer->get_glow());
+#else
         sprite_layer->render(pixels, 8);
+#endif
         const clk::time_point t2 = clk::now();
+
+#ifdef CB_SPR_DUMP
+        if (cb_sprdump_capture_this_frame) {
+            write_sprdump_frame(cannonball::dumpspr_dir, prof_frames + 1,
+                                 config.s16_width, config.s16_height, config.s16_x_off,
+                                 config.video.hires != 0, config.video.widescreen != 0, config.video.hiresprites != 0,
+                                 fg_enabled, sprite_layer->get_glow(),
+                                 sprite_layer->get_x1(), sprite_layer->get_x2(),
+                                 sprite_layer->sprite_ram_buffer(), cb_sprdump_pre.data(), pixels);
+            cb_sprdump_written++;
+        }
+#endif
         tile_layer->render_text_layer(pixels, 1);
         const clk::time_point t3 = clk::now();
 

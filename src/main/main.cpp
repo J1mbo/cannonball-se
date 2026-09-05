@@ -190,6 +190,14 @@ int               cannonball::dump_interval = 30;
 int               cannonball::dump_count    = 60;
 std::atomic<bool> cannonball::dump_finished{false};
 
+#ifdef CB_SPR_DUMP
+// Sprite capture facility (-dumpspr; see main.hpp for details)
+bool              cannonball::dumpspr_enabled  = false;
+std::string       cannonball::dumpspr_dir      = "";
+int               cannonball::dumpspr_interval = 37;
+int               cannonball::dumpspr_count    = 300;
+#endif
+
 // ------------------------------------------------------------------------------------------------
 // Main Variables and Pointers
 // ------------------------------------------------------------------------------------------------
@@ -878,6 +886,58 @@ static bool parse_command_line(int argc, char* argv[]) {
                        << "' every " << cannonball::dump_interval << " frames, "
                        << cannonball::dump_count << " frames total, then will quit.\n";
         }
+#ifdef CB_SPR_DUMP
+        else if (strcmp(argv[i], "-dumpspr") == 0 && i+1 < argc) {
+            // -dumpspr <dir> [interval] [count] (SPRITE_IMPLEMENTATION_SPEC.md
+            // S0.6). Writes the sprite RAM plus the S16 buffer before/after
+            // the sprite pass every 'interval' rendered frames (default 37)
+            // until 'count' frames have been written (default 300). Unlike
+            // -dump, does not request a shutdown once done -- capture is
+            // meant to run through an attract cycle or a recorded gameplay
+            // session. See video.cpp (write_sprdump_frame) for file format.
+            auto is_uint = [](const char* s) -> bool {
+                if (!s || !*s) return false;
+                for (const char* p = s; *p; p++)
+                    if (!std::isdigit(static_cast<unsigned char>(*p))) return false;
+                return true;
+            };
+            cannonball::dumpspr_dir      = argv[i+1];
+            cannonball::dumpspr_interval = 37;
+            cannonball::dumpspr_count    = 300;
+            if (i+2 < argc && is_uint(argv[i+2])) {
+                cannonball::dumpspr_interval = std::max(1, std::atoi(argv[i+2]));
+                if (i+3 < argc && is_uint(argv[i+3])) {
+                    cannonball::dumpspr_count = std::max(1, std::atoi(argv[i+3]));
+                }
+            }
+            cannonball::dumpspr_enabled = true;
+            std::cout << "Sprite dump enabled: writing to '" << cannonball::dumpspr_dir
+                       << "' every " << cannonball::dumpspr_interval << " frames, "
+                       << cannonball::dumpspr_count << " frames total.\n";
+        }
+#endif
+        else if (strcmp(argv[i], "-noglow") == 0) {
+            // SPRITE_IMPLEMENTATION_SPEC.md S0.2: glow is a runtime member
+            // (hwsprites::glow), initialised from PIXEL_ACCURACY and
+            // settable here; not yet consulted by the shipped render()
+            // itself (that lands with S1/S2), so this currently affects
+            // only CB_SPRITE_REF_PX reference builds and -dumpspr's
+            // recorded header field.
+            video.sprite_layer->set_glow(false);
+            std::cout << "Sprite glow (hardware pixel accuracy) disabled.\n";
+        }
+        else if (strcmp(argv[i], "-glow") == 0) {
+            video.sprite_layer->set_glow(true);
+            std::cout << "Sprite glow (hardware pixel accuracy) enabled.\n";
+        }
+        else if (strcmp(argv[i], "-spritereplay") == 0 && i+1 < argc) {
+            // -spritereplay N (S1 stub): selects the colour-replay strategy
+            // (0 = D, 1 = D') once draw_sprite_fast exists; harmless no-op
+            // before S1 beyond recording the value.
+            video.sprite_layer->set_replay_mode(std::atoi(argv[i+1]));
+            std::cout << "Sprite replay mode set to " << video.sprite_layer->get_replay_mode()
+                       << " (no effect before S1).\n";
+        }
         else if (   (strcmp(argv[i], "-help") == 0)  ||
                     (strcmp(argv[i], "--help") == 0) ||
                     (strcmp(argv[i], "-h") == 0)     ||
@@ -898,6 +958,15 @@ static bool parse_command_line(int argc, char* argv[]) {
                          "                     : Write NTSC filter input frames to <dir> every 'interval'\n" <<
                          "                       rendered frames (default 30) until 'count' frames have\n" <<
                          "                       been written (default 60), then quit\n\n" <<
+#ifdef CB_SPR_DUMP
+                         "-dumpspr <dir> [interval] [count]\n" <<
+                         "                     : Write sprite RAM/frame captures to <dir> every 'interval'\n" <<
+                         "                       rendered frames (default 37) until 'count' frames have\n" <<
+                         "                       been written (default 300); does not quit\n\n" <<
+#endif
+                         "-noglow / -glow      : Disable/enable sprite glow (hardware pixel accuracy)\n" <<
+                         "-spritereplay N      : Select the sprite colour-replay strategy (no effect\n" <<
+                         "                       before the S1 renderer rewrite)\n\n" <<
                          "CannonBall-SE man page is in the res folder. Open it with 'man -l docs/cannonball-se.6'" << std::endl;
             _Exit(0);
         }

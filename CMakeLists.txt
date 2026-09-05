@@ -67,6 +67,10 @@ option(PROFILE_WITH_CALLGRIND  "Reduce inlining for cleaner callgrind graphs" OF
 # --- Pixel accuracy mode ---
 option(PIXEL_ACCURACY "Enable pixel-accurate sprite rendering" ON)
 
+# --- Sprite renderer test aids (SPRITE_IMPLEMENTATION_SPEC.md S0.2) ---
+option(SPRITE_DUMP "Enable -dumpspr sprite RAM/frame capture (test aid, default OFF)" OFF)
+option(SPRITE_REF_PX "Route the sprite pass through the pixel-serial oracle (render_px) instead of the shipped renderer (S0.8 whole-game reference gate, default OFF)" OFF)
+
 # --- Option for MP3 playback ---
 option(WITH_MP3 "Enable MP3 playback via mpg123" ON)
 
@@ -281,6 +285,13 @@ if(PIXEL_ACCURACY)
     target_compile_definitions(cannonball-se PRIVATE PIXEL_ACCURACY=1)
 else()
     target_compile_definitions(cannonball-se PRIVATE PIXEL_ACCURACY=0)
+endif()
+
+if(SPRITE_DUMP)
+    target_compile_definitions(cannonball-se PRIVATE CB_SPR_DUMP=1)
+endif()
+if(SPRITE_REF_PX)
+    target_compile_definitions(cannonball-se PRIVATE CB_SPRITE_REF_PX=1)
 endif()
 
 # --- Dependencies: SDL2 (robust handling), TinyXML2, EGL/GLESv2 -------------------

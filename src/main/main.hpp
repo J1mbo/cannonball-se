@@ -58,4 +58,21 @@ namespace cannonball
     // The main loop polls this and performs a normal, clean shutdown via
     // cannonball::state = STATE_QUIT, rather than quitting from a render thread.
     extern std::atomic<bool> dump_finished;
+
+#ifdef CB_SPR_DUMP
+    // -------------------------------------------------------------------
+    // Sprite capture facility (-dumpspr <dir> [interval] [count] command
+    // line option; SPRITE_IMPLEMENTATION_SPEC.md S0.6). When dumpspr_enabled
+    // is true, Video::prepare_frame() writes the sprite RAM plus the S16
+    // buffer before/after the sprite pass for every dumpspr_interval-th
+    // rendered frame to dumpspr_dir, until dumpspr_count frames have been
+    // written. See video.cpp (write_sprdump_frame) for the file format.
+    // Runs to completion on its own (unlike -dump, it does not request a
+    // shutdown); build with CMake option SPRITE_DUMP, default OFF.
+    // -------------------------------------------------------------------
+    extern bool        dumpspr_enabled;
+    extern std::string dumpspr_dir;
+    extern int         dumpspr_interval;
+    extern int         dumpspr_count;
+#endif
 }

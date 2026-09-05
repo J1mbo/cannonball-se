@@ -1,0 +1,34 @@
+# S0.7 golden hashes: render_px(glow) FNV-1a 64 (video.cpp's rolling-hash
+# form) over a 20-frame -dumpspr capture set. `replay` recomputes these on
+# every run and fails on drift.
+#
+# Capture: hires, non-widescreen (hires_nw), real ROMs (Outrun revision B),
+# attract mode from a cold start, single-threaded/deterministic:
+#   ./cannonball-se -t 1 -perftest -cfgfile <hires_nw.xml> -dumpspr <dir> 5 20
+# Reproduce the hashes: sprite_test golden --roms <dir> --frames <dir>
+#
+# `replay` on this same set: 4918 shipped-vs-oracle differing pixels across
+# 72 records, all attributed to F1, 0 F2, 0 unclassified -- see the S0 task
+# report for the full run.
+#
+# file                    glow_off              glow_on
+spr_000005.bin  0x95b54f22f633d288  0x2aa2fe5688b6f288
+spr_000010.bin  0x4f02d520f66d2e87  0xc2570ea288eb5e87
+spr_000015.bin  0x7a5980a0e8ba6ffc  0x8d9ca84288e6affc
+spr_000020.bin  0xa994810da71e9250  0xb3d6b43964aaf250
+spr_000025.bin  0xda686d43de509cd9  0xf68e8019eaa14cd9
+spr_000030.bin  0x733ed07b3e5f18bd  0x18cafa3b1fef48bd
+spr_000035.bin  0x93c8da56ea0aa42d  0x4f90c80d3e6c942d
+spr_000040.bin  0x3abb7990bb78afe3  0x443245fc83cc9fe3
+spr_000045.bin  0x2512a55972935465  0xc1226816228a5465
+spr_000050.bin  0x9748d5754cdfd1e4  0x5ef7e820d61151e4
+spr_000055.bin  0xee1ecc38a8204a1d  0x12b74397816b7a1d
+spr_000060.bin  0x4c33651bf269ef1b  0x3370d564054fef1b
+spr_000065.bin  0x882d75fe946d8c76  0x05d13c1b3f09ac76
+spr_000070.bin  0x17d00b886b8b8468  0xea30a3a10377f468
+spr_000075.bin  0xaae7a75f2e87a8ab  0x3c142ef9d0cbd8ab
+spr_000080.bin  0x4577adceea477562  0x42f9ae3faf728562
+spr_000085.bin  0x1a6860d2d1784801  0xb509294844822801
+spr_000090.bin  0x2b2b3da7a1345da8  0xd456899039aafda8
+spr_000095.bin  0x9f522b576c8d9b21  0x0a1079e968cd6b21
+spr_000100.bin  0x3162bfcb32484604  0x4266cc750c673604
