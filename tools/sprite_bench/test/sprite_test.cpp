@@ -37,11 +37,15 @@
                  non-matching directory (no capture was made available to
                  this run) -- see the task report for how to produce one.
 
-      unit [s1a|s1b|s1c] - S1.4's schedule/nibrev/record-partition proofs
-                 against the LINEBUF core (hwsprites::sched/decode_row); no
-                 subcmd runs all three. bench is not yet implemented (S1.5
-                 lands with the D/D' measurement pass; use in-game
-                 prof_ns_sprites/CB_SPRITE_PMU meanwhile).
+      unit [s1a|s1b|s1c|s2a|s2b|s2c] - S1.4's schedule/nibrev/record-partition
+                 proofs against the LINEBUF core (hwsprites::sched/decode_row),
+                 plus S2.4's glow proofs (s2a: DESIGN_GLOW.md Test 1, output-
+                 pixel space, against draw_sprite_fast; s2b: the source-space
+                 companion, real zoom/flip variety; s2c: DESIGN_GLOW.md Test 2,
+                 deferral granularity, with an end-of-frame negative control
+                 that must fail). No subcmd runs all six. bench is not yet
+                 implemented (S1.5 lands with the D/D' measurement pass; use
+                 in-game prof_ns_sprites/CB_SPRITE_PMU meanwhile).
 
       fuzz [n]  - n (default 200000) random sprite lists of 1-122 records
                  per trial, edge-biased (S0.7), against render_px(false);
@@ -132,6 +136,22 @@ struct SpriteTestAccess
     static void replay(hwsprites& hw, const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t db, int32_t cx0, int32_t cx1) {
         hw.replay(r, pixels, da, db, cx0, cx1);
     }
+    // S2.4: draw_sprite_fast is the unit s2a/s2b target named by the spec
+    // ("... against draw_sprite_fast(glow = true)") -- it is the only path
+    // that owns the glow ring (draw_sprite_px implements glow inline and
+    // needs no ring), so tests drive it directly rather than through
+    // render()'s dispatch (which would also require the record to fall in
+    // the fast envelope, already covered separately by fuzz).
+    static void draw_sprite_fast(hwsprites& hw, const SpriteRec& r, uint16_t* pixels, int32_t pend) {
+        hw.draw_sprite_fast(r, pixels, pend);
+    }
+    // S2.4c (Test 2 / the end-of-frame negative control): calling
+    // decode_row+replay directly (bypassing draw_sprite_fast) lets a test
+    // push several sprites' glow clears onto the ring without the
+    // per-sprite flush draw_sprite_fast normally does at its own end, then
+    // flush once here to simulate "end of frame" deferral -- the unsafe
+    // granularity DESIGN_GLOW.md section 3 rejects.
+    static void glow_flush(hwsprites& hw) { hw.glow_flush(); }
     static int32_t nrec(hwsprites& hw) { return hw.nrec; }
     static SpanRec rec_at(hwsprites& hw, int32_t i) { return hw.rec[i]; }
     static uint16_t line_at(hwsprites& hw, int32_t i) { return hw.line[i]; }
@@ -160,6 +180,26 @@ struct SpriteTestAccess
     static void reset_stat_fallback(hwsprites& hw) {
 #ifdef CB_SPRITE_STATS
         hw.stat_fallback = 0;
+#else
+        (void)hw;
+#endif
+    }
+
+    // S2.4/S2.5 coverage counters. -1 (and a no-op reset) when
+    // CB_SPRITE_STATS isn't defined, exactly like stat_fallback above; the
+    // driver always builds with it (CMakeLists.txt), so this is defensive
+    // only.
+    struct GlowStats { long long pushed, suppressed_rtl, changed, flush_full; };
+    static GlowStats glow_stats(hwsprites& hw) {
+#ifdef CB_SPRITE_STATS
+        return { hw.stat_glow_pushed, hw.stat_glow_suppressed_rtl, hw.stat_glow_changed, hw.stat_glow_flush_full };
+#else
+        (void)hw; return { -1, -1, -1, -1 };
+#endif
+    }
+    static void reset_glow_stats(hwsprites& hw) {
+#ifdef CB_SPRITE_STATS
+        hw.stat_glow_pushed = hw.stat_glow_suppressed_rtl = hw.stat_glow_changed = hw.stat_glow_flush_full = 0;
 #else
         (void)hw;
 #endif
@@ -848,7 +888,37 @@ static bool run_replay(const std::string& roms_dir, const std::string& frames_di
 
         const std::size_t px = (std::size_t)cap.s16_width * cap.s16_height;
 
-        // A = function under test (S1's render()) on a copy of the captured pre-frame.
+        // S2.4 correctness gate ("replay ... glow forced ON must equal
+        // render_px(glow=true) exactly"): independent of the captured post
+        // frame (which predates S2 and was captured with glow effectively
+        // absent from the fast path -- see the set_glow(false) note below),
+        // run the function under test and the oracle from the *same*
+        // starting frame with glow forced on and require an exact,
+        // unclassified match -- there is no F1/F2-style shipped-hardware
+        // quirk to attribute a glow-on difference to, so any mismatch here
+        // is a hard failure.
+        {
+            hw.set_glow(true);
+            std::vector<uint16_t> Ag(cap.pre), Eg(cap.pre);
+            hw.render(Ag.data(), 8);
+            hw.render_px(Eg.data(), 8, true);
+            if (std::memcmp(Ag.data(), Eg.data(), px * 2) != 0) {
+                std::size_t i = 0;
+                while (i < px && Ag[i] == Eg[i]) i++;
+                std::printf("  %-40s GLOW-ON MISMATCH at px=%zu (y=%zu,x=%zu) render=0x%04x render_px=0x%04x\n",
+                            path.c_str(), i, i / cap.s16_width, i % cap.s16_width, Ag[i], Eg[i]);
+                any_fail = true;
+            }
+        }
+
+        // A = function under test (S1's render()) on a copy of the captured
+        // pre-frame, glow forced off: the F1/F2 classifier below models the
+        // shipped renderer (PIXEL_ACCURACY hardcoded off, S0.2), and the
+        // capture's own post frame was produced before S2 gave the fast
+        // path any glow behaviour at all -- draw_sprite_fast's replay()
+        // must not now diverge from that capture just because hw's glow
+        // member defaults to true (PIXEL_ACCURACY's default, S0.2).
+        hw.set_glow(false);
         std::vector<uint16_t> A(cap.pre);
         hw.render(A.data(), 8);
 
@@ -1249,12 +1319,437 @@ static bool run_unit_s1c(unsigned seed)
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// unit s2 (SPRITE_IMPLEMENTATION_SPEC.md S2.4): glow correctness.
+//
+// s2a ports DESIGN_GLOW.md's Test 1 (the single-row rule, output-pixel
+// space) against draw_sprite_fast(glow=true): the boundary cases named in
+// the task report (clip-edge run at lo==cx0 and lo==cx0+1, the rtl
+// shadow-before-colour boundary, a colour run of length 1, adjacent colour
+// runs), plus an exhaustive per-pixel type sweep over a short row, both
+// directions, and a systematic x1 sweep across every possible clip-edge
+// alignment within the row (see the task report for why this replaces
+// DESIGN_GLOW.md's three fixed windows). s2b is the source-space companion
+// (DESIGN_GLOW.md 5.2): random real nibble rows across the shipping zoom
+// bands, both flip values, both directions, single-row sprites, both glow
+// values. s2c ports Test 2 (deferral granularity, DESIGN_GLOW.md section 3):
+// random 2-5 sprite lists in both shadow-before-colour and
+// colour-before-shadow order, with an end-of-frame deferral negative
+// control that must fail.
+//
+// All three bypass parse_record's RAM-field encoding (as unit s1c already
+// does) and build SpriteRec/ROM words directly -- draw_sprite_fast,
+// decode_row, replay and draw_sprite_px only ever consult the *resolved*
+// fields (bank/addr/pitch/flip/shadow/zoom/xpos/top/H/rtl), never the raw
+// ram[] bytes, so this exercises exactly the same code a real capture would
+// while giving the test precise control over the boundary being probed.
+// ---------------------------------------------------------------------------
+
+enum class GlowPixType : uint8_t { Gap = 0, Colour = 1, Shadow = 2 };
+
+// Encodes `types` (output-order, one nibble per output pixel at the
+// zoom=0x200 identity mapping -- DESIGN_GLOW.md Test 1's "output-pixel
+// space") into up to two consecutive ROM words at sprites[base]/
+// sprites[base+1], fully overwriting both (so any position beyond
+// types.size() is nibble 0 == GAP, harmlessly invisible regardless of how
+// far a caller's clip window extends -- s2a/s2c rely on this to use one
+// generous, fixed right edge instead of computing an exact one per case).
+// r.flip = 0 in every s2a/s2c caller below, so decode_row/draw_sprite_px's
+// own expand loops read exactly this sequence in this order regardless of
+// the r.rtl under test (DESIGN_GLOW.md's direction bit is consulted at
+// apply/replay time, not by re-reading the ROM -- s2a/s2c isolate exactly
+// that bit).
+static void write_glow_row(uint32_t* sprites, int64_t base, const std::vector<GlowPixType>& types)
+{
+    uint32_t words[2] = { 0, 0 };
+    for (std::size_t i = 0; i < types.size() && i < 16; i++) {
+        unsigned nibble = 0x1; // Colour: any value outside {0, 10, 15}
+        if (types[i] == GlowPixType::Gap) nibble = 0x0;
+        else if (types[i] == GlowPixType::Shadow) nibble = 0xA;
+        const std::size_t w = i / 8, k = i % 8;
+        words[w] |= nibble << (unsigned)(28 - 4 * k);
+    }
+    sprites[base] = words[0];
+    sprites[base + 1] = words[1];
+}
+
+static bool run_unit_s2a(unsigned seed)
+{
+    const uint16_t CANVAS_W = 64, CANVAS_H = 4;
+    config.s16_width = CANVAS_W;
+    config.s16_height = CANVAS_H;
+    config.s16_x_off = 0;
+    config.video.hires = 0;
+    config.video.hiresprites = 0;
+
+    std::vector<uint8_t> zeros(SPR_ROM_TOTAL, 0);
+    hwsprites hw;
+    hw.init(zeros.data());
+    uint32_t* sprites = SpriteTestAccess::sprites_ptr(hw);
+
+    PixelBuffer A, B;
+    A.allocate(CANVAS_W, CANVAS_H);
+    B.allocate(CANVAS_W, CANVAS_H);
+
+    long long trials = 0;
+    int fails = 0;
+
+    // Draws `types` via both draw_sprite_fast(glow=true) and
+    // draw_sprite_px(glow=true) from the identical background, over the
+    // whole allocation (front pad + spare rows included, exactly like
+    // fuzz), and reports any mismatch. x2 is fixed generously wide
+    // (write_glow_row's guaranteed zero tail makes the exact value
+    // immaterial); only x1 (the edge glow actually cares about) varies.
+    auto run_case = [&](const char* label, const std::vector<GlowPixType>& types, bool rtl,
+                         uint16_t x1, int32_t xpos, uint32_t bg_seed) {
+        write_glow_row(sprites, 0, types);
+        const int32_t pend = (int32_t)types.size();
+
+        SpriteTestAccess::SpriteRec r{};
+        r.bank = 0; r.addr = 0; r.pitch = 2; r.flip = 0;
+        r.shadow = 1; // enables SHADOW classification for nibble 10; doesn't force any pixel shadow
+        r.zoom = 0x200; // identity: one nibble == one output pixel
+        r.color = 0x800;
+        r.xpos = xpos;
+        r.top = 1;
+        r.ydelta = 1;
+        r.H = 1;
+        r.rtl = rtl;
+
+        SpriteTestAccess::set_clip(hw, x1, CANVAS_W);
+
+        for (std::size_t i = 0; i < A.halfwords; i++) {
+            uint32_t h = (uint32_t)(i * 2654435761u + bg_seed * 40503u);
+            h ^= h >> 15;
+            uint16_t v = (uint16_t)(h & 0xfff); // always < 0x1000: bit 12 clear
+            if ((bg_seed & 1) && ((i ^ bg_seed) % 3 == 0)) v |= 0x1000; // some pixels start bit-12 set
+            A.base[i] = v; B.base[i] = v;
+        }
+
+        SpriteTestAccess::draw_sprite_fast(hw, r, A.pixels, pend);
+        SpriteTestAccess::draw_sprite_px(hw, r, B.pixels, /*glow=*/true);
+
+        trials++;
+        if (std::memcmp(A.base, B.base, A.halfwords * sizeof(uint16_t)) != 0) {
+            fails++;
+            if (fails <= 20) {
+                std::size_t i = 0;
+                while (i < A.halfwords && A.base[i] == B.base[i]) i++;
+                std::printf("  s2a FAIL %-28s rtl=%d x1=%u xpos=%d halfword=%zu fast=0x%04x px=0x%04x\n",
+                            label, rtl, x1, xpos, i, A.base[i], B.base[i]);
+            }
+        }
+    };
+
+    using T = GlowPixType;
+    // (a) run at the clip edge, lo == cx0: colour starts exactly at x1 -- no clear.
+    run_case("edge lo==cx0",            { T::Colour, T::Colour, T::Gap }, false, 0, 0, 1);
+    run_case("edge lo==cx0 rtl",        { T::Colour, T::Colour, T::Gap }, true,  0, 0, 2);
+    // (b) one past the clip edge, lo == cx0 + 1: the clear lands exactly on x1.
+    run_case("edge lo==cx0+1",          { T::Gap, T::Colour, T::Colour }, false, 0, 0, 3);
+    run_case("edge lo==cx0+1 rtl",      { T::Gap, T::Colour, T::Colour }, true,  0, 0, 4);
+    // (d) a colour run of length 1.
+    run_case("colour run length 1",     { T::Gap, T::Colour, T::Gap },    false, 0, 5, 5);
+    run_case("colour run length 1 rtl", { T::Gap, T::Colour, T::Gap },    true,  0, 5, 6);
+    // (e) adjacent colour runs (separated by the smallest possible gap: one
+    // pixel of a different type, since emit() merges same-type runs) --
+    // each gets its own independent clear at its own left neighbour, and a
+    // shadow-separated variant that also exercises the rtl amendment.
+    run_case("adjacent colour runs",        { T::Colour, T::Gap, T::Colour },    false, 0, 5, 7);
+    run_case("adjacent colour runs rtl",    { T::Colour, T::Gap, T::Colour },    true,  0, 5, 8);
+    run_case("adjacent colour/shadow",      { T::Colour, T::Shadow, T::Colour }, false, 0, 5, 9);
+    run_case("adjacent colour/shadow rtl",  { T::Colour, T::Shadow, T::Colour }, true,  0, 5, 10);
+
+    // (c) the rtl shadow-before-colour boundary (DESIGN_GLOW.md section 2's
+    // worked example, reproduced verbatim): background 0x0103 at the
+    // boundary pixel; ltr leaves it untouched (the clear wins, 0x0103), rtl
+    // leaves the shadow set (0x1103).
+    {
+        const std::vector<T> row = { T::Gap, T::Shadow, T::Colour, T::Colour };
+        for (bool rtl : { false, true }) {
+            write_glow_row(sprites, 0, row);
+            SpriteTestAccess::SpriteRec r{};
+            r.bank = 0; r.addr = 0; r.pitch = 2; r.flip = 0; r.shadow = 1;
+            r.zoom = 0x200; r.color = 0x800; r.xpos = 2; r.top = 1; r.ydelta = 1; r.H = 1; r.rtl = rtl;
+            SpriteTestAccess::set_clip(hw, 0, CANVAS_W);
+
+            std::fill_n(A.base, A.halfwords, (uint16_t)0);
+            A.pixels[1 * CANVAS_W + 3] = 0x0103; // (top=1, x=3): the shadow pixel's background
+            std::memcpy(B.base, A.base, A.halfwords * sizeof(uint16_t));
+
+            SpriteTestAccess::draw_sprite_fast(hw, r, A.pixels, 4);
+            SpriteTestAccess::draw_sprite_px(hw, r, B.pixels, true);
+
+            const uint16_t want = rtl ? 0x1103 : 0x0103;
+            trials++;
+            const bool ok = (A.pixels[1 * CANVAS_W + 3] == want) && (B.pixels[1 * CANVAS_W + 3] == want) &&
+                            std::memcmp(A.base, B.base, A.halfwords * sizeof(uint16_t)) == 0;
+            if (!ok) {
+                fails++;
+                std::printf("  s2a FAIL rtl-shadow-boundary rtl=%d fast=0x%04x px=0x%04x want=0x%04x\n",
+                            rtl, A.pixels[1 * CANVAS_W + 3], B.pixels[1 * CANVAS_W + 3], want);
+            }
+        }
+    }
+
+    // Exhaustive per-pixel type sweep over a 7-pixel row (3^7 = 2187
+    // combinations -- a superset, in runs produced, of DESIGN_GLOW.md Test
+    // 1's "every type sequence up to length 7"), both directions, and x1
+    // swept across every position 0..7 (with xpos fixed at 0, cx0 == x1
+    // exactly) so every possible "run at the clip edge" alignment within
+    // the row is hit systematically, not just the two named cases above.
+    const int NPIX = 7;
+    long long combos = 1;
+    for (int i = 0; i < NPIX; i++) combos *= 3;
+    std::vector<T> row(NPIX);
+    bool stop = false;
+    for (long long c = 0; c < combos && !stop; c++) {
+        long long v = c;
+        for (int i = 0; i < NPIX; i++) { row[i] = (T)(v % 3); v /= 3; }
+        for (bool rtl : { false, true }) {
+            if (stop) break;
+            for (uint16_t x1 = 0; x1 <= (uint16_t)NPIX; x1++) {
+                run_case("sweep", row, rtl, x1, /*xpos=*/0,
+                         (uint32_t)(seed + c * 13 + x1 * 7 + (rtl ? 1 : 0)));
+                if (fails > 60) { stop = true; break; }
+            }
+        }
+    }
+
+    std::printf("unit s2a: %s (%lld cases, %d fails)\n", fails == 0 ? "PASS" : "FAIL", trials, fails);
+    return fails == 0;
+}
+
+// unit s2b (DESIGN_GLOW.md 5.2, S2.4): the source-space companion to s2a --
+// real random nibble rows (so 0/15/10 and everything else appear with
+// realistic frequency, as unit s1c's ROM already does) across the shipping
+// zoom bands plus the identity and shrink bands, both flip values, both
+// glow values, single-row sprites (H = 1, so no destination-row grouping is
+// exercised here -- that mechanical loop is already covered by fuzz's real
+// multi-row sprites). x2 is set to exactly xpos + pend for every trial:
+// unlike s2a/s2c's all-zero ROM, this ROM is genuinely random beyond the
+// intended row, so draw_sprite_fast (told pend directly) and draw_sprite_px
+// (which derives its own pend as x2 - xpos, S0.4) must be given the same
+// effective row length or a mismatch here would be an artifact of the
+// harness, not a real bug.
+static bool run_unit_s2b(unsigned seed)
+{
+    const uint16_t CANVAS_W = 400, CANVAS_H = 8;
+    config.s16_width = CANVAS_W;
+    config.s16_height = CANVAS_H;
+    config.s16_x_off = 0;
+    config.video.hires = 0;
+    config.video.hiresprites = 0;
+
+    std::mt19937 rom_rng(seed ^ 0x53324230u); // "S2B0"
+    std::vector<uint8_t> rom(SPR_ROM_TOTAL);
+    fill_random(reinterpret_cast<uint16_t*>(rom.data()), rom.size() / 2, rom_rng);
+
+    hwsprites hw;
+    hw.init(rom.data());
+    std::mt19937 rng(seed ^ 0x53324231u); // "S2B1"
+
+    PixelBuffer A, B;
+    A.allocate(CANVAS_W, CANVAS_H);
+    B.allocate(CANVAS_W, CANVAS_H);
+
+    const int trials_total = 20000;
+    int fails = 0;
+
+    for (int trial = 0; trial < trials_total && fails < 30; trial++) {
+        SpriteTestAccess::SpriteRec r{};
+        r.bank = (int32_t)(rng() % 4);
+        r.addr = (int32_t)(rng() % 0x8000);
+        r.pitch = (int32_t)(1 + rng() % 40);
+        r.flip = (int32_t)(rng() % 2);
+        r.shadow = (uint8_t)(rng() % 2);
+        r.rtl = (rng() % 2) != 0;
+        r.color = 0x800;
+
+        const unsigned band = rng() % 5;
+        uint32_t zoom;
+        if      (band == 0) zoom = 0x80  + rng() % (0x1F8 - 0x80 + 1);  // hi-res shipping, runs 1-4
+        else if (band == 1) zoom = 0x100 + rng() % (0x3F0 - 0x100 + 1); // lo-res shipping
+        else if (band == 2) zoom = 0x100 + rng() % (0x7E0 - 0x100 + 1); // hiresprites shipping
+        else if (band == 3) zoom = 0x200;                                // identity boundary
+        else                zoom = 0x401 + rng() % (0x7ff - 0x401 + 1); // shrink band
+        r.zoom = (int32_t)zoom;
+
+        r.top = 1;
+        r.ydelta = 1;
+        r.H = 1; // single-row sprites (S2.4's s2b scope)
+
+        const int32_t pend = (int32_t)(9 + rng() % 180);
+        r.xpos = (int32_t)(5 + rng() % 50);
+
+        uint16_t x1 = 0;
+        if (rng() % 4 == 0) { // sometimes clip inside the row
+            const int32_t off = (int32_t)(rng() % (unsigned)pend);
+            x1 = (uint16_t)(r.xpos + off);
+        }
+        const uint16_t x2 = (uint16_t)(r.xpos + pend); // exact match, see the function comment
+        SpriteTestAccess::set_clip(hw, x1, x2);
+
+        for (bool glow : { false, true }) {
+            for (std::size_t i = 0; i < A.halfwords; i++) {
+                uint16_t v = (uint16_t)(rng() & 0xfff);
+                if ((i / CANVAS_W) & 1) v |= 0x1000;
+                A.base[i] = v; B.base[i] = v;
+            }
+
+            hw.set_glow(glow); // draw_sprite_fast reads the runtime member directly
+            SpriteTestAccess::draw_sprite_fast(hw, r, A.pixels, pend);
+            SpriteTestAccess::draw_sprite_px(hw, r, B.pixels, glow);
+
+            if (std::memcmp(A.base, B.base, A.halfwords * sizeof(uint16_t)) != 0) {
+                fails++;
+                std::size_t i = 0;
+                while (i < A.halfwords && A.base[i] == B.base[i]) i++;
+                std::printf("  s2b FAIL trial=%d glow=%d zoom=0x%x flip=%d rtl=%d shadow=%u xpos=%d pend=%d "
+                            "x1=%u halfword=%zu fast=0x%04x px=0x%04x\n",
+                            trial, glow, r.zoom, r.flip, r.rtl, r.shadow, r.xpos, pend, x1, i,
+                            A.base[i], B.base[i]);
+            }
+        }
+    }
+
+    std::printf("unit s2b: %s (%d trials x2 glow values)\n", fails == 0 ? "PASS" : "FAIL", trials_total);
+    return fails == 0;
+}
+
+// unit s2c (DESIGN_GLOW.md section 3, S2.4): deferral granularity. Random
+// 2-5 sprite single-pixel-row lists on one destination row, each trial
+// forcing at least one colour/shadow pair that collides at the same
+// address (the counterexample DESIGN_GLOW.md section 3 walks through),
+// alternating which of the pair is listed first across trials. Compares
+// three renderings of the same list from the same background: the real
+// per-sprite-deferral implementation (draw_sprite_fast, each sprite
+// flushing its own ring at its own end, exactly render()'s dispatch loop),
+// an end-of-frame-deferral negative control (decode_row+replay directly,
+// no per-sprite flush, one glow_flush() after the whole list), and the
+// draw_sprite_px oracle. The real implementation must always match the
+// oracle; the negative control must sometimes fail to (proving the suite
+// actually detects the unsafe granularity, not merely reproducing it).
+static bool run_unit_s2c(unsigned seed)
+{
+    const uint16_t CANVAS_W = 64, CANVAS_H = 4;
+    config.s16_width = CANVAS_W;
+    config.s16_height = CANVAS_H;
+    config.s16_x_off = 0;
+    config.video.hires = 0;
+    config.video.hiresprites = 0;
+
+    std::vector<uint8_t> zeros(SPR_ROM_TOTAL, 0);
+    hwsprites hw;
+    hw.init(zeros.data());
+    SpriteTestAccess::set_clip(hw, 0, CANVAS_W);
+    uint32_t* sprites = SpriteTestAccess::sprites_ptr(hw);
+
+    std::mt19937 rng(seed ^ 0x53324330u); // "S2C0"
+
+    struct Sprite { bool is_shadow; int32_t xpos; };
+
+    PixelBuffer Aper, Aeof, E; // per-sprite deferral, end-of-frame deferral (negative control), oracle
+    Aper.allocate(CANVAS_W, CANVAS_H);
+    Aeof.allocate(CANVAS_W, CANVAS_H);
+    E.allocate(CANVAS_W, CANVAS_H);
+
+    const int trials_total = 5000;
+    long long per_fails = 0, eof_mismatches = 0;
+
+    for (int trial = 0; trial < trials_total; trial++) {
+        const int n = 2 + (int)(rng() % 4); // 2..5 sprites
+        std::vector<Sprite> list(n);
+        for (int i = 0; i < n; i++) {
+            list[i].is_shadow = (rng() % 2) != 0;
+            list[i].xpos = 4 + (int32_t)(rng() % (CANVAS_W - 8));
+        }
+        // Force one colliding colour/shadow pair at list positions 0,1, in
+        // both list orders across trials (DESIGN_GLOW.md section 3's
+        // counterexample: the colour sprite's clear and the shadow
+        // sprite's OR must target the same address for deferral order to
+        // matter at all).
+        const bool colour_first = (trial % 2) == 0;
+        const int32_t pair_x = 10 + (int32_t)(rng() % (CANVAS_W - 20));
+        if (colour_first) {
+            list[0] = { false, pair_x + 1 }; // colour's clear targets pair_x
+            list[1] = { true,  pair_x };
+        } else {
+            list[0] = { true,  pair_x };
+            list[1] = { false, pair_x + 1 };
+        }
+
+        // Background: bit 12 clear everywhere, so the shadow OR and any
+        // glow clear are both directly observable.
+        std::fill_n(Aper.base, Aper.halfwords, (uint16_t)0x0106);
+        std::fill_n(Aeof.base, Aeof.halfwords, (uint16_t)0x0106);
+        std::fill_n(E.base,    E.halfwords,    (uint16_t)0x0106);
+
+        std::vector<SpriteTestAccess::SpriteRec> recs(n);
+        for (int i = 0; i < n; i++) {
+            recs[i] = {};
+            recs[i].bank = 0; recs[i].addr = 0; recs[i].pitch = 2; recs[i].flip = 0;
+            recs[i].shadow = list[i].is_shadow ? 1 : 0;
+            recs[i].zoom = 0x200; recs[i].color = 0x800;
+            recs[i].xpos = list[i].xpos; recs[i].top = 1; recs[i].ydelta = 1; recs[i].H = 1; recs[i].rtl = false;
+        }
+        auto row_for = [](bool is_shadow) {
+            return std::vector<GlowPixType>{ is_shadow ? GlowPixType::Shadow : GlowPixType::Colour };
+        };
+
+        // Per-sprite deferral: the real implementation.
+        hw.set_glow(true);
+        for (int i = 0; i < n; i++) {
+            write_glow_row(sprites, 0, row_for(list[i].is_shadow));
+            SpriteTestAccess::draw_sprite_fast(hw, recs[i], Aper.pixels, /*pend=*/1);
+        }
+
+        // End-of-frame deferral: the negative control. decode_row+replay
+        // directly (no per-sprite flush), then one flush for the whole list.
+        for (int i = 0; i < n; i++) {
+            write_glow_row(sprites, 0, row_for(list[i].is_shadow));
+            SpriteTestAccess::decode_row(hw, recs[i], /*j=*/0, /*pend=*/1);
+            SpriteTestAccess::replay(hw, recs[i], Aeof.pixels, /*da=*/0, /*db=*/1,
+                                      /*cx0=*/0 - recs[i].xpos, /*cx1=*/1);
+        }
+        SpriteTestAccess::glow_flush(hw);
+
+        // Oracle: draw_sprite_px, same list order, glow=true.
+        for (int i = 0; i < n; i++) {
+            write_glow_row(sprites, 0, row_for(list[i].is_shadow));
+            SpriteTestAccess::draw_sprite_px(hw, recs[i], E.pixels, /*glow=*/true);
+        }
+
+        if (std::memcmp(Aper.base, E.base, Aper.halfwords * sizeof(uint16_t)) != 0) per_fails++;
+        if (std::memcmp(Aeof.base, E.base, Aeof.halfwords * sizeof(uint16_t)) != 0) eof_mismatches++;
+    }
+
+    std::printf("unit s2c: per-sprite deferral fails=%lld/%d, end-of-frame negative control "
+                "mismatches=%lld/%d (must be > 0)\n", per_fails, trials_total, eof_mismatches, trials_total);
+
+    bool ok = true;
+    if (per_fails != 0) {
+        std::printf("unit s2c FAIL: per-sprite (real) deferral diverged from the oracle\n");
+        ok = false;
+    }
+    if (eof_mismatches == 0) {
+        std::printf("unit s2c FAIL: end-of-frame negative control never diverged -- "
+                     "the suite is not detecting the deferral-granularity bug\n");
+        ok = false;
+    }
+    if (ok) std::printf("unit s2c PASS\n");
+    return ok;
+}
+
 static bool run_unit(const std::string& subcmd, unsigned seed)
 {
     bool ok = true;
     if (subcmd.empty() || subcmd == "s1a") ok &= run_unit_s1a();
     if (subcmd.empty() || subcmd == "s1b") ok &= run_unit_s1b();
     if (subcmd.empty() || subcmd == "s1c") ok &= run_unit_s1c(seed);
+    if (subcmd.empty() || subcmd == "s2a") ok &= run_unit_s2a(seed);
+    if (subcmd.empty() || subcmd == "s2b") ok &= run_unit_s2b(seed);
+    if (subcmd.empty() || subcmd == "s2c") ok &= run_unit_s2c(seed);
     return ok;
 }
 
@@ -1343,11 +1838,12 @@ static void fuzz_fill_background(uint16_t* buf, std::size_t n, uint16_t width, s
     }
 }
 
-static bool run_fuzz_pass(int n, int replay_mode, const std::string& roms_dir, unsigned seed, bool negctrl)
+static bool run_fuzz_pass(int n, int replay_mode, const std::string& roms_dir, unsigned seed, bool negctrl,
+                           bool glow)
 {
     std::vector<uint8_t> rom;
     load_sprite_roms(roms_dir, rom, seed);
-    std::mt19937 rng(seed ^ (unsigned)(0x465A5A31u + replay_mode));
+    std::mt19937 rng(seed ^ (unsigned)(0x465A5A31u + replay_mode) ^ (glow ? 0x9E3779B9u : 0u));
 
     // hwsprites::init() copies the whole 1 MB ROM image into sprites[] (a
     // pure, session-invariant conversion -- render()/render_px() never
@@ -1358,9 +1854,13 @@ static bool run_fuzz_pass(int n, int replay_mode, const std::string& roms_dir, u
     hwsprites hw;
     hw.init(rom.data());
     hw.set_replay_mode(replay_mode);
-    hw.set_glow(false);
+    // S2.4/S1.4: glow forced on or off for the whole pass -- render()'s
+    // fast path (draw_sprite_fast/replay) reads the runtime member directly
+    // (no per-call parameter), exactly as the game's -glow/-noglow flags do.
+    hw.set_glow(glow);
 #ifdef CB_RENDER_TEST
     SpriteTestAccess::set_debug_disable_clip(hw, negctrl);
+    SpriteTestAccess::reset_glow_stats(hw);
 #endif
 
     long long fails = 0, tested = 0;
@@ -1399,29 +1899,49 @@ static bool run_fuzz_pass(int n, int replay_mode, const std::string& roms_dir, u
             std::memcpy(B.base, A.base, npx * sizeof(uint16_t));
 
             hw.render(A.pixels, 8);
-            hw.render_px(B.pixels, 8, false);
+            hw.render_px(B.pixels, 8, glow);
 
             tested++;
             if (std::memcmp(A.base, B.base, npx * sizeof(uint16_t)) != 0) {
                 fails++;
                 if (fails <= 20) {
-                    report_mismatch("render vs render_px", m.name, replay_mode, trial, A.base, B.base, npx,
+                    report_mismatch(glow ? "render(glow=true) vs render_px(true)" : "render vs render_px",
+                                     m.name, replay_mode, trial, A.base, B.base, npx,
                                      config.s16_width, config.s16_height);
                 }
             }
         }
     }
 
-    std::printf("fuzz: replay_mode=%d negctrl=%s trials=%lld(x4 modes) fails=%lld\n",
-                replay_mode, negctrl ? "on" : "off", tested, fails);
+    std::printf("fuzz: replay_mode=%d glow=%s negctrl=%s trials=%lld(x4 modes) fails=%lld\n",
+                replay_mode, glow ? "on" : "off", negctrl ? "on" : "off", tested, fails);
+#ifdef CB_RENDER_TEST
+    if (glow) {
+        // S2.4/S2.5: coverage counters must all be non-zero over a real
+        // fuzz run at glow=true (proves the ring, the rtl suppression and
+        // the "actually changed a value" path are all exercised, not just
+        // reachable).
+        SpriteTestAccess::GlowStats gs = SpriteTestAccess::glow_stats(hw);
+        std::printf("  glow coverage: pushed=%lld suppressed_rtl=%lld changed=%lld flush_full=%lld\n",
+                    gs.pushed, gs.suppressed_rtl, gs.changed, gs.flush_full);
+    }
+#endif
     return fails == 0;
 }
 
 static bool run_fuzz(int n, const std::string& roms_dir, unsigned seed, bool negctrl)
 {
     bool ok = true;
+    // S2.4 correctness gate: glow=false must still match render_px(false)
+    // exactly (the S1 regression check -- glow must be a no-op end to end
+    // when off), and glow=true must match render_px(true) exactly (the
+    // oracle), both replay_mode values, both glow states in one run.
     for (int mode = 0; mode <= 1; mode++) {
-        ok &= run_fuzz_pass(n, mode, roms_dir, seed, negctrl);
+        ok &= run_fuzz_pass(n, mode, roms_dir, seed, negctrl, /*glow=*/false);
+        // The negative control (clip disabled) is a harness self-check
+        // orthogonal to glow -- only run once per replay_mode, at glow=off,
+        // exactly as before S2.
+        if (!negctrl) ok &= run_fuzz_pass(n, mode, roms_dir, seed, negctrl, /*glow=*/true);
     }
     if (negctrl) {
         // The negative control is expected to FAIL (that is what proves the
@@ -1440,7 +1960,7 @@ static void print_usage(const char* argv0)
         "usage: %s [selftest|unit|fuzz|replay|golden|bench] [subcmd] [--roms <dir>] "
         "[--frames <dir>] [--seed N] [--negctrl]\n"
         "  selftest (default)  - S0.7 twin-fidelity + oracle-fidelity check\n"
-        "  unit [s1a|s1b|s1c]  - S1.4 schedule/nibrev/record-partition proofs (all three if omitted)\n"
+        "  unit [s1a|s1b|s1c|s2a|s2b|s2c]  - S1.4/S2.4 proofs (all six if omitted)\n"
         "  fuzz [n]            - n random sprite lists vs render_px (S1.4); --negctrl for the negative control\n"
         "  replay              - F1/F2 classifier over a -dumpspr capture set\n"
         "  golden              - print render_px FNV-1a hashes over a capture set\n"

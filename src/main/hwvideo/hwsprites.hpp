@@ -145,6 +145,7 @@ private:
     static const int32_t SPR_FAST_ZOOM_MIN = 0x80;             // below this, render_px (S1.2 fallback envelope)
     static const int32_t SPR_PEND_MAX      = SPR_LB_LEN - 64;  // above this, render_px (line buffer margin)
     static const int32_t SPR_ROM_PF_ROWS   = 2;                // ROM source-row read-ahead
+    static const int32_t SPR_GLOW_RING     = 64;                // S2.1: per-sprite deferred glow-clear ring depth
 
     // Span record type. GAP produces no output and is never replayed;
     // COLOUR is a store-only run; SHADOW is an inline read-modify-write run.
@@ -191,6 +192,30 @@ private:
     // last for that row.
     void prefetch_rom_row(const SpriteRec& r, int32_t jrow) const;
 
+    // ---------------------------------------------------------------------
+    // SPRITE_IMPLEMENTATION_SPEC.md S2 -- glow (PIXEL_ACCURACY), deferred
+    // per sprite. replay() pushes one destination address per maximal
+    // visible COLOUR run onto glow_ring (S2.2, the DESIGN_GLOW.md rule);
+    // draw_sprite_fast flushes it once, after the sprite's last row, never
+    // across sprites or frames (DESIGN_GLOW.md section 3's two-sprite
+    // counterexample: a later sprite's shadow OR to the same address must
+    // never be undone by an earlier sprite's deferred clear). A no-op when
+    // glow is false: nothing is ever pushed, so glow_flush() always finds
+    // glow_n == 0. draw_sprite_px implements glow inline and needs none of
+    // this (S0.4).
+    // ---------------------------------------------------------------------
+    uint16_t* glow_ring[SPR_GLOW_RING];
+    int32_t   glow_n = 0;
+
+    // glow_push(p): defers a bit-12 clear at destination address p (S2.2).
+    // Flushes first if the ring is already full.
+    void glow_push(uint16_t* p);
+    // glow_flush(): applies every deferred clear (*p &= 0xfff, matching
+    // draw_sprite_px's glow branch) and empties the ring. Called at sprite
+    // end (draw_sprite_fast) or when glow_push finds the ring full; never at
+    // frame end.
+    void glow_flush();
+
     // The fast in-envelope path (S1.2): closed-form vertical loop
     // (src(d) = (d*zoom) >> 9) grouping destination rows that share a source
     // row, decode-once/replay-many per group. pend is passed in from
@@ -204,6 +229,18 @@ private:
     // engine's set_hrender always forces bit 15 i.e. ydelta==1, and no
     // shipping zoom table goes below 0x100 raw / 0x80 post-halving).
     long long stat_fallback = 0;
+
+    // S2.4/S2.5 coverage counters (glow, draw_sprite_fast path only --
+    // draw_sprite_px's inline glow needs none of this): ring entries
+    // pushed, clears suppressed by the right-to-left/shadow-neighbour
+    // amendment (S2.2, DESIGN_GLOW.md section 2), pushed clears that found
+    // bit 12 already set (i.e. actually changed a value), and flushes
+    // forced by the ring filling before sprite end. All expected non-zero
+    // over `fuzz` at glow=true (S2.4).
+    long long stat_glow_pushed = 0;
+    long long stat_glow_suppressed_rtl = 0;
+    long long stat_glow_changed = 0;
+    long long stat_glow_flush_full = 0;
 #endif
 
 #ifdef CB_RENDER_TEST

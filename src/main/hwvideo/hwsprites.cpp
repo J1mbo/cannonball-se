@@ -432,6 +432,33 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
                         (base + (size_t)d * scrn_width)[p] = v;
                 }
             }
+
+            // SPRITE_IMPLEMENTATION_SPEC.md S2.2 (DESIGN_GLOW.md section 1):
+            // one deferred bit-12 clear at the left neighbour of this run's
+            // first drawn pixel, per destination row, iff that neighbour is
+            // inside the clip window (lo > cx0, i.e. x(lo) > x1). Records
+            // are maximal runs (emit()'s drop/merge rule, S1.2) walked left
+            // to right, so rec[k-1] -- when non-empty -- is always the
+            // screen pixel at lo-1; DESIGN_GLOW.md section 2's amendment
+            // suppresses the clear for a right-to-left sprite when that
+            // neighbour is a SHADOW run of this same sprite row (the
+            // hardware clears before it ORs in that case, not after). This
+            // is the only destination read the colour path adds, and it
+            // happens later, at the flush -- the copy above never reads the
+            // destination.
+            if (glow && lo > cx0) {
+                const bool suppress = r.rtl && k > 0 && rec[k - 1].type == SPR_SHADOW;
+                uint16_t* const col = base + (lo - 1);
+                for (int32_t d = da; d < db; d++) {
+                    if (suppress) {
+#ifdef CB_SPRITE_STATS
+                        stat_glow_suppressed_rtl++;
+#endif
+                    } else {
+                        glow_push(col + (size_t)d * scrn_width);
+                    }
+                }
+            }
         } else { // SPR_SHADOW: inline read-modify-write, never deferred, never batched across rows
             for (int32_t d = da; d < db; d++) {
                 uint16_t* rowp = base + (size_t)d * scrn_width;
@@ -440,6 +467,39 @@ void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t
             }
         }
     }
+}
+
+// glow_push/glow_flush (S2.2): the per-sprite deferred glow-clear ring.
+// Pushing when the ring is already full flushes it first (never grows past
+// SPR_GLOW_RING); draw_sprite_fast flushes once more, unconditionally, after
+// the sprite's last row, so a partial ring is never carried into the next
+// sprite (DESIGN_GLOW.md section 3: deferring across sprites is unsafe, a
+// later sprite's shadow OR to the same address must never be undone by an
+// earlier sprite's clear -- deferring no further than sprite end guarantees
+// it, since no address is written twice within one sprite).
+void hwsprites::glow_push(uint16_t* p)
+{
+    if (glow_n == SPR_GLOW_RING) {
+#ifdef CB_SPRITE_STATS
+        stat_glow_flush_full++;
+#endif
+        glow_flush();
+    }
+    glow_ring[glow_n++] = p;
+#ifdef CB_SPRITE_STATS
+    stat_glow_pushed++;
+#endif
+}
+
+void hwsprites::glow_flush()
+{
+    for (int32_t i = 0; i < glow_n; i++) {
+#ifdef CB_SPRITE_STATS
+        if (*glow_ring[i] & S16_PALETTE_ENTRIES) stat_glow_changed++;
+#endif
+        *glow_ring[i] &= 0xfff; // matches draw_sprite_px's glow branch exactly
+    }
+    glow_n = 0;
 }
 
 // draw_sprite_fast: the closed-form LINEBUF vertical loop. Every destination
@@ -479,6 +539,11 @@ void hwsprites::draw_sprite_fast(const SpriteRec& r, uint16_t* pixels, int32_t p
         decode_row(r, j, pend);
         replay(r, pixels, da, db, cx0, cx1);
     }
+
+    // SPRITE_IMPLEMENTATION_SPEC.md S2.2: flush the glow ring here, once per
+    // sprite, never per frame (DESIGN_GLOW.md section 3). A no-op when glow
+    // is false or this sprite pushed nothing.
+    glow_flush();
 }
 
 
