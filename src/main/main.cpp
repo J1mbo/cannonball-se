@@ -14,6 +14,8 @@
 ***************************************************************************/
 
 #include <cstring>
+#include <cctype>
+#include <cstdlib>
 #include <iostream>
 
 // SDL Library
@@ -180,6 +182,13 @@ bool    cannonball::singlecore_mode     = false;
 long    cannonball::fps_eval_period     = 4;
 int     cannonball::game_threads        = omp_get_max_threads();
 bool    cannonball::perftest            = false;
+
+// Frame-dump facility (see main.hpp for details)
+bool              cannonball::dump_enabled  = false;
+std::string       cannonball::dump_dir      = "";
+int               cannonball::dump_interval = 30;
+int               cannonball::dump_count    = 60;
+std::atomic<bool> cannonball::dump_finished{false};
 
 // ------------------------------------------------------------------------------------------------
 // Main Variables and Pointers
@@ -572,6 +581,20 @@ static void main_loop() {
         totalRenderedFramesForCheck++;  // For performance evaluation
 
         if (using_threading) {
+            // Both render threads and the prepare thread are idle here: the previous
+            // iteration's renderDone0/1 and prepareDone have already been acquired (below,
+            // at the end of the previous iteration), so no render thread is inside
+            // draw_frame()/blargg_filter() reading the NTSC kernel table, and no thread is
+            // currently inside tick()/prepare_frame() calling convert_palette() to mark
+            // slots dirty. This is therefore a safe point to rewrite the table's dirty
+            // slots without locking against a concurrent reader or writer. It is also the
+            // safe point to advance the NTSC burst phase for the frame about to be released:
+            // draw_frame() no longer does this itself, because when render_threads == 2 it
+            // runs concurrently on two threads (top half, bottom half) with no ordering
+            // between them - see RenderSurface::advance_blargg_phase() for the full story.
+            video.flush_ntsc_palette();
+            video.advance_blargg_phase();
+
             // Set NTSC filter to work on the last complete frame immediately
             renderReady0.release();
             if (render_threads==2) renderReady1.release();
@@ -598,8 +621,24 @@ static void main_loop() {
             tick();
             audio.tick();
             video.prepare_frame();
+
+            // No worker threads exist in this configuration, so this point (after game
+            // logic/convert_palette() calls have finished for this frame, before
+            // render_frame() reads the NTSC kernel table) is always a safe, lock-free
+            // point to rewrite the table's dirty slots and advance the burst phase.
+            video.flush_ntsc_palette();
+            video.advance_blargg_phase();
+
             video.render_frame(-1);
             video.present_frame();
+        }
+
+        // Frame-dump facility (-dump option): the renderer (possibly a worker
+        // thread) sets dump_finished once it has written the requested number
+        // of frames. We must not quit from a render thread, so poll the flag
+        // here on the main thread and trigger the normal, clean shutdown path.
+        if (cannonball::dump_enabled && cannonball::dump_finished.load(std::memory_order_acquire)) {
+            cannonball::state = STATE_QUIT;
         }
 
         // Swap the buffers for the next frame.
@@ -767,6 +806,31 @@ static bool parse_command_line(int argc, char* argv[]) {
             cannonball::perftest = true;
             std::cout << "Running in performance test mode.\n";
         }
+        else if (strcmp(argv[i], "-dump") == 0 && i+1 < argc) {
+            // -dump <dir> [interval] [count]
+            // Writes the NTSC filter's input frame every 'interval' rendered frames
+            // (default 30) until 'count' frames have been written (default 60), then
+            // quits cleanly. See rendersurface.cpp (write_dump_frame) for file format.
+            auto is_uint = [](const char* s) -> bool {
+                if (!s || !*s) return false;
+                for (const char* p = s; *p; p++)
+                    if (!std::isdigit(static_cast<unsigned char>(*p))) return false;
+                return true;
+            };
+            cannonball::dump_dir      = argv[i+1];
+            cannonball::dump_interval = 30;
+            cannonball::dump_count    = 60;
+            if (i+2 < argc && is_uint(argv[i+2])) {
+                cannonball::dump_interval = std::max(1, std::atoi(argv[i+2]));
+                if (i+3 < argc && is_uint(argv[i+3])) {
+                    cannonball::dump_count = std::max(1, std::atoi(argv[i+3]));
+                }
+            }
+            cannonball::dump_enabled = true;
+            std::cout << "Frame dump enabled: writing to '" << cannonball::dump_dir
+                       << "' every " << cannonball::dump_interval << " frames, "
+                       << cannonball::dump_count << " frames total, then will quit.\n";
+        }
         else if (   (strcmp(argv[i], "-help") == 0)  ||
                     (strcmp(argv[i], "--help") == 0) ||
                     (strcmp(argv[i], "-h") == 0)     ||
@@ -782,7 +846,11 @@ static bool parse_command_line(int argc, char* argv[]) {
                          "-t x                 : Number of game threads (1-4)\n" <<
                          "-x                   : Disable single-core RaspberryPi board detection\n" <<
                          "-1                   : Use single-core mode\n" <<
-                         "-perftest            : Assess max frame rate possible on this platform\n\n" <<
+                         "-perftest            : Assess max frame rate possible on this platform\n" <<
+                         "-dump <dir> [interval] [count]\n" <<
+                         "                     : Write NTSC filter input frames to <dir> every 'interval'\n" <<
+                         "                       rendered frames (default 30) until 'count' frames have\n" <<
+                         "                       been written (default 60), then quit\n\n" <<
                          "CannonBall-SE man page is in the res folder. Open it with 'man -l docs/cannonball-se.6'" << std::endl;
             _Exit(0);
         }
@@ -809,6 +877,11 @@ int main(int argc, char* argv[]) {
     if (ok) {
         config.load(); // Load config.XML file, also loads custom music files
         ok = roms.load_revb_roms(config.sound.fix_samples);
+
+        if (cannonball::dump_enabled && config.video.blargg == 0) {
+            std::cout << "Warning: -dump captures the Blargg/NTSC filter's input, but "
+                       << "video.blargg is disabled in the config file; no frames will be written.\n";
+        }
 
         if (cannonball::singlecore_detect || cannonball::singlecore_mode) {
             if (singleCorePi() || cannonball::singlecore_mode) {

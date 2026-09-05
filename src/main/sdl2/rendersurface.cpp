@@ -21,10 +21,14 @@
 #include <mutex>
 #include "rendersurface.hpp"
 #include "frontend/config.hpp"
+#include "main.hpp"   // frame-dump command-line option (cannonball::dump_*)
 // Aligned Memory Allocation (standard C++17)
 #include <new>        // std::align_val_t, ::operator new/delete
 #include <cstddef>    // std::size_t
 #include <cstdint>
+#include <cstdio>     // fopen/fwrite/fclose (frame dump)
+#include <cstring>    // memcpy (frame dump)
+#include <vector>
 #include <omp.h>
 #include <math.h>
 #include <cmath>   // std::sqrtf, std::fabs, std::roundf, std::lroundf, etc.
@@ -52,7 +56,17 @@ RenderSurface::~RenderSurface()
 bool RenderSurface::init(int source_width, int source_height,
                          int source_scale, int video_mode_requested, int scanlines_requested)
 {
-    ntsc = (snes_ntsc_t*) malloc( sizeof(snes_ntsc_t) );
+    // snes_ntsc_t (see snes_ntsc.h) has several alignas(64) array members - the NTSC
+    // filter re-architecture's phase-major kernel table - so alignof(snes_ntsc_t) is 64,
+    // not the ~16 bytes plain malloc() guarantees (glibc/ucrt malloc only promise
+    // alignment suitable for std::max_align_t). Placing a 64-byte-aligned type at a
+    // malloc'd address is undefined behaviour regardless of how the table is later
+    // accessed (the blitter happens to use only unaligned SIMD loads/stores on this
+    // table, but the UB is in the object's placement, not in any particular access).
+    // Use aligned ::operator new/delete (standard C++17, portable to MSVC) instead;
+    // sizeof(snes_ntsc_t) is guaranteed a multiple of its own alignment by the language,
+    // so no padding/size adjustment is needed here.
+    ntsc = static_cast<snes_ntsc_t*>(::operator new(sizeof(snes_ntsc_t), std::align_val_t(alignof(snes_ntsc_t))));
     // Can only be called from the thread with the SDL context (usuablly the main thread)
     src_width  = source_width;
     src_height = source_height;
@@ -137,35 +151,26 @@ void RenderSurface::disable()
 
     // Release any additional buffers.
     destroy_buffers();
-    free(ntsc);
+    // Must match the aligned ::operator new(size, align_val_t) used in init() above -
+    // plain free() on a pointer from the aligned overload is undefined behaviour.
+    ::operator delete(ntsc, std::align_val_t(alignof(snes_ntsc_t)));
+    ntsc = nullptr;
 
     initialised = false;
 }
 
 
 void RenderSurface::create_buffers() {
-    uint32_t pixels;
-	uint16_t* t32p;
-
-    // keep 64-byte alignment for SIMD/cache friendliness
-    constexpr std::size_t alignment = CB_PIXEL_ALIGNMENT;
-
-    // allocates pixel buffers
-    pixels = src_width * src_height;
-    std::size_t size = pixels *sizeof(uint16_t);
-
-    rgb_pixels = static_cast<uint16_t*>(::operator new(size, std::align_val_t(alignment)));
-    t32p = rgb_pixels;
-
-	while (pixels--) *(t32p++) = 0x0000; // fill with black
+    // Historically allocated the rgb_pixels scratch buffer used to hold the S16-slot ->
+    // colour conversion of the game image before handing it to the Blargg blitters. Under
+    // the slot-indexed NTSC filter table, blargg_filter() hands the game's S16 pixel buffer
+    // straight to the blitters (see SNES_NTSC_S16 in snes_ntsc.h), so there is no longer a
+    // conversion buffer to allocate here. Kept as a no-op call site for symmetry with
+    // destroy_buffers() and in case a future working buffer is needed again.
 }
 
 void RenderSurface::destroy_buffers() {
-    // deallocates the pixel buffers
-    if (rgb_pixels) {
-        ::operator delete(rgb_pixels, std::align_val_t(CB_PIXEL_ALIGNMENT));
-    }
-    rgb_pixels = nullptr;
+    // See create_buffers() above - nothing to release any more.
 }
 
 void RenderSurface::init_blargg_filter()
@@ -176,15 +181,12 @@ void RenderSurface::init_blargg_filter()
     if (blargg) {
         // first calculate the resultant image size.
         if (config.video.hires) {
-            #if SNES_NTSC_HAVE_SIMD
-                // Only compiled when the fast function exists
-                snes_src_width = SNES_NTSC_OUT_WIDTH_SIMD(src_width); // for 640px input = 752;
-            #else
-                snes_src_width = SNES_NTSC_OUT_WIDTH((src_width>>1));
-                unsigned check_width = SNES_NTSC_IN_WIDTH(snes_src_width);
-                while (check_width < (src_width>>1))
-                    check_width = SNES_NTSC_IN_WIDTH(++snes_src_width);
-            #endif
+            // Stage 4 of the NTSC filter re-architecture: snes_ntsc_blit_hires_vec() is
+            // the only hires blitter now, on every platform (its portable v4u32 layer -
+            // snes_ntsc_simd.h - supplies a SIMD-or-scalar backend unconditionally), so
+            // its output width formula applies unconditionally too - no more non-SIMD
+            // fallback branch computing a different (749-ish) width.
+            snes_src_width = SNES_NTSC_OUT_WIDTH_HIRES(src_width); // for 640px input = 752;
         } else {
             snes_src_width = SNES_NTSC_OUT_WIDTH(src_width);
             unsigned check_width = SNES_NTSC_IN_WIDTH(snes_src_width);
@@ -216,9 +218,108 @@ void RenderSurface::init_blargg_filter()
         setup.gamma = double(config.video.gamma) / 10;
         setup.resolution = double(config.video.resolution) / 100;
 
-        snes_ntsc_init(ntsc, &setup); // configure the library
+        // (Re)generate every slot's kernel from the current rgb_blargg colour table, then
+        // mark the dirty set clean - a full init already reflects every live palette entry,
+        // so there is nothing left for flush_ntsc_palette() to redo for this table.
+        snes_ntsc_init(ntsc, &setup, rgb_blargg);
+        memset(ntsc_slot_dirty, 0, sizeof(ntsc_slot_dirty));
+        ntsc_dirty_count.store(0, std::memory_order_relaxed);
     }
     else snes_src_width = src_width; // provides constraint to buffer allocation
+}
+
+
+void RenderSurface::flush_ntsc_palette()
+{
+    // Regenerates every NTSC filter kernel slot marked dirty since the last flush. Called
+    // from main.cpp at a point in the main loop where both render threads (and the prepare
+    // thread) are idle, so the table can be rewritten without locking against a concurrent
+    // reader - see the call sites in main.cpp for why that is safe.
+
+    // Apply any change to the Blargg filter settings (those that do not need a full video
+    // restart) here, for the same reason: init_blargg_filter() rewrites the whole kernel
+    // table and resets the dirty-slot state, which must not happen while a render thread
+    // may be reading either. Previously this ran inside draw_frame() on a render thread.
+    if (!config.videoRestartRequired) {
+        int this_blargg_config = get_blargg_config();
+        if (this_blargg_config != last_blargg_config) {
+            // The filter uses doubles internally, so convert the config values to doubles.
+            last_blargg_config =  this_blargg_config;
+            blargg             =  config.video.blargg;
+            setup.saturation   =  double(config.video.saturation) / 100;
+            setup.contrast     =  double(config.video.contrast) / 100;
+            setup.brightness   =  double(config.video.brightness) / 100;
+            setup.sharpness    =  double(config.video.sharpness) / 100;
+            setup.resolution   =  double(config.video.resolution) / 100;
+            setup.gamma        =  double(config.video.gamma) / 10;
+            setup.hue          =  double(config.video.hue) / 100;
+            init_blargg_filter(); // regenerates every slot and clears the dirty set
+        }
+    }
+
+    if (!blargg) return;
+    uint32_t dirty_count = ntsc_dirty_count.load(std::memory_order_relaxed);
+    if (dirty_count == 0) return;
+
+    // Small, fixed-size batches: gather up to this many dirty slots at a time and hand them
+    // to snes_ntsc_update_slots() (which parallelises internally via OpenMP once a batch is
+    // large enough). Sized comfortably above the worst per-frame case seen in the game
+    // (~128 slots during the sky-cycling Easter egg; see GRAPHICS_SETUP.md section 5).
+    constexpr int kBatchSize = 512;
+    int slots[kBatchSize];
+    unsigned short colours[kBatchSize];
+    int n = 0;
+
+    const int total_slots = static_cast<int>(S16_PALETTE_ENTRIES) * 2;
+    for (int slot = 0; slot < total_slots; ++slot) {
+        if (!ntsc_slot_dirty[slot]) continue;
+        ntsc_slot_dirty[slot] = 0;
+        slots[n] = slot;
+        colours[n] = rgb_blargg[slot];
+        ++n;
+        if (n == kBatchSize) {
+            snes_ntsc_update_slots(ntsc, slots, n, colours);
+            n = 0;
+        }
+    }
+    if (n > 0) snes_ntsc_update_slots(ntsc, slots, n, colours);
+
+    ntsc_dirty_count.fetch_sub(dirty_count, std::memory_order_relaxed);
+}
+
+
+void RenderSurface::advance_blargg_phase()
+{
+    // Advances 'phase' - the NTSC burst phase used for the row that starts the NEXT frame -
+    // for the frame that is about to be released to the render thread(s). This used to run
+    // inside draw_frame(), gated by "fastpass != 1" (i.e. on the call that processes the top
+    // half, or the whole frame in the single-threaded case). That was both racy and, for the
+    // bottom half, wrong:
+    //   - Racy: when render_threads == 2, draw_frame(fastpass=0) (top half) and
+    //     draw_frame(fastpass=1) (bottom half) run concurrently on two different std::thread
+    //     workers, both released from the same pair of semaphore releases in main.cpp with no
+    //     ordering between them. The old code had the fastpass==0 call write 'phase' and the
+    //     fastpass==1 call read it with no synchronization at all - a data race, and in
+    //     practice sometimes the bottom half would see the previous frame's value rather than
+    //     the current one, depending on which thread the scheduler ran first.
+    //   - Wrong even when race-free: the bottom half starts at the row immediately after the
+    //     top half's last row. A single, unsplit call to the blitter advances its internal
+    //     burst phase by one for every row it processes, so by the time it reaches the first
+    //     row of the bottom half it is no longer at 'phase' but at
+    //     (phase + top_half_row_count) % 3. The old code handed the bottom-half call the same
+    //     'phase' the top half started at, which restarts the phase sequence at the seam every
+    //     frame - visible as the bottom half's dot-crawl shimmer looking like it is repeating
+    //     rather than advancing smoothly. blargg_filter() now applies this offset itself using
+    //     the block height it already computes for the section being processed.
+    //
+    // Moving the advance here removes the race: this runs once per frame from the main thread
+    // (see the call sites in main.cpp, the same safe point flush_ntsc_palette() uses), strictly
+    // before either render thread is released, so both threads observe a stable, already-final
+    // 'phase' for the frame via the semaphore release/acquire that follows - a valid
+    // happens-before edge, unlike the old unsynchronized read.
+    if (!blargg) return;
+    if (config.fps == 60) phase = (phase + 1) % 3; // cycle through 0/1/2
+    else                  phase = (phase + 2) % 3; // cycle through 0/1/2, but at twice the rate
 }
 
 
@@ -874,15 +975,14 @@ bool RenderSurface::finalize_frame()
 
             float invExpandX;
             if (config.video.hires==0) {
-                // add 3% width to the source as the non-SIMD blargg filter leaves a black bar on the right
+                // add 3% width to the source as the lores blargg filter leaves a black bar on the right
                 invExpandX = 1 / 1.03;
             } else {
-                #if SNES_NTSC_HAVE_SIMD
-                    invExpandX = 1 / 1.01;
-                #else
-                    // add 3% width to the source as the non-SIMD blargg filter leaves a black bar on the right
-                    invExpandX = 1 / 1.03;
-                #endif
+                // hires always uses snes_ntsc_blit_hires_vec (Stage 4), whose output width
+                // formula (SNES_NTSC_OUT_WIDTH_HIRES) is the same on every platform - so this
+                // is no longer conditional on SNES_NTSC_HAVE_SIMD (there is no separate
+                // non-SIMD hires blitter with a different output width any more).
+                invExpandX = 1 / 1.01;
             }
             float invExpandY = 1.0;
             glb::set_uniform2("invExpand",      invExpandX, invExpandY);
@@ -971,49 +1071,46 @@ void RenderSurface::blargg_filter(uint16_t* gamePixels, uint32_t* outputPixels, 
         this_section = 0;
     }
 
-    uint16_t* spix = gamePixels + (this_section * src_pixel_count); // S16 Output
-    uint16_t* bpix = rgb_pixels + (this_section * src_pixel_count); // converted colour buffer
+    uint16_t* spix = gamePixels + (this_section * src_pixel_count); // S16 Output (slot indices)
+
+    // The blitter advances its own internal burst phase by one, mod 3, for every row it
+    // processes. A single unsplit call (section == -1) therefore reaches the phase this
+    // formula gives for every row on its own; but when the frame is split across two render
+    // threads, the section == 1 (bottom-half) call starts partway down the frame and must be
+    // told the phase that a continuous single call would have reached by that row, or the
+    // phase sequence restarts at the seam every frame (visible as the bottom half's dot-crawl
+    // shimmer looking like it repeats rather than advances - see advance_blargg_phase() for
+    // the full explanation). section == 0 (top half) and section == -1 (whole frame) both
+    // start at row 0, so they use 'phase' unchanged.
+    int section_phase = (section == 1) ? (int)((phase + block_height) % 3) : phase;
 
     if (blargg) {
-        // convert pixel data to format used by Blarrg filtering code
-
-        // translate game image to lookup format that Blargg filter will use
-        long pixel_count = (src_pixel_count) >> 2; // unroll 4:1
-		while (pixel_count--) {
-            // translate game image to lookup format that Blargg filter will use to
-            // convert to RGB output levels in one step based on pre-defined S16-correct DAC output values
-            *(bpix+0) = rgb_blargg[*(spix+0)];
-            *(bpix+1) = rgb_blargg[*(spix+1)];
-            *(bpix+2) = rgb_blargg[*(spix+2)];
-            *(bpix+3) = rgb_blargg[*(spix+3)];
-            bpix += 4;
-            spix += 4;
-        }
-
+        // Under the slot-indexed NTSC filter table, the emulator's S16 pixel buffer already
+        // holds exactly the values the filter table is addressed by (palette slot 0..4095,
+        // +S16_PALETTE_ENTRIES for shadow) - see SNES_NTSC_S16 in snes_ntsc.h - so it is
+        // handed straight to the blitter; there is no per-pixel colour lookup to do here any
+        // more (that conversion now happens once per dirty slot in flush_ntsc_palette()).
         long output_pitch = (snes_src_width << 2); // 4 bytes-per-pixel (8/8/8/8)
 
-        // Set pointers
-        bpix = rgb_pixels + (this_section * src_pixel_count);
         uint32_t* tpix = outputPixels + (this_section * dst_pixel_count);
 
         // Calculated alpha mask
         uint32_t Ashifted = uint32_t(Alevel);// << Ashift;
 
-        // Now call the blargg code, to do the work of translating S16 output to RGB
+        // Now call the blargg code, to do the work of translating S16 slots to RGB
         if (config.video.hires) {
-            // hi-res
-            #if SNES_NTSC_HAVE_SIMD
-                // Only compiled when the fast function exists
-                snes_ntsc_blit_hires_fast(ntsc, bpix, long(src_width), phase, src_width,
-                                          block_height, tpix, output_pitch, Ashifted);
-            #else
-                snes_ntsc_blit_hires(ntsc, bpix, long(src_width), phase, src_width,
-                                     block_height, tpix, output_pitch, Ashifted);
-            #endif
+            // hi-res: snes_ntsc_blit_hires_vec (src/main/sdl2/snes_ntsc.cpp) is the only
+            // hires blitter as of Stage 4 of the NTSC filter re-architecture - its portable
+            // v4u32 layer (snes_ntsc_simd.h) supplies a SIMD-or-scalar backend on every
+            // platform, so there is no separate non-SIMD fallback call to make here any
+            // more (the old snes_ntsc_blit_hires_fast()/scalar snes_ntsc_blit_hires() have
+            // both been retired).
+            snes_ntsc_blit_hires_vec(ntsc, spix, long(src_width), section_phase, src_width,
+                                      block_height, tpix, output_pitch, Ashifted);
         }
         else {
             // standard res processing
-            snes_ntsc_blit(ntsc, bpix, long(src_width), phase,
+            snes_ntsc_blit(ntsc, spix, long(src_width), section_phase,
                 src_width, block_height, tpix, output_pitch, Ashifted);
         }
     }
@@ -1246,6 +1343,92 @@ static void apply_crt_bloom(uint32_t *pixels,
 }
 
 
+// ---------------------------------------------------------------------------
+// Frame-dump facility (-dump <dir> [interval] [count] command-line option;
+// parsed in main.cpp, flags/state live in the cannonball:: namespace).
+//
+// When enabled, captures the whole-frame S16 buffer that the Blargg/NTSC
+// filter is about to consume, together with the palette table and burst
+// phase in effect for that frame, once every 'interval'-th rendered frame
+// (frames interval, 2*interval, ... up to 'count' frames), then flags the
+// main loop to quit cleanly. The call site is in RenderSurface::draw_frame(),
+// immediately after the phase update that happens once per rendered frame
+// (section 0 or -1 -- never section 1, so this runs exactly once per game
+// frame regardless of the render-thread configuration). The whole 'pixels'
+// buffer is converted through rgb_blargg here, independently of whatever
+// (possibly partial, per-section) conversion blargg_filter() performs, so
+// the dump is unaffected by threading/section splitting.
+//
+// File format (little-endian, one file per frame, "<dir>/frame_NNNNNN.bin"):
+//   header (64 bytes, as 16 x uint32_t):
+//     char     magic[8]        = "CBSEFRM1"
+//     uint32_t width
+//     uint32_t height
+//     uint32_t frame_number      (rendered frames since startup; 1-based)
+//     uint32_t phase              (Blargg burst phase in effect, 0..2)
+//     uint32_t hires              (config.video.hires)
+//     uint32_t wide               (config.video.widescreen)
+//     uint32_t palette_entries    (= S16_PALETTE_ENTRIES*2)
+//     uint32_t reserved[7]        (zero)
+//   uint16_t raw[width*height]       -- S16 palette indices, as produced by the emulator
+//   uint16_t table[palette_entries]  -- rgb_blargg, exactly as it stood for this frame
+//   uint16_t colour[width*height]    -- raw[] converted through table[]: exactly what
+//                                        the Blargg blitter is handed for this frame
+//
+// Also appends one line per frame to "<dir>/manifest.txt":
+//   filename,frame_number,phase,width,height
+// ---------------------------------------------------------------------------
+static void write_dump_frame(const std::string& dir, uint32_t frame_number, uint32_t phase,
+                              int width, int height, int hires, int wide,
+                              const uint16_t* raw, const uint16_t* table, uint32_t palette_entries)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/frame_%06u.bin", dir.c_str(), frame_number);
+
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        std::cerr << "dump: unable to open '" << path << "' for writing\n";
+        return;
+    }
+
+    // 64-byte header, laid out as 16 uint32_t words to guarantee an exact,
+    // padding-free size and layout (see format comment above).
+    uint32_t hdr[16] = {0};
+    std::memcpy(&hdr[0], "CBSEFRM1", 8);   // hdr[0..1]
+    hdr[2] = static_cast<uint32_t>(width);
+    hdr[3] = static_cast<uint32_t>(height);
+    hdr[4] = frame_number;
+    hdr[5] = phase;
+    hdr[6] = static_cast<uint32_t>(hires);
+    hdr[7] = static_cast<uint32_t>(wide);
+    hdr[8] = palette_entries;
+    // hdr[9..15] reserved, left zero
+
+    const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+
+    // Convert the whole frame through rgb_blargg ourselves -- exactly what the
+    // blitter receives, computed independently of blargg_filter()'s own
+    // (possibly per-section) conversion.
+    std::vector<uint16_t> colour(pixel_count);
+    for (size_t i = 0; i < pixel_count; i++)
+        colour[i] = table[raw[i]];
+
+    fwrite(hdr, sizeof(uint32_t), 16, f);
+    fwrite(raw, sizeof(uint16_t), pixel_count, f);
+    fwrite(table, sizeof(uint16_t), palette_entries, f);
+    fwrite(colour.data(), sizeof(uint16_t), pixel_count, f);
+    fclose(f);
+
+    char manifest_path[1024];
+    snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.txt", dir.c_str());
+    FILE* m = fopen(manifest_path, "a");
+    if (m) {
+        fprintf(m, "frame_%06u.bin,%u,%u,%d,%d\n", frame_number, frame_number, phase, width, height);
+        fclose(m);
+    }
+}
+
+
 int RenderSurface::get_blargg_config() {
     return (    config.video.blargg +
                 config.video.saturation +
@@ -1284,8 +1467,29 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
         pixels = (uint16_t*)__builtin_assume_aligned(pixels, 4);
         uint32_t* writePixels = (uint32_t*)__builtin_assume_aligned(current_writePixels, 4);
         if (fastpass!=1) {
-            if (config.fps == 60) phase = (phase + 1) % 3; // cycle through 0/1/2
-            else                  phase = (phase + 2) % 3; // cycle through 0/1/2, but at twice the rate
+            // Note: 'phase' is no longer advanced here. It is now advanced once per frame by
+            // advance_blargg_phase(), called from main.cpp before either render thread is
+            // released (see that method for why draw_frame() is the wrong place to do it when
+            // render_threads == 2). By the time draw_frame() runs, 'phase' already holds this
+            // frame's value; blargg_filter() applies the top/bottom-half offset itself.
+
+            // Frame-dump facility (-dump option). Default-off: when disabled this is a
+            // single bool compare and nothing else. See write_dump_frame() above for
+            // the exact format and why this call site was chosen.
+            if (cannonball::dump_enabled && !cannonball::dump_finished.load(std::memory_order_relaxed)) {
+                static uint32_t dumpFrameNumber  = 0; // rendered frames seen since startup
+                static uint32_t dumpFramesWritten = 0; // frames actually written so far
+                dumpFrameNumber++;
+                if ((dumpFrameNumber % static_cast<uint32_t>(cannonball::dump_interval)) == 0) {
+                    write_dump_frame(cannonball::dump_dir, dumpFrameNumber, static_cast<uint32_t>(phase),
+                                      src_width, src_height, config.video.hires, config.video.widescreen,
+                                      pixels, rgb_blargg, static_cast<uint32_t>(S16_PALETTE_ENTRIES) * 2u);
+                    dumpFramesWritten++;
+                    if (dumpFramesWritten >= static_cast<uint32_t>(cannonball::dump_count)) {
+                        cannonball::dump_finished.store(true, std::memory_order_release);
+                    }
+                }
+            }
         }
         blargg_filter(pixels, writePixels, fastpass);
         // apply scanlines, if enabled.
@@ -1324,31 +1528,11 @@ void RenderSurface::draw_frame(uint16_t* pixels, int fastpass)
         }
     }
 
-    if ((fastpass!=1) && (!config.videoRestartRequired)) {
-        // Check for any changes to the configured video settings (that don't require full SDL restart)
-        // Blargg filter settings. Changing these requires Blargg filter re-initialisation.
-        int this_blargg_config = get_blargg_config();
-        if (this_blargg_config != last_blargg_config) {
-            // Settings have been changed; capture new setting & re-initiatise the Blargg filter library
-            // The filter uses doubles internally, so we need to convert the config values to doubles.
-            last_blargg_config =  this_blargg_config;
-            blargg             =  config.video.blargg;
-            setup.saturation   =  double(config.video.saturation) / 100;
-            setup.contrast     =  double(config.video.contrast) / 100;
-            setup.brightness   =  double(config.video.brightness) / 100;
-            setup.sharpness    =  double(config.video.sharpness) / 100;
-            setup.resolution   =  double(config.video.resolution) / 100;
-            setup.gamma        =  double(config.video.gamma) / 10;
-            setup.hue          =  double(config.video.hue) / 100;
-
-            // pause video whilst this is re-calculated
-            drawFrameMutex.lock();
-            //destroy_buffers();
-            init_blargg_filter();
-            //create_buffers();
-            drawFrameMutex.unlock();
-        }
-    }
+    // Blargg filter settings changes are no longer applied here. Re-initialising the
+    // kernel table from a render thread raced the other render thread's reads of it
+    // (and, since the table became incrementally regenerated, the dirty-slot state that
+    // flush_ntsc_palette() maintains). The check now lives in flush_ntsc_palette(), which
+    // the main loop calls at a point where every worker thread is idle.
 
     // notify disable() that we're done
     activity_counter.fetch_sub(1, std::memory_order_acq_rel);

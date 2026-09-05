@@ -1,0 +1,4 @@
+# local build output
+build/
+build-*/
+dist-win/

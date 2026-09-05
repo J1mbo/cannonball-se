@@ -5,9 +5,48 @@
 Updates for CannonBall-SE are Copyright (c) 2025, James Pearce:
 - to provide S16 emulation at 24-bit output depth,
 - to provide SIMD optimised processing for clamp and RGB conversion.
+Updates Sep-26: slot-indexed, phase-major kernel table (Part A of the NTSC filter
+                re-architecture). The table is now addressed by palette *slot*
+                (0..4095 standard, 4096..8191 shadow, plus one reserved black slot),
+                not by a 16-bit packed colour value, and is generated/regenerated one
+                slot at a time via snes_ntsc_update_slot()/snes_ntsc_update_slots()
+                so a palette RAM write no longer requires a full table rebuild.
+                Stage 2: added snes_ntsc_blit_hires_vec(), a portable (NEON/SSE2/RVV/
+                scalar) adjacent-outputs vector kernel; widened each alignment block
+                from 16 to 20 words (3 leading + 14 real + 3 trailing zero words, see
+                snes_ntsc_block_lead) so every compile-time-constant 16-byte window the
+                vector kernel needs - including ones that start before the first real
+                tap or end after the last - stays inside one block without a bounds
+                check.
+                Stage 3: added the run-length ladder (Part C, see
+                tools/ntsc_bench/analysis/ARCHITECTURE.md section 6) inside
+                snes_ntsc_blit_hires_vec(): three more derived tables per slot per phase
+                (plane_pk, plane_ck, plane_flat - exact integer sums of plane's base
+                blocks, kept coherent by gen_slot()/snes_ntsc_update_slot(s)()) let a
+                row classify each 6-pixel chunk once and skip most of the general
+                per-pixel kernel on real content (uniform chunks -> one chunk-kernel
+                load, identical pairs -> one pair-kernel load, steady runs of 3+
+                uniform same-slot chunks -> a precomputed constant, clamped and
+                stored). The general path (Part B) remains exactly as Stage 2 left it
+                and is still what handles the row's prologue/tail edge groups and any
+                pixel the ladder can't shortcut.
+                Stage 4: retired the per-ISA snes_ntsc_blit_hires_fast() and the
+                separate scalar snes_ntsc_blit_hires() - snes_ntsc_blit_hires_vec() is
+                now the only hires blitter, on every platform (its own portable v4u32
+                layer, snes_ntsc_simd.h, supplies the SIMD-or-scalar backend), and the
+                run-length ladder's classifier is now fused into the group loop (no
+                row-wide pre-pass, no heap allocation - see snes_ntsc_blit_hires_vec()'s
+                banner comment in snes_ntsc.cpp). The ladder's pair level (PK) is off by
+                default (SNES_NTSC_LADDER_MASK); it measured as a net loss on
+                transition-heavy content and no measurable gain on real frames (see
+                README.md's "Ladder-level experiment").
 
-Note: SIMD dependent functions e.g. snes_ntsc_blit_hires_fast() require buffers aligned at
-      a 64-byte boundary.
+Note: the per-slot kernel blocks inside snes_ntsc_t are 4-byte-word aligned within a
+      64-byte-aligned plane (see snes_ntsc_block_words below); with 20-word (80-byte)
+      blocks a block no longer always sits inside one 64-byte cache line, which only
+      matters for raw load-latency, not correctness - every reader (the lores blitter,
+      the hires vector kernel, and table generation) addresses words via SNES_NTSC_KW /
+      explicit offsets, so the block size change is transparent to all of them.
 */
 
 #ifndef SNES_NTSC_H
@@ -20,40 +59,27 @@ Note: SIMD dependent functions e.g. snes_ntsc_blit_hires_fast() require buffers 
 extern "C" {
 #endif
 
+/* Whether this target has *some* native SIMD ISA available - consulted only by
+   tools/ntsc_bench/ntsc_bench.cpp, to decide whether an explicitly-requested
+   pre-Stage-4 reference function like snes_ntsc_blit_hires_fast can exist at all when
+   built against an older revision's header. Nothing in the engine itself consults this
+   any more as of Stage 4: RenderSurface's invExpandX shader-uniform choice used to
+   branch on it (to pick a different value for the retired non-SIMD hires path) but is
+   now unconditional, since snes_ntsc_blit_hires_vec()'s output width formula
+   (SNES_NTSC_OUT_WIDTH_HIRES) is the same on every platform. snes_ntsc_blit_hires_vec()
+   itself never consulted this either: its portable v4u32 layer (snes_ntsc_simd.h)
+   resolves its own backend independently, all the way down to a plain-C fallback, so it
+   is available and correct regardless of this value. */
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-    #include <arm_neon.h>
     #define SNES_NTSC_HAVE_SIMD 1
 #elif defined(_M_X64) || defined(__x86_64__)
     /* 64-bit x86: SSE2 is guaranteed by the x86-64 ABI. */
-    #if defined(_MSC_VER)
-        #include <immintrin.h>
-    #else
-        #include <x86intrin.h>
-    #endif
     #define SNES_NTSC_HAVE_SIMD 1
-    #if defined(__SSE4_1__)
-        /* -msse4.1 / -march=native on an SSE4+ host, or MSVC /arch:AVX */
-        #define SNES_NTSC_X86_LEVEL 4
-    #else
-        /* SSE2: baseline for every x86-64 CPU ever made */
-        #define SNES_NTSC_X86_LEVEL 2
-    #endif
 #elif defined(__i386__) || defined(_M_IX86)
-    /* 32-bit x86: only enable SIMD when SSE2 is explicitly available. */
+    /* 32-bit x86: only counts as SIMD-capable when SSE2 is explicitly available. */
     #if defined(__SSE2__) || (defined(_MSC_VER) && defined(_M_IX86_FP) && _M_IX86_FP >= 2)
-        #if defined(_MSC_VER)
-            #include <immintrin.h>
-        #else
-            #include <x86intrin.h>
-        #endif
         #define SNES_NTSC_HAVE_SIMD 1
-        #if defined(__SSE4_1__)
-            #define SNES_NTSC_X86_LEVEL 4
-        #else
-            #define SNES_NTSC_X86_LEVEL 2
-        #endif
     #else
-        /* Pre-SSE2 x86: fall back to scalar. */
         #define SNES_NTSC_HAVE_SIMD 0
     #endif
 #elif defined(_M_ARM64) || defined(__aarch64__)
@@ -61,35 +87,43 @@ extern "C" {
     #define SNES_NTSC_HAVE_SIMD 0
 #elif defined(__riscv) && defined(__riscv_v)
     /* RISC-V with the V extension (RVV 1.0). Set by -march=rv64gcv or similar. */
-    #include <riscv_vector.h>
     #define SNES_NTSC_HAVE_SIMD 1
-    #define SNES_NTSC_HAVE_RVV  1
 #else
-    /* No SIMD available (e.g., ARMv6 / Raspberry Pi Zero W). Use scalar path. */
+    /* No native SIMD ISA (e.g., ARMv6 / Raspberry Pi Zero W). */
     #define SNES_NTSC_HAVE_SIMD 0
 #endif
 
 
-// Portable 'restrict' for C and C++. Note - moved from snes_ntsc_impl.h so that the blitters
-// can be defined with 'restrict' parameters
-#ifndef restrict
-  #if defined(__GNUC__) || defined(__clang__)
-    #define restrict __restrict__
-  #elif defined(_MSC_VER) && _MSC_VER > 1300
-    #define restrict __restrict
-  #else
-    /* no support: leave empty */
-    #define restrict
-  #endif
-#endif
-
-// Portable byteswap primitive
+// Portable byteswap primitive. Included before the SNES_NTSC_RESTRICT macro below so that a
+// bare 'restrict' token defined by us never shadows a CRT header pulled in transitively (see
+// SNES_NTSC_RESTRICT's comment for why that matters on MSVC).
 #if defined(_MSC_VER)  // MSVC (Windows)
     #include <stdlib.h>
     #define bswap32(x) _byteswap_ulong(x)
 #else                  // glibc / Linux / other GCC-like
     #include <byteswap.h>
     #define bswap32(x) bswap_32(x)
+#endif
+
+// Portable 'restrict' for C and C++, used on the hires blitter's pointer parameters/locals.
+// Deliberately NOT named 'restrict': a macro with that exact name, if it is in scope when a
+// CRT header is parsed later (e.g. <stdlib.h>/<malloc.h> on MSVC, which declare some
+// allocation functions with '__declspec(restrict)'), text-replaces the 'restrict' token
+// inside '__declspec(restrict)' too, turning it into '__declspec(__restrict)' - not a
+// recognised declspec - and fails with error C2485. This bit the ntsc_bench harness (which
+// parses this header before any CRT header) and would bite snes_ntsc.cpp itself if its own
+// <cstdlib> happened to be reached first; the game build only avoided it because
+// rendersurface.cpp includes the CRT before this header. Named SNES_NTSC_RESTRICT instead so
+// it can never collide with a CRT-declared identifier.
+#ifndef SNES_NTSC_RESTRICT
+  #if defined(__GNUC__) || defined(__clang__)
+    #define SNES_NTSC_RESTRICT __restrict__
+  #elif defined(_MSC_VER) && _MSC_VER > 1300
+    #define SNES_NTSC_RESTRICT __restrict
+  #else
+    /* no support: leave empty */
+    #define SNES_NTSC_RESTRICT
+  #endif
 #endif
 
 	/* Image parameters, ranging from -1.0 to 1.0. Actual internal values shown
@@ -121,10 +155,25 @@ extern "C" {
 	extern snes_ntsc_setup_t const snes_ntsc_rgb;       /* crisp image */
 	extern snes_ntsc_setup_t const snes_ntsc_monochrome;/* desaturated + artifacts */
 
-	/* Initializes and adjusts parameters. Can be called multiple times on the same
-	snes_ntsc_t object. Can pass NULL for either parameter. */
+	/* Initializes and adjusts parameters, generating every slot's kernel from
+	slot_colours[0..snes_ntsc_slot_count-1] (packed S16 colour values, same encoding as
+	SNES_NTSC_S16 below). Can be called multiple times on the same snes_ntsc_t object.
+	setup NULL means composite video; slot_colours NULL means every slot is black. */
 	typedef struct snes_ntsc_t snes_ntsc_t;
-	void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup);
+	void snes_ntsc_init(snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup,
+		unsigned short const* slot_colours);
+
+	/* Regenerates the kernel for one slot (0..snes_ntsc_slot_count-1) from a new packed
+	S16 colour value, without touching any other slot. Must be called with the same
+	setup that was last passed to snes_ntsc_init() (the setup/decoder state is cached
+	inside *ntsc). Safe to call repeatedly as individual palette RAM entries change. */
+	void snes_ntsc_update_slot(snes_ntsc_t* ntsc, int slot, unsigned short colour);
+
+	/* Bulk form of snes_ntsc_update_slot(): regenerates 'count' slots, given as parallel
+	arrays of slot indices and their new colour values. Parallelised with OpenMP when
+	count is large (see snes_ntsc.cpp) and the build has OpenMP available. */
+	void snes_ntsc_update_slots(snes_ntsc_t* ntsc, int const* slots, int count,
+		unsigned short const* slot_colours);
 
 	/* Filters one or more rows of pixels. Input pixel format is set by SNES_NTSC_IN_FORMAT
 	and output RGB depth is set by SNES_NTSC_OUT_DEPTH. Both default to 16-bit RGB.
@@ -134,15 +183,32 @@ extern "C" {
 		long in_row_width, int burst_phase, int in_width, int in_height,
 		void* rgb_out, long out_pitch, long Alevel);
 
-	void snes_ntsc_blit_hires(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input,
-		long in_row_width, int burst_phase, int in_width, int in_height,
-		void* rgb_out, long out_pitch, long Alevel);
+	/* Stage 4 of the NTSC filter re-architecture (see
+	tools/ntsc_bench/analysis/ARCHITECTURE.md and README.md "Current state"): the only
+	hires blitter now - snes_ntsc_blit_hires_fast() (the old per-ISA SSE4/NEON/RVV
+	intrinsic version) and the separate scalar snes_ntsc_blit_hires() have both been
+	retired. This one is an adjacent-outputs vector kernel with an inline run-length
+	classifier (Part B/C of the re-architecture), built on the portable v4u32 SIMD layer
+	(src/main/sdl2/snes_ntsc_simd.h), with NEON, SSE2 and RVV backends plus a plain-C
+	scalar fallback - so, unlike the retired snes_ntsc_blit_hires_fast(), it is available
+	and correct unconditionally on every build (SNES_NTSC_HAVE_SIMD 0 or 1). Same
+	signature the two retired functions shared.
 
-#if SNES_NTSC_HAVE_SIMD
-    // SIMD version of hires (SSE/NEON)
-	void snes_ntsc_blit_hires_fast(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* restrict input, long in_row_width,
-		int burst_phase, int in_width, int in_height, void* restrict rgb_out, long out_pitch, long Alevel);
-#endif
+	Alignment contract (carried forward from the note this replaced - the requirement is
+	smaller now, 16 bytes rather than 64, since a v4u32 lane is a 128-bit SSE2/NEON/RVV
+	register rather than a 64-byte cache line): 'rgb_out' must be 16-byte aligned on every
+	call, and every row after the first inherits that alignment automatically because
+	'out_pitch' is always a multiple of 16 for every width this function accepts (its own
+	width guard enforces out_width = 28*G + 24, always a multiple of 4 pixels). The SSE2
+	backend's aligned store (snes_v4_store_a -> _mm_store_si128) faults on a misaligned
+	pointer; NEON/RVV/the plain-C fallback do not enforce this, but every caller must still
+	satisfy it for portability. In practice this already held for the retired
+	snes_ntsc_blit_hires_fast(), which made the same requirement of the same buffer -
+	RenderSurface's output buffer is malloc-backed (or an SDL surface's own pixel buffer),
+	which is 16-byte aligned on every ABI this engine targets, but this is not asserted
+	anywhere; a debug build that changes the output buffer's allocation should re-check it. */
+	void snes_ntsc_blit_hires_vec(snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* SNES_NTSC_RESTRICT input, long in_row_width,
+		int burst_phase, int in_width, int in_height, void* SNES_NTSC_RESTRICT rgb_out, long out_pitch, long Alevel);
 
 	/* Number of output pixels written by low-res blitter for given input width. Width
 	might be rounded down slightly; use SNES_NTSC_IN_WIDTH() on result to find rounded
@@ -150,9 +216,17 @@ extern "C" {
 #define SNES_NTSC_OUT_WIDTH( in_width ) \
 	((((in_width) - 1) / snes_ntsc_in_chunk + 1) * snes_ntsc_out_chunk)
 
-	/* SIMD version of the above (note - SIMD only works for hires inputs */
-#define SNES_NTSC_OUT_WIDTH_SIMD( in_width ) \
+	/* Output width for the hires blitter (snes_ntsc_blit_hires_vec), for a given hires
+	input width - e.g. 752 for 640, 948 for 808, on every platform (its scalar backend
+	produces the same width the old SIMD-only _fast did). Renamed from
+	SNES_NTSC_OUT_WIDTH_SIMD in Stage 4; that name is kept below as an alias for one
+	release. */
+#define SNES_NTSC_OUT_WIDTH_HIRES( in_width ) \
 	(((in_width - 16) * 7 / 6) + 24)
+
+	/* Deprecated alias for SNES_NTSC_OUT_WIDTH_HIRES - kept for one release; use the new
+	name in new code. */
+#define SNES_NTSC_OUT_WIDTH_SIMD( in_width ) SNES_NTSC_OUT_WIDTH_HIRES( in_width )
 
 	/* Number of low-res input pixels that will fit within given output width. Might be
 	rounded down slightly; use SNES_NTSC_OUT_WIDTH() on result to find rounded
@@ -165,15 +239,16 @@ extern "C" {
 
 	enum { snes_ntsc_in_chunk = 3 }; /* number of input pixels read per chunk */
 	enum { snes_ntsc_out_chunk = 7 }; /* number of output pixels generated per chunk */
-	enum { snes_ntsc_black = 0 }; /* palette index for black */
+	enum { snes_ntsc_black = 0 }; /* legacy colour value for black; unused by the slot-indexed
+	                                  blitters below, which pad rows with snes_ntsc_black_slot
+	                                  instead (see the slot-indexed table section further down) */
 	enum { snes_ntsc_burst_count = 3 }; /* burst phase cycles through 0, 1, and 2 */
 
 	/* Begins outputting row and starts three pixels. First pixel will be cut off a bit.
-	Use snes_ntsc_black for unused pixels. Declares variables, so must be before first
+	Use snes_ntsc_black_slot for unused pixels. Declares variables, so must be before first
 	statement in a block (unless you're using C++). */
 #define SNES_NTSC_BEGIN_ROW( ntsc, burst, pixel0, pixel1, pixel2 ) \
-	char const* ktable = \
-		(char const*) (ntsc)->table + burst * (snes_ntsc_burst_size * sizeof (snes_ntsc_rgb_t));\
+	char const* ktable = (char const*) (ntsc)->plane[burst];\
 	SNES_NTSC_BEGIN_ROW_6_( pixel0, pixel1, pixel2, SNES_NTSC_IN_FORMAT, ktable )
 
 	/* Begins input pixel */
@@ -191,72 +266,93 @@ extern "C" {
 #define SNES_NTSC_RGB_OUT( index, rgb_out, bits, Alevel ) \
 	SNES_NTSC_RGB_OUT_14_( index, rgb_out, bits, 1, Alevel )
 
-/* Hires equivalents */
-#define SNES_NTSC_HIRES_ROW( ntsc, burst, pixel1, pixel2, pixel3, pixel4, pixel5 ) \
-	char const* ktable = \
-		(char const*) (ntsc)->table + burst * (snes_ntsc_burst_size * sizeof (snes_ntsc_rgb_t));\
-	unsigned const snes_ntsc_pixel1_ = (pixel1);\
-	snes_ntsc_rgb_t const* kernel1  = SNES_NTSC_IN_FORMAT( ktable, snes_ntsc_pixel1_ );\
-	unsigned const snes_ntsc_pixel2_ = (pixel2);\
-	snes_ntsc_rgb_t const* kernel2  = SNES_NTSC_IN_FORMAT( ktable, snes_ntsc_pixel2_ );\
-	unsigned const snes_ntsc_pixel3_ = (pixel3);\
-	snes_ntsc_rgb_t const* kernel3  = SNES_NTSC_IN_FORMAT( ktable, snes_ntsc_pixel3_ );\
-	unsigned const snes_ntsc_pixel4_ = (pixel4);\
-	snes_ntsc_rgb_t const* kernel4  = SNES_NTSC_IN_FORMAT( ktable, snes_ntsc_pixel4_ );\
-	unsigned const snes_ntsc_pixel5_ = (pixel5);\
-	snes_ntsc_rgb_t const* kernel5  = SNES_NTSC_IN_FORMAT( ktable, snes_ntsc_pixel5_ );\
-	snes_ntsc_rgb_t const* kernel0 = kernel1;\
-	snes_ntsc_rgb_t const* kernelx0;\
-	snes_ntsc_rgb_t const* kernelx1 = kernel1;\
-	snes_ntsc_rgb_t const* kernelx2 = kernel1;\
-	snes_ntsc_rgb_t const* kernelx3 = kernel1;\
-	snes_ntsc_rgb_t const* kernelx4 = kernel1;\
-	snes_ntsc_rgb_t const* kernelx5 = kernel1
-
-
-#define SNES_NTSC_HIRES_OUT( x, rgb_out, bits, Alevel ) {\
-	snes_ntsc_rgb_t raw_ =\
-		kernel0  [ x       ] + kernel2  [(x+5)%7+14] + kernel4  [(x+3)%7+28] +\
-		kernelx0 [(x+7)%7+7] + kernelx2 [(x+5)%7+21] + kernelx4 [(x+3)%7+35] +\
-		kernel1  [(x+6)%7  ] + kernel3  [(x+4)%7+14] + kernel5  [(x+2)%7+28] +\
-		kernelx1 [(x+6)%7+7] + kernelx3 [(x+4)%7+21] + kernelx5 [(x+2)%7+35];\
-	SNES_NTSC_CLAMP_AND_CONVERT_SCALAR( raw_, Alevel );\
-	rgb_out = raw_;\
-}
-
-// this version ONLY does the maths on each pixel. Clamp and RGB_OUT are skipped,
-// since this can be done in parallel across all outputs later
-#define SNES_NTSC_HIRES_OUT_SIMD_( x ) (\
-		kernel0  [ x       ] + kernel2  [(x+5)%7+14] + kernel4  [(x+3)%7+28] +\
-		kernelx0 [(x+7)%7+7] + kernelx2 [(x+5)%7+21] + kernelx4 [(x+3)%7+35] +\
-		kernel1  [(x+6)%7  ] + kernel3  [(x+4)%7+14] + kernel5  [(x+2)%7+28] +\
-		kernelx1 [(x+6)%7+7] + kernelx3 [(x+4)%7+21] + kernelx5 [(x+2)%7+35]\
-)
-
-// this version attempts to encourage instruction level parrallelism on ARMv7
-// to help hide the load latency by use three intermediatories.
-#define SNES_NTSC_HIRES_OUT_SIMD(x)                                               \
-([&]() noexcept -> uint32_t {                                                     \
-    uint32_t a0 = 0, a1 = 0, a2 = 0;                                              \
-    a0 += kernel0 [ (x)              ] + kernelx0 [ ((x)+7)%7 +  7 ];             \
-    a1 += kernel2 [ ((x)+5)%7 + 14   ] + kernelx2 [ ((x)+5)%7 + 21 ];             \
-    a2 += kernel4 [ ((x)+3)%7 + 28   ] + kernelx4 [ ((x)+3)%7 + 35 ];             \
-    a0 += kernel1 [ ((x)+6)%7        ] + kernelx1 [ ((x)+6)%7 +  7 ];             \
-    a1 += kernel3 [ ((x)+4)%7 + 14   ] + kernelx3 [ ((x)+4)%7 + 21 ];             \
-    a2 += kernel5 [ ((x)+2)%7 + 28   ] + kernelx5 [ ((x)+2)%7 + 35 ];             \
-    return a0 + a1 + a2;                                                          \
-}())
-
 /* private */
 #include <stdint.h>
-	enum { snes_ntsc_entry_size = 128 };
-	enum { snes_ntsc_palette_size = 0x10000 };  // JJP - S16 is 5 bits per channel and two tables (std/shadow).
-	                                            // Hilite not use in Outun so support removed.
+	enum { snes_ntsc_entry_size = 128 }; // JJP - size (words) of the temporary, flat per-colour
+	                                     // kernel entry used only during slot generation (see
+	                                     // gen_slot() in snes_ntsc.cpp); not a table dimension
+	                                     // any more, kept purely as scratch-buffer sizing.
+
+	// ---- Slot-indexed, phase-major kernel table (Part A of the NTSC re-architecture) ----
+	// The table is addressed by *slot*, not by a 16-bit packed colour value: slots 0..4095
+	// are standard palette entries, 4096..8191 are their shadow counterparts (exactly the
+	// range of values already present in the emulator's S16 pixel buffer), slot 8192 is
+	// reserved for black (used by the blitters to pad the start/end of each row) and slot
+	// 8193 is a spare, also always black, kept only for layout symmetry/future use. Each
+	// slot holds one burst-phase's kernel as three 20-word "alignment blocks": 3 leading
+	// zero words, the 14 real kernel taps (see SNES_NTSC_KW below for how a classic 0..41
+	// kernel-word index maps into this padded layout), then 3 trailing zero words. The
+	// symmetric padding (added in Stage 2 of the re-architecture, see
+	// tools/ntsc_bench/analysis/ARCHITECTURE.md) means every compile-time-constant 16-byte
+	// (4-word) window that `snes_ntsc_blit_hires_vec` needs, starting anywhere from 3 words
+	// before the first real tap to 3 words after the last, stays inside the padded block
+	// without any bounds check; `_fast` and the scalar blitter are unaffected because they
+	// only ever read via SNES_NTSC_KW, which folds to the same physical offsets regardless
+	// of block size. This costs about 43% extra memory (60 words allocated per slot per
+	// phase versus 42 actually used; table is about 5.9 MB total) in exchange for that.
+	enum { snes_ntsc_slot_count  = 8192 };  // std (0..4095) + shadow (4096..8191)
+	enum { snes_ntsc_black_slot  = 8192 };  // reserved slot for black; used as row padding
+	enum { snes_ntsc_slot_total  = 8194 };  // slot_count + black_slot + one spare slot
+	enum { snes_ntsc_block_words = 20 };    // 3 lead zeros + 14 real kernel words + 3 trail zeros
+	enum { snes_ntsc_block_lead  = 3 };     // zero pad words before the first real tap of a block
+	enum { snes_ntsc_slot_words  = 60 };    // 3 alignment blocks x 20 words, per slot per phase
+	enum { snes_ntsc_alignment_count = 3 }; // number of alignment blocks per slot per phase
+
+	// ---- Part C derived tables: the run-length ladder (Stage 3 of the re-architecture,
+	// see tools/ntsc_bench/analysis/ARCHITECTURE.md section 6). All three are exact
+	// integer sums of the base `plane` blocks above, recomputed for a slot every time
+	// gen_slot() (re)generates it, so snes_ntsc_update_slot(s)() keep them coherent
+	// automatically. Same 3-lead-zero-words convention as `plane`'s blocks so every
+	// compile-time-constant 16-byte window the ladder needs lands inside the block
+	// without a bounds check.
+	//
+	// Pair kernel: PK_a[n] = K_a[n] + K_a[n-1], n = 0..14 (15 real words), the exact
+	// contribution of an identical even/odd pixel pair sharing alignment block a. 3 lead
+	// + 15 real + 6 trail = 24 words (wider trailing pad than a K block: a residue-2
+	// window load reaches word 20).
+	enum { snes_ntsc_pk_block_words = 24 };
+	enum { snes_ntsc_pk_slot_words  = (int)snes_ntsc_alignment_count * (int)snes_ntsc_pk_block_words }; // 72
+	// Chunk kernel: CK[n] = PK_0[n] + PK_1[n-2] + PK_2[n-4], n = 0..18 (19 real words),
+	// the exact contribution of a uniform 6-pixel chunk, combining all 3 alignments (one
+	// block per slot per phase, not per-alignment). 3 lead + 19 real + 6 trail = 28 words
+	// (a residue-2 window load reaches word 24).
+	enum { snes_ntsc_ck_words = 28 };
+	// Flat pattern: the RAW (pre-clamp/convert) 7 output words produced by a 12-pixel
+	// window that is all one slot (steady run of 3+ uniform same-slot chunks), plus one
+	// padding word (unused) so the block is 2 vectors' worth. Stored raw, not clamped,
+	// because Alevel is a per-call blitter argument, not known at generation time; the
+	// blitter clamps+converts these 2 vectors cheaply per steady-run chunk it emits.
+	enum { snes_ntsc_flat_words = 8 };
+
 	typedef uint32_t snes_ntsc_rgb_t;           // JJP - was unsigned long
+
+	// Maps a classic kernel-word index (0..41, i.e. 3 alignment blocks of 14 words: block b
+	// occupies words 14b..14b+13) into the padded, 20-word-block layout used by `plane`
+	// below (block b now occupies words 20b..20b+19, with real taps at 20b+3..20b+16 and
+	// words 20b..20b+2 / 20b+17..20b+19 always zero). Every caller passes a compile-time-
+	// constant `w`, so this folds away entirely.
+#define SNES_NTSC_KW( w ) (((w) / 14) * snes_ntsc_block_words + snes_ntsc_block_lead + ((w) % 14))
+
 	struct snes_ntsc_t {
-		snes_ntsc_rgb_t table[snes_ntsc_palette_size][snes_ntsc_entry_size];
+		// plane[burst phase][slot][word within slot's 3x16-word kernel]. One phase's plane
+		// (plane[b]) is a contiguous, 64-byte-aligned block covering every slot, so a whole
+		// row (which reads one phase throughout) touches one contiguous region of memory.
+		alignas(64) snes_ntsc_rgb_t plane[snes_ntsc_burst_count][snes_ntsc_slot_total][snes_ntsc_slot_words];
+		// Part C run-length ladder derived tables (see the enums above and
+		// tools/ntsc_bench/analysis/ARCHITECTURE.md section 6): pair kernel, chunk kernel,
+		// and flat (steady-run) pattern, phase-major like `plane` for the same row-locality
+		// reason. About 10.6 MB combined, on top of `plane`'s ~5.9 MB.
+		alignas(64) snes_ntsc_rgb_t plane_pk[snes_ntsc_burst_count][snes_ntsc_slot_total][snes_ntsc_alignment_count][snes_ntsc_pk_block_words];
+		alignas(64) snes_ntsc_rgb_t plane_ck[snes_ntsc_burst_count][snes_ntsc_slot_total][snes_ntsc_ck_words];
+		alignas(64) snes_ntsc_rgb_t plane_flat[snes_ntsc_burst_count][snes_ntsc_slot_total][snes_ntsc_flat_words];
+		// Opaque copy of the generator state (decoder matrices, gamma table, rescale
+		// kernels, etc. - see init_t in snes_ntsc_impl.h) plus the merge_fields flag,
+		// captured by snes_ntsc_init() so that snes_ntsc_update_slot(s)() can regenerate
+		// an individual slot's kernel later without needing the original snes_ntsc_setup_t.
+		// Sized generously (init_t is about 3 KB); actual size is static_assert-checked
+		// against snes_ntsc_gen_state_t in snes_ntsc.cpp.
+		alignas(16) unsigned char gen_state[8192];
 	};
-	enum { snes_ntsc_burst_size = snes_ntsc_entry_size / snes_ntsc_burst_count };
 
 #define SNES_NTSC_RGB16( ktable, n ) \
 	(snes_ntsc_rgb_t const*) (ktable + ((n & 0x001E) | (n >> 1 & 0x03E0) | (n >> 2 & 0x3C00)) * \
@@ -267,13 +363,17 @@ extern "C" {
 	(snes_ntsc_rgb_t const*) (ktable + ((n & 0x001F) | (n & 0x07E0) | (n & 0xF800)) * \
 			(snes_ntsc_entry_size / 1 * sizeof (snes_ntsc_rgb_t)))
 
-// following input expects S16 palette entries (5 bits per channel),
-// organised as
-// R - bit 14-10, G - bit 9-5, B - bit 0-4
-// Bits 15-16: 00b = standard, 01b = shadow, 10b = highlight
+// Slot-indexed input: 'n' is a direct slot number (0..snes_ntsc_slot_count-1 for a live
+// palette entry - standard in 0..4095, shadow in 4096..8191 - or snes_ntsc_black_slot /
+// the spare slot for padding), exactly the value already carried by the emulator's S16
+// pixel buffer. 'ktable' is the current burst phase's plane base, as set up by
+// SNES_NTSC_BEGIN_ROW (ntsc->plane[burst]); no bit shuffling of 'n'
+// is performed, unlike SNES_NTSC_RGB16 above. The 5-bit-per-channel packed colour value
+// this slot corresponds to (R bit 14-10, G bit 9-5, B bit 0-4, bit 15 = shadow) is only
+// consulted at *generation* time (snes_ntsc_init/snes_ntsc_update_slot(s)), not here.
 #define SNES_NTSC_S16( ktable, n ) \
-	(snes_ntsc_rgb_t const*) (ktable + (n * \
-			(snes_ntsc_entry_size / 1 * sizeof (snes_ntsc_rgb_t))))
+	(snes_ntsc_rgb_t const*) (ktable + ((n) * \
+			(snes_ntsc_slot_words * sizeof (snes_ntsc_rgb_t))))
 
 #define SNES_NTSC_BGR15( ktable, n ) \
 	(snes_ntsc_rgb_t const*) (ktable + ((n << 9 & 0x3C00) | (n & 0x03E0) | (n >> 10 & 0x001E)) * \
@@ -293,8 +393,8 @@ extern "C" {
 
 #define SNES_NTSC_RGB_OUT_14_( x, rgb_out, bits, shift, Alevel ) {\
     snes_ntsc_rgb_t raw_ =\
-        kernel0  [x       ] + kernel1  [(x+12)%7+14] + kernel2  [(x+10)%7+28] +\
-        kernelx0 [(x+7)%14] + kernelx1 [(x+ 5)%7+21] + kernelx2 [(x+ 3)%7+35];\
+        kernel0  [SNES_NTSC_KW(x       )] + kernel1  [SNES_NTSC_KW((x+12)%7+14)] + kernel2  [SNES_NTSC_KW((x+10)%7+28)] +\
+        kernelx0 [SNES_NTSC_KW((x+7)%14)] + kernelx1 [SNES_NTSC_KW((x+ 5)%7+21)] + kernelx2 [SNES_NTSC_KW((x+ 3)%7+35)];\
         SNES_NTSC_CLAMP_( raw_, shift );                                      \
         SNES_NTSC_RGB_OUT_( rgb_out, bits, shift, Alevel );                   \
 }
@@ -345,220 +445,6 @@ extern "C" {
 
 
 
-/* JJP - SIMD macro predefined mask vectors for performance */
-#if SNES_NTSC_HAVE_SIMD && (defined(__ARM_NEON) || defined(__ARM_NEON__))
-	// ARM Architecture with NEON support
-#define SIMD_REGISTER_t uint32x4_t
-#define SIMD_INPUT_REGISTER_t uint16x4_t
-#define SIMD_ZERO SIMD_ZERO_NEON
-#define INSERT_SIMD_REGISTER_VALUE INSERT_SIMD_REGISTER_VALUE_NEON
-#define EXTRACT_SIMD_REGISTER_VALUE EXTRACT_SIMD_REGISTER_VALUE_NEON
-#define LOAD_SIMD_REGISTER LOAD_SIMD_REGISTER_NEON
-#define SET_SIMD_REGISTER vdupq_n_u32
-#define ZERO_SIMD_REGISTER vdupq_n_u32(0)
-#define ROTATE_OUT ROTATE_OUT_NEON
-#define SET_SNES_MASK_VECTORS SET_SNES_MASK_VECTORS_NEON
-#define SNES_NTSC_CLAMP SNES_NTSC_CLAMP_NEON
-#define SNES_NTSC_CLAMP_AND_CONVERT SNES_NTSC_CLAMP_AND_CONVERT_NEON
-#define SNES_NTSC_RGB_OUT_STORE SNES_NTSC_RGB_OUT_STORE_NEON
-#define SNES_NTSC_RGB_STORE SNES_NTSC_RGB_STORE_NEON
-#elif SNES_NTSC_HAVE_SIMD && defined(SNES_NTSC_X86_LEVEL)
-	/* x86 Architecture – SSE2 minimum; SSE4.1 insert used when SNES_NTSC_X86_LEVEL >= 4. */
-#define SIMD_REGISTER_t __m128i
-#define SIMD_INPUT_REGISTER_t __m128i
-#define SIMD_ZERO                   SIMD_ZERO_SSE4
-#if SNES_NTSC_X86_LEVEL >= 4
-#define INSERT_SIMD_REGISTER_VALUE  INSERT_SIMD_REGISTER_VALUE_SSE4
-#else
-#define INSERT_SIMD_REGISTER_VALUE  INSERT_SIMD_REGISTER_VALUE_SSE2
-#endif
-#define EXTRACT_SIMD_REGISTER_VALUE EXTRACT_SIMD_REGISTER_VALUE_SSE4
-#define LOAD_SIMD_REGISTER          LOAD_SIMD_REGISTER_SSE4
-#define SET_SIMD_REGISTER           _mm_set_epi32
-#define ZERO_SIMD_REGISTER          _mm_setzero_si128()
-#define ROTATE_OUT                  ROTATE_OUT_SSE4
-#define SET_SNES_MASK_VECTORS       SET_SNES_MASK_VECTORS_SSE4
-#define SNES_NTSC_CLAMP             SNES_NTSC_CLAMP_SSE4
-#define SNES_NTSC_CLAMP_AND_CONVERT SNES_NTSC_CLAMP_AND_CONVERT_SSE4
-#define SNES_NTSC_RGB_OUT_STORE     SNES_NTSC_RGB_OUT_STORE_SSE4
-#define SNES_NTSC_RGB_STORE         SNES_NTSC_RGB_STORE_SSE4
-#elif SNES_NTSC_HAVE_SIMD && defined(SNES_NTSC_HAVE_RVV)
-    /* RISC-V Vector (RVV 1.0) — vl=4 x uint32, vl=4 x uint16 */
-#define SIMD_REGISTER_t              vuint32m1_t
-#define SIMD_INPUT_REGISTER_t        vuint16m1_t
-#define SIMD_ZERO                    SIMD_ZERO_RVV
-#define INSERT_SIMD_REGISTER_VALUE   INSERT_SIMD_REGISTER_VALUE_RVV
-#define EXTRACT_SIMD_REGISTER_VALUE  EXTRACT_SIMD_REGISTER_VALUE_RVV
-#define LOAD_SIMD_REGISTER           LOAD_SIMD_REGISTER_RVV
-#define SET_SIMD_REGISTER            SET_SIMD_REGISTER_RVV
-#define ZERO_SIMD_REGISTER           SIMD_ZERO_RVV
-#define ROTATE_OUT                   ROTATE_OUT_RVV
-#define SET_SNES_MASK_VECTORS        SET_SNES_MASK_VECTORS_RVV
-#define SNES_NTSC_CLAMP              SNES_NTSC_CLAMP_RVV
-#define SNES_NTSC_CLAMP_AND_CONVERT  SNES_NTSC_CLAMP_AND_CONVERT_RVV
-#define SNES_NTSC_RGB_OUT_STORE      SNES_NTSC_RGB_OUT_STORE_RVV
-#define SNES_NTSC_RGB_STORE          SNES_NTSC_RGB_STORE_RVV
-#endif
-
-#define SIMD_ZERO_SSE4 _mm_setzero_si128()
-
-#define SIMD_ZERO_NEON vdupq_n_u32(0)
-
-/* ARGB on little-endian platforms */
-#define SET_SNES_MASK_VECTORS_SSE4 \
-	const __m128i alevel_vec     = _mm_set1_epi32(0x000000FF);\
-	const __m128i RED_MASK       = _mm_set1_epi32(0xFF000000);\
-	const __m128i GREEN_MASK     = _mm_set1_epi32(0x00FF0000);\
-	const __m128i BLUE_MASK      = _mm_set1_epi32(0x0000FF00);\
-	const __m128i clamp_mask_vec = _mm_set1_epi32(snes_ntsc_clamp_mask);\
-	const __m128i clamp_add_vec  = _mm_set1_epi32(snes_ntsc_clamp_add)
-
-#define SET_SNES_MASK_VECTORS_NEON \
-    const uint32x4_t alevel_vec     = vdupq_n_u32(0x000000FF); \
-    const uint32x4_t RED_MASK       = vdupq_n_u32(0xFF000000); \
-    const uint32x4_t GREEN_MASK     = vdupq_n_u32(0x00FF0000); \
-    const uint32x4_t BLUE_MASK      = vdupq_n_u32(0x0000FF00);\
-	const uint32x4_t clamp_mask_vec = vdupq_n_u32(snes_ntsc_clamp_mask);\
-	const uint32x4_t clamp_add_vec  = vdupq_n_u32(snes_ntsc_clamp_add)
-
-#define INSERT_SIMD_REGISTER_VALUE_SSE4(reg, value, pos) \
-	_mm_insert_epi32(reg, value, pos)
-
-/* SSE2 replacement for _mm_insert_epi32 (SSE4.1).
- * Inserts a 32-bit integer at compile-time-constant lane 'pos' (0-3)
- * using two _mm_insert_epi16 calls (available since SSE2).
- * 'pos' MUST be a compile-time integer constant (0, 1, 2, or 3). */
-#define INSERT_SIMD_REGISTER_VALUE_SSE2(reg, value, pos) \
-    _mm_insert_epi16( \
-        _mm_insert_epi16((reg), (int)((uint32_t)(value) & 0xFFFFu), (pos)*2), \
-        (int)((uint32_t)(value) >> 16u), (pos)*2+1)
-
-#define INSERT_SIMD_REGISTER_VALUE_NEON(reg, value, pos) \
-	vsetq_lane_u32(value, reg, pos)
-
-#define EXTRACT_SIMD_REGISTER_VALUE_SSE4(reg, pos) \
-	(uint16_t)_mm_extract_epi16((reg), (pos))
-
-#define EXTRACT_SIMD_REGISTER_VALUE_NEON(reg, pos) \
-	vget_lane_u16(reg, pos)
-
-#define LOAD_SIMD_REGISTER_SSE4(ptr) \
-	_mm_loadl_epi64((__m128i*)ptr)
-
-#define LOAD_SIMD_REGISTER_NEON(ptr) \
-	vld1_u16(ptr)
-
-/* Note: _mm_alignr_epi8 requires SSSE3. This macro is not used in the
- * active dispatch path (ROTATE_OUT_SSE4 is used instead); provided for
- * reference only. */
-#define ROTATE_OUT_SSE4_128(A, B, elements) \
-	_mm_alignr_epi8((B), (A), (elements)*4)
-
-/*  N must be a compile‑time constant (0 … 4).
-    Result: low 64 bits contain the rotated data, high 64 bits are zero. */
-#define ROTATE_OUT_SSE4(A, B, N)                                            \
-    ( _mm_or_si128(                                                         \
-        _mm_slli_si128( (A), (N) * 2 ),   /* shift left  N·2 bytes */       \
-        _mm_srli_si128( (B), 8 - (N) * 2 ) ) /* shift right 8‑N·2 bytes */ )
-
-#define ROTATE_OUT_NEON(A, B, elements) \
-	vext_u16((A), (B), (elements))
-
-/* JJP - SIMD versions of clamp macros for S16, where shift = 0 */
-
-// SSE4 (Intel/AMD) Macro...
-// SSE4 version of Blargg's clamp:
-#define SNES_NTSC_CLAMP_SSE4(io) do { \
-    __m128i sub = _mm_and_si128(_mm_srli_epi32((io), 9), clamp_mask_vec); \
-    __m128i clamp = _mm_sub_epi32(clamp_add_vec, sub); \
-    (io) = _mm_or_si128((io), clamp); \
-    clamp = _mm_sub_epi32(clamp, sub); \
-    (io) = _mm_and_si128((io), clamp); \
-} while(0)
-
-
-// SSE4 version of Blargg's clamp which converts to RGB also
-#define SNES_NTSC_CLAMP_AND_CONVERT_SSE4_ABGR(io) do { \
-    /* Clamping Operations */ \
-    __m128i sub = _mm_and_si128(_mm_srli_epi32(io, 9), clamp_mask_vec); \
-    __m128i clamp = _mm_sub_epi32(clamp_add_vec, sub); \
-    io = _mm_or_si128(io, clamp); \
-    clamp = _mm_sub_epi32(clamp, sub); \
-    io = _mm_and_si128(io, clamp); \
-    \
-    /* Color Conversion */ \
-    __m128i red_shifted = _mm_slli_epi32(io, 3); \
-    __m128i green_shifted = _mm_slli_epi32(io, 5); /* 3 + 2 */ \
-    __m128i blue_shifted = _mm_slli_epi32(io, 7); /* 5 + 2 */ \
-    \
-    __m128i red   = _mm_and_si128(red_shifted, RED_MASK); \
-    __m128i green = _mm_and_si128(green_shifted, GREEN_MASK); \
-    __m128i blue  = _mm_and_si128(blue_shifted, BLUE_MASK); \
-    \
-    __m128i combined = _mm_or_si128(red, green); \
-    combined = _mm_or_si128(combined, blue); \
-    io = _mm_or_si128(combined, alevel_vec); \
-} while(0)
-
-// RGBA version (little-endian)
-#define SNES_NTSC_CLAMP_AND_CONVERT_SSE4(io) do { \
-    /* ---- Clamping ---- */ \
-    __m128i sub   = _mm_and_si128(_mm_srli_epi32((io), 9), clamp_mask_vec); \
-    __m128i clamp = _mm_sub_epi32(clamp_add_vec, sub); \
-    (io) = _mm_or_si128((io), clamp); \
-    clamp = _mm_sub_epi32(clamp, sub); \
-    (io) = _mm_and_si128((io), clamp); \
-    \
-    /* ---- Color conversion (internal format: 3/5/7 shifts + masks) ---- */ \
-    __m128i red_shifted   = _mm_slli_epi32((io), 3); \
-    __m128i green_shifted = _mm_slli_epi32((io), 5); /* 3 + 2 */ \
-    __m128i blue_shifted  = _mm_slli_epi32((io), 7); /* 5 + 2 */ \
-    \
-    __m128i r = _mm_and_si128(red_shifted,   RED_MASK);   /* R -> 0xFF000000 */ \
-    __m128i g = _mm_and_si128(green_shifted, GREEN_MASK); /* G -> 0x00FF0000 */ \
-    __m128i b = _mm_and_si128(blue_shifted,  BLUE_MASK);  /* B -> 0x0000FF00 */ \
-    \
-    /* ---- Repack to RGBA in little-endian format: A[31:24] B[23:16] G[15:8] R[7:0] ---- */ \
-    __m128i a_hi  = _mm_slli_epi32(alevel_vec, 24);   /* assume alpha in 0x000000AA */ \
-    __m128i r_lo  = _mm_srli_epi32(r, 24);     /* R -> 0x000000RR */ \
-    __m128i g_mid = _mm_srli_epi32(g, 8);      /* G -> 0x0000GG00 */ \
-    __m128i b_hi  = _mm_slli_epi32(b, 8);      /* B -> 0x00BB0000 */ \
-    \
-    (io) = _mm_or_si128(_mm_or_si128(a_hi, b_hi), _mm_or_si128(g_mid, r_lo)); \
-} while(0)
-
-// NEON Equivalents...
-//
-// NEON version of Blargg's clamp with preloaded vectors
-#define SNES_NTSC_CLAMP_NEON(io) do {       \
-    uint32x4_t shifted = vshrq_n_u32(io, 9);                               \
-    uint32x4_t sub = vandq_u32(shifted, clamp_mask_vec);                   \
-    uint32x4_t clamp = vsubq_u32(clamp_add_vec, sub);                      \
-    io = vorrq_u32(io, clamp);                                             \
-    clamp = vsubq_u32(clamp, sub);                                         \
-    io = vandq_u32(io, clamp);                                             \
-} while(0)
-
-// NEON version of Blargg's clamp with RGB conversion
-// (RGBA little-endian output)
-#define SNES_NTSC_CLAMP_AND_CONVERT_NEON(io) do {                          \
-    uint32x4_t sub = vandq_u32(vshrq_n_u32(io, 9), clamp_mask_vec);        \
-    uint32x4_t clamp = vsubq_u32(clamp_add_vec, sub);                      \
-    io = vorrq_u32(io, clamp);                                             \
-    clamp = vsubq_u32(clamp, sub);                                         \
-    io = vandq_u32(io, clamp);                                             \
-    uint32x4_t red_shifted   = vshlq_n_u32(io, 3);                         \
-    uint32x4_t green_shifted = vshlq_n_u32(io, 5);                         \
-    uint32x4_t blue_shifted  = vshlq_n_u32(io, 7);                         \
-    uint32x4_t red      = vandq_u32(red_shifted,   RED_MASK  );            \
-    uint32x4_t green    = vandq_u32(green_shifted, GREEN_MASK);            \
-    uint32x4_t blue     = vandq_u32(blue_shifted,  BLUE_MASK );            \
-    uint32x4_t abgr     = vorrq_u32(vorrq_u32(red, green),                 \
-                                    vorrq_u32(blue, alevel_vec));          \
-    /* ABGR -> RGBA (little-endian) by reversing bytes in each 32b lane */ \
-    (io) = vreinterpretq_u32_u8(                                           \
-              vrev32q_u8(vreinterpretq_u8_u32(abgr)));                     \
-} while(0)
 
 
 
@@ -610,160 +496,6 @@ extern "C" {
     /* Final layout: RGBA little-endian (A in top byte, R in low byte) */ \
     rgb_out = (Alevel<<24) | (b<<8) | (g>>8) | (r>>24);                      \
 }
-
-// SSE4 (Intel/AMD) - convert to RGB and store to RAM
-#define SNES_NTSC_RGB_OUT_STORE_SSE4_ABGR(line_out, raw_vec, alevel_vec) do { \
-    /* Shift raw_ left by 3 bits and mask with 0xFF000000 */ \
-    __m128i shifted3 = _mm_slli_epi32(raw_vec, 3); \
-    __m128i masked3  = _mm_and_si128(shifted3, RED_MASK); \
-    \
-    /* Shift raw_ left by 5 bits and mask with 0x00FF0000 */ \
-    __m128i shifted5 = _mm_slli_epi32(raw_vec, 5); \
-    __m128i masked5  = _mm_and_si128(shifted5, GREEN_MASK); \
-    \
-    /* Shift raw_ left by 7 bits and mask with 0x0000FF00 */ \
-    __m128i shifted7 = _mm_slli_epi32(raw_vec, 7); \
-    __m128i masked7  = _mm_and_si128(shifted7, BLUE_MASK); \
-    \
-    /* Combine the masked values into RGB */ \
-    __m128i combined = _mm_or_si128(_mm_or_si128(masked3, masked5), masked7); \
-    \
-    /* Final RGBA Output: combined RGB | Alevel */ \
-    __m128i rgba_out = _mm_or_si128(combined, alevel_vec); \
-    \
-    /* Store the RGBA values directly to memory */ \
-    _mm_store_si128((__m128i*)line_out, rgba_out); \
-} while(0)
-
-/* RGBA version (as little-endian) */
-#define SNES_NTSC_RGB_OUT_STORE_SSE4(line_out, raw_vec, alevel_vec) do { \
-    /* These shifts/masks match your internal format: */ \
-    __m128i shifted3 = _mm_slli_epi32((raw_vec), 3); \
-    __m128i r_masked = _mm_and_si128(shifted3, RED_MASK);     /* R in 0xFF000000 */ \
-    \
-    __m128i shifted5 = _mm_slli_epi32((raw_vec), 5); \
-    __m128i g_masked = _mm_and_si128(shifted5, GREEN_MASK);   /* G in 0x00FF0000 */ \
-    \
-    __m128i shifted7 = _mm_slli_epi32((raw_vec), 7); \
-    __m128i b_masked = _mm_and_si128(shifted7, BLUE_MASK);    /* B in 0x0000FF00 */ \
-    \
-    /* Reposition into RGBA in little-endian: A[31:24] B[23:16] G[15:8] R[7:0] */ \
-    __m128i a_hi = _mm_slli_epi32((alevel_vec), 24);          /* assume A in 0x000000FF */ \
-    __m128i r_lo = _mm_srli_epi32(r_masked, 24);              /* R -> 0x000000FF */ \
-    __m128i g_mid = _mm_srli_epi32(g_masked, 8);              /* G -> 0x0000FF00 */ \
-    __m128i b_hi = _mm_slli_epi32(b_masked, 8);               /* B -> 0x00FF0000 */ \
-    \
-    __m128i abgr_out = _mm_or_si128(_mm_or_si128(a_hi, b_hi), \
-                                    _mm_or_si128(g_mid, r_lo)); \
-    _mm_store_si128((__m128i*)(line_out), abgr_out); \
-} while (0)
-
-// NEON Equivalent... (RGBA little-endian output)
-#define SNES_NTSC_RGB_OUT_STORE_NEON(line_out, raw_vec, alevel_vec) do { \
-    uint32x4_t shifted3 = vshlq_n_u32(raw_vec, 3);                  \
-    uint32x4_t masked3  = vandq_u32(shifted3, RED_MASK);            \
-    uint32x4_t shifted5 = vshlq_n_u32(raw_vec, 5);                  \
-    uint32x4_t masked5  = vandq_u32(shifted5, GREEN_MASK);          \
-    uint32x4_t shifted7 = vshlq_n_u32(raw_vec, 7);                  \
-    uint32x4_t masked7  = vandq_u32(shifted7, BLUE_MASK);           \
-    uint32x4_t abgr = vorrq_u32(vorrq_u32(masked3, masked5),        \
-                                vorrq_u32(masked7, (alevel_vec)));  \
-    uint32x4_t rgba = vreinterpretq_u32_u8(                         \
-                          vrev32q_u8(vreinterpretq_u8_u32(abgr)));  \
-    vst1q_u32((line_out), rgba);                                    \
-} while(0)
-
-// store four pre-computed RGB values to RAM
-#define SNES_NTSC_RGB_STORE_SSE4(line_out, raw_vec) do { \
-    _mm_store_si128((__m128i*)line_out, raw_vec); \
-} while(0)
-
-#define SNES_NTSC_RGB_STORE_NEON(line_out, raw_vec) do { \
-    vst1q_u32((uint32_t*)line_out, raw_vec); \
-} while(0)
-
-/* ---- RISC-V Vector (RVV 1.0) macros ---- */
-
-#define SIMD_ZERO_RVV                   __riscv_vmv_v_x_u32m1(0, 4)
-#define SET_SIMD_REGISTER_RVV(a,b,c,d) \
-    ({ uint32_t _t[4]={(a),(b),(c),(d)}; __riscv_vle32_v_u32m1(_t, 4); })
-
-#define SET_SNES_MASK_VECTORS_RVV \
-    const vuint32m1_t alevel_vec     = __riscv_vmv_v_x_u32m1(0x000000FFu, 4); \
-    const vuint32m1_t RED_MASK       = __riscv_vmv_v_x_u32m1(0xFF000000u, 4); \
-    const vuint32m1_t GREEN_MASK     = __riscv_vmv_v_x_u32m1(0x00FF0000u, 4); \
-    const vuint32m1_t BLUE_MASK      = __riscv_vmv_v_x_u32m1(0x0000FF00u, 4); \
-    const vuint32m1_t clamp_mask_vec = __riscv_vmv_v_x_u32m1(snes_ntsc_clamp_mask, 4); \
-    const vuint32m1_t clamp_add_vec  = __riscv_vmv_v_x_u32m1(snes_ntsc_clamp_add, 4)
-
-/* Load 4 x uint16 from pointer */
-#define LOAD_SIMD_REGISTER_RVV(ptr)  __riscv_vle16_v_u16m1((ptr), 4)
-
-/* Extract lane pos from uint16 vector */
-#define EXTRACT_SIMD_REGISTER_VALUE_RVV(reg, pos) \
-    (uint16_t)__riscv_vmv_x_s_u16m1_u16(__riscv_vslidedown_vx_u16m1((reg), (pos), 4))
-
-/* Insert 32-bit scalar into lane pos of uint32 vector via mask-merge */
-#define INSERT_SIMD_REGISTER_VALUE_RVV(reg, value, pos) \
-    __riscv_vmerge_vxm_u32m1((reg), (uint32_t)(value), \
-        __riscv_vmseq_vx_u32m1_b32( \
-            __riscv_vid_v_u32m1(4), (uint32_t)(pos), 4), 4)
-
-/* Concatenate: low (4-pos) lanes of B after the top (4-pos) lanes of A */
-#define ROTATE_OUT_RVV(A, B, pos) \
-    __riscv_vslideup_vx_u16m1( \
-        __riscv_vslidedown_vx_u16m1(__riscv_vmv_v_v_u16m1((A), 4), (pos), 4), \
-        __riscv_vmv_v_v_u16m1((B), 4), (unsigned)(4-(pos)), 4)
-
-/* Clamp only (no colour conversion) */
-#define SNES_NTSC_CLAMP_RVV(io) do { \
-    vuint32m1_t _sub   = __riscv_vand_vv_u32m1( \
-                             __riscv_vsrl_vx_u32m1((io), 9, 4), \
-                             clamp_mask_vec, 4); \
-    vuint32m1_t _clamp = __riscv_vsub_vv_u32m1(clamp_add_vec, _sub, 4); \
-    (io) = __riscv_vor_vv_u32m1((io), _clamp, 4); \
-    _clamp = __riscv_vsub_vv_u32m1(_clamp, _sub, 4); \
-    (io) = __riscv_vand_vv_u32m1((io), _clamp, 4); \
-} while(0)
-
-/* Clamp + convert to RGBA little-endian (matches SSE4 / NEON versions) */
-#define SNES_NTSC_CLAMP_AND_CONVERT_RVV(io) do { \
-    vuint32m1_t _sub   = __riscv_vand_vv_u32m1( \
-                             __riscv_vsrl_vx_u32m1((io), 9, 4), \
-                             clamp_mask_vec, 4); \
-    vuint32m1_t _clamp = __riscv_vsub_vv_u32m1(clamp_add_vec, _sub, 4); \
-    (io) = __riscv_vor_vv_u32m1((io), _clamp, 4); \
-    _clamp = __riscv_vsub_vv_u32m1(_clamp, _sub, 4); \
-    (io) = __riscv_vand_vv_u32m1((io), _clamp, 4); \
-    vuint32m1_t _r = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((io), 3, 4), RED_MASK,   4); \
-    vuint32m1_t _g = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((io), 5, 4), GREEN_MASK, 4); \
-    vuint32m1_t _b = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((io), 7, 4), BLUE_MASK,  4); \
-    vuint32m1_t _a_hi  = __riscv_vsll_vx_u32m1(alevel_vec, 24, 4); \
-    vuint32m1_t _r_lo  = __riscv_vsrl_vx_u32m1(_r, 24, 4); \
-    vuint32m1_t _g_mid = __riscv_vsrl_vx_u32m1(_g,  8, 4); \
-    vuint32m1_t _b_hi  = __riscv_vsll_vx_u32m1(_b,  8, 4); \
-    (io) = __riscv_vor_vv_u32m1(__riscv_vor_vv_u32m1(_a_hi, _b_hi, 4), \
-                                __riscv_vor_vv_u32m1(_g_mid, _r_lo, 4), 4); \
-} while(0)
-
-/* Store four pre-computed RGBA values to RAM */
-#define SNES_NTSC_RGB_STORE_RVV(line_out, raw_vec) \
-    __riscv_vse32_v_u32m1((uint32_t*)(line_out), (raw_vec), 4)
-
-/* Convert raw_vec to RGBA and store (end-of-line path with explicit alevel_vec) */
-#define SNES_NTSC_RGB_OUT_STORE_RVV(line_out, raw_vec, alevel_vec) do { \
-    vuint32m1_t _r = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((raw_vec), 3, 4), RED_MASK,   4); \
-    vuint32m1_t _g = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((raw_vec), 5, 4), GREEN_MASK, 4); \
-    vuint32m1_t _b = __riscv_vand_vv_u32m1(__riscv_vsll_vx_u32m1((raw_vec), 7, 4), BLUE_MASK,  4); \
-    vuint32m1_t _a_hi  = __riscv_vsll_vx_u32m1((alevel_vec), 24, 4); \
-    vuint32m1_t _r_lo  = __riscv_vsrl_vx_u32m1(_r, 24, 4); \
-    vuint32m1_t _g_mid = __riscv_vsrl_vx_u32m1(_g,  8, 4); \
-    vuint32m1_t _b_hi  = __riscv_vsll_vx_u32m1(_b,  8, 4); \
-    vuint32m1_t _out   = __riscv_vor_vv_u32m1(__riscv_vor_vv_u32m1(_a_hi, _b_hi, 4), \
-                                              __riscv_vor_vv_u32m1(_g_mid, _r_lo, 4), 4); \
-    __riscv_vse32_v_u32m1((uint32_t*)(line_out), _out, 4); \
-} while(0)
-
 
 #ifdef __cplusplus
 }

@@ -27,6 +27,8 @@ RenderBase::RenderBase()
     // initial colour lookup tables
     memset(s16_rgb555, 0, S16_PALETTE_ENTRIES * 2 * sizeof(uint16_t));
     memset(rgb_blargg, 0, S16_PALETTE_ENTRIES * 2 * sizeof(uint16_t));
+    memset(ntsc_slot_dirty, 0, S16_PALETTE_ENTRIES * 2 * sizeof(uint8_t));
+    ntsc_dirty_count.store(0, std::memory_order_relaxed);
 }
 
 // Setup screen size
@@ -110,6 +112,19 @@ void RenderBase::convert_palette(uint32_t adr, uint32_t r1, uint32_t g1, uint32_
                      (S16_shadowVal_5bit[b1] << 11) |
                      RGB1555_ALPHA;
     rgb_blargg[adr + S16_PALETTE_ENTRIES] = CURRENT_RGB_BLARRG_SHADOW();
+
+    // Mark both the standard and shadow NTSC filter slots dirty so
+    // flush_ntsc_palette() regenerates their kernels before the next frame's
+    // render threads read them. Plain flag test-and-set: this runs on the
+    // game-logic thread for every palette RAM write, so it must stay cheap.
+    if (!ntsc_slot_dirty[adr]) {
+        ntsc_slot_dirty[adr] = 1;
+        ntsc_dirty_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!ntsc_slot_dirty[adr + S16_PALETTE_ENTRIES]) {
+        ntsc_slot_dirty[adr + S16_PALETTE_ENTRIES] = 1;
+        ntsc_dirty_count.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 
