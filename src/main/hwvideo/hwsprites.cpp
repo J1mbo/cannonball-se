@@ -3,6 +3,7 @@
 #include "globals.hpp"
 #include "frontend/config.hpp"
 #include <cstring>
+#include <cassert>
 #include <algorithm>
 #include <iterator>
 
@@ -102,16 +103,25 @@ void hwsprites::init(const uint8_t* src_sprites)
                          ((uint32_t)d3 <<  0);
         }
     }
+    // SPRITE_IMPLEMENTATION_SPEC.md S1.2 (FABLE_ASSESSMENT.md 6): x1/x2 had
+    // no in-class initialiser and no caller was guaranteed to set them
+    // before the first render(); the real game calls Video::set_video_mode
+    // (which sets config.s16_width) before sprite_layer->init() (video.cpp),
+    // so config.s16_width is already valid here -- default to the full-width
+    // clip window so x1/x2 are never read uninitialised.
+    set_x_clip(false);
 }
 
 
 void hwsprites::reset()
 {
-    // Clear Sprite RAM buffers
-    std::fill_n(ram,                 std::size(ram),                0x0);
-    std::fill_n(ramBuff,             std::size(ramBuff),            0x0);
-    std::fill_n(sprites_flipped,     std::size(sprites_flipped),    0xffffffff);
-    std::fill_n(sprites_shadowinfo,  std::size(sprites_shadowinfo), 0xff);
+    // SPRITE_IMPLEMENTATION_SPEC.md S1.2: "reset clears only ram/ramBuff."
+    // The lazy sprites_flipped/sprites_shadowinfo side tables the shipped
+    // renderer used to reset here are gone (S1 drops them from the game
+    // build); draw_sprite_fast/draw_sprite_px carry no state that
+    // reset()/init() needs to clear.
+    std::fill_n(ram,     std::size(ram),     0x0);
+    std::fill_n(ramBuff, std::size(ramBuff), 0x0);
 }
 
 // Clip areas of the screen in wide-screen mode
@@ -201,755 +211,273 @@ void hwsprites::load_sprite_ram(const uint16_t* buf)
 #define IF_IS_DRAWABLE_NO_CLIP() if  ((unsigned)(pix - 1u) < 14u)
 #define IS_DRAWABLE_NO_CLIP()        ((unsigned)(pix - 1u) < 14u)
 
-#define draw_pixel_1row()                                       \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE() {                                      \
-            if (pix == 0xa) {                                   \
-                *pPix1 |= S16_PALETTE_ENTRIES;                  \
-            } else {                                            \
-                *pPix1 = (pix | color);                         \
-            }                                                   \
-        }                                                       \
-        pPix1++;                                                \
-        x++; xacc += zoom;                                      \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
+// SPRITE_IMPLEMENTATION_SPEC.md S1.2: the twelve draw_pixel_*() macros that
+// used to live here (shadow/no-shadow x clipped/unclipped x 1/2/3-row) were
+// the shipped render()'s per-pixel accumulator body; render() below is now
+// the S1 LINEBUF rewrite and does not use them. The five IF_IS_DRAWABLE*/
+// IS_DRAWABLE* helper macros immediately above are kept: render_ref's own
+// "_ref"-suffixed draw_pixel_*_ref() macros (CB_RENDER_TEST, further down
+// this file) still call them unmodified, so the twin's copy of the shipped
+// algorithm continues to compile and behave exactly as before.
 
-#define draw_pixel_2row()                                       \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE() {                                      \
-            if (pix == 0xa) {                                   \
-                *pPix1 |= S16_PALETTE_ENTRIES;                  \
-                *pPix2 |= S16_PALETTE_ENTRIES;                  \
-            } else {                                            \
-                *pPix1 = (pix | color);                         \
-                *pPix2 = (pix | color);                         \
-            }                                                   \
-        }                                                       \
-        pPix1++; pPix2++;                                       \
-        x++; xacc += zoom;                                      \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-#define draw_pixel_3row()                                       \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE() {                                      \
-            if (pix == 0xa) {                                   \
-                *pPix1 |= S16_PALETTE_ENTRIES;                  \
-                *pPix2 |= S16_PALETTE_ENTRIES;                  \
-                *pPix3 |= S16_PALETTE_ENTRIES;                  \
-            } else {                                            \
-                *pPix1 = (pix | color);                         \
-                *pPix2 = (pix | color);                         \
-                *pPix3 = (pix | color);                         \
-            }                                                   \
-        }                                                       \
-        pPix1++; pPix2++; pPix3++;                              \
-        x++; xacc += zoom;                                      \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-#define draw_pixel_1row_nc()                                    \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE_NO_CLIP() {                              \
-            if (pix == 0xa) {                                   \
-                *pPix1 |= S16_PALETTE_ENTRIES;                  \
-            } else {                                            \
-                *pPix1 = (pix | color);                         \
-            }                                                   \
-        }                                                       \
-        pPix1++;                                                \
-        xacc += zoom;                                           \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-#define draw_pixel_2row_nc()                                    \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE_NO_CLIP() {                              \
-            if (pix == 0xa) {                                   \
-                *pPix1 |= S16_PALETTE_ENTRIES;                  \
-                *pPix2 |= S16_PALETTE_ENTRIES;                  \
-            } else {                                            \
-                *pPix1 = (pix | color);                         \
-                *pPix2 = (pix | color);                         \
-            }                                                   \
-        }                                                       \
-        pPix1++; pPix2++;                                       \
-        xacc += zoom;                                           \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-#define draw_pixel_3row_nc()                                    \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE_NO_CLIP() {                              \
-            if (pix == 0xa) {                                   \
-                *pPix1 |= S16_PALETTE_ENTRIES;                  \
-                *pPix2 |= S16_PALETTE_ENTRIES;                  \
-                *pPix3 |= S16_PALETTE_ENTRIES;                  \
-            } else {                                            \
-                *pPix1 = (pix | color);                         \
-                *pPix2 = (pix | color);                         \
-                *pPix3 = (pix | color);                         \
-            }                                                   \
-        }                                                       \
-        pPix1++; pPix2++; pPix3++;                              \
-        xacc += zoom;                                           \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-// MACROS WITHOUT SHADOW SUPPORT
-
-#define draw_pixel_1row_ns()                                    \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE() {                                      \
-            *pPix1 = (pix | color);                             \
-        }                                                       \
-        pPix1++;                                                \
-        x++; xacc += zoom;                                      \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-#define draw_pixel_2row_ns()                                    \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE() {                                      \
-            *pPix1 = (pix | color);                             \
-            *pPix2 = (pix | color);                             \
-        }                                                       \
-        pPix1++; pPix2++;                                       \
-        x++; xacc += zoom;                                      \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-#define draw_pixel_3row_ns()                                    \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE() {                                      \
-            *pPix1 = (pix | color);                             \
-            *pPix2 = (pix | color);                             \
-            *pPix3 = (pix | color);                             \
-        }                                                       \
-        pPix1++; pPix2++; pPix3++;                              \
-        x++; xacc += zoom;                                      \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-#define draw_pixel_1row_nc_ns()                                 \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE_NO_CLIP() {                              \
-            *pPix1 = (pix | color);                             \
-        }                                                       \
-        pPix1++;                                                \
-        xacc += zoom;                                           \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-#define draw_pixel_2row_nc_ns()                                 \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE_NO_CLIP() {                              \
-            *pPix1 = (pix | color);                             \
-            *pPix2 = (pix | color);                             \
-        }                                                       \
-        pPix1++; pPix2++;                                       \
-        xacc += zoom;                                           \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-#define draw_pixel_3row_nc_ns()                                 \
-{                                                               \
-    while (xacc < 0x200) {                                      \
-        IF_IS_DRAWABLE_NO_CLIP() {                              \
-            *pPix1 = (pix | color);                             \
-            *pPix2 = (pix | color);                             \
-            *pPix3 = (pix | color);                             \
-        }                                                       \
-        pPix1++; pPix2++; pPix3++;                              \
-        xacc += zoom;                                           \
-    }                                                           \
-    xacc -= 0x200;                                              \
-}
-
-
-
-void hwsprites::render(uint16_t* pixels, const uint8_t priority)
+void hwsprites::render(uint16_t* pixels, uint8_t priority, bool dest_clean)
 {
-    const uint32_t numbanks = SPRITES_LENGTH / 0x10000;
+    // SPRITE_IMPLEMENTATION_SPEC.md S1.2/S3.2: dest_clean will gate S3's
+    // shadow_rows bitmap; S1 does not use it yet.
+    (void)dest_clean;
 
-    for (uint16_t data = 0; data < SPRITE_RAM_SIZE; data += 16) // was +=8
+    // ---------------------------------------------------------------------
+    // SPRITE_IMPLEMENTATION_SPEC.md S1.2: dispatch. Each engine-emitted
+    // record either fits draw_sprite_fast's envelope (the closed-form
+    // LINEBUF core: decode each visible source row once, replay it onto
+    // every destination row that shares it) or falls back to the pixel-
+    // serial oracle render_px, which is unconditionally correct for any
+    // record (S0.4) -- ydelta == -1 (bottom-to-top; real ROM data never
+    // emits this, set_hrender always forces the top-to-bottom bit),
+    // zoom < SPR_FAST_ZOOM_MIN (below every shipping zoom table), or
+    // pend > SPR_PEND_MAX (wider than the line buffer's margin allows).
+    // pend <= 0 draws nothing at all (every row starts at xpos).
+    // ---------------------------------------------------------------------
+    for (uint16_t d = 0; d < SPRITE_RAM_SIZE; d += 16)
     {
-        // stop when we hit the end of sprite list
-        if ((ramBuff[data+0] & 0x8000) != 0) break;
+        if ((ramBuff[d + 0] & 0x8000) != 0) break; // end of sprite list
 
-        uint32_t sprpri  = 1 << ((ramBuff[data+3] >> 12) & 3);
-        if (sprpri != priority) continue;
+        SpriteRec rec;
+        if (!parse_record(d, priority, rec)) continue;
 
-        // if hidden, or top greater than/equal to bottom, or invalid bank, punt
-        int16_t hide    = (ramBuff[data+0] & 0x5000);
-        int32_t height  = (ramBuff[data+5] >> 8) + 1;
-        if (hide != 0 || height == 0) continue;
+        const int32_t pend = x2 - rec.xpos;
+        if (pend <= 0) continue;
 
-        int16_t bank      =  (ramBuff[data+0] >> 9) & 7;
-        int32_t top       =  (ramBuff[data+0] & 0x1ff) - 0x100;
-        bool     clip     =  (ramBuff[data+0] & 0x2000);
-        uint32_t addr     =   ramBuff[data+1];
-        int32_t pitch     = ((ramBuff[data+2] >> 1) | ((ramBuff[data+4] & 0x1000) << 3)) >> 8;
-        uint8_t shadow    =  (ramBuff[data+3] >> 14) & 1;
-//        int32_t  zoom     =   ramBuff[data+3] & 0x7ff;
-        int32_t  zoom     =   ramBuff[data+3] & 0x0fff;
-        int32_t ydelta    = ((ramBuff[data+4] & 0x8000) != 0) ? 1 : -1;
-        int32_t flip      = (~ramBuff[data+4] >> 14) & 1;
-        int32_t xdelta    = ((ramBuff[data+4] & 0x2000) != 0) ? 1 : -1;
-//        int32_t hzoom     =   ramBuff[data+4] & 0x7ff;
-        int32_t width     =   ramBuff[data+4] & 0x7ff;
-        int32_t color     = COLOR_BASE +
-                            ((ramBuff[data+5] & 0x7f) << 4);
-        int32_t sprite_scanlines =
-                            ((ramBuff[data+5] & 0xff00) >> 16) +1;
-        int32_t xpos      =   ramBuff[data+6]; // moved from original structure to accomodate widescreen
-        int32_t rawh      =   ramBuff[data+7]; // JJP - height of sprite in rows
-        int32_t y, ytarget, yacc = 0;
+        if (rec.ydelta == -1 || rec.zoom < SPR_FAST_ZOOM_MIN || pend > SPR_PEND_MAX) {
+#ifdef CB_SPRITE_STATS
+            stat_fallback++;
+#endif
+            draw_sprite_px(rec, pixels, glow);
+        } else {
+            draw_sprite_fast(rec, pixels, pend);
+        }
+    }
+}
 
-        int16_t offset    =   ramBuff[data+15]; // JJP - provides horizontal offset for hires sprite rendering
-        // adjust X coordinate
-        // note: the threshhold below is a guess. If it is too high, rachero will draw garbage
-        // If it is too low, smgp won't draw the bottom part of the road
-        if (xpos < 0x80 && xdelta < 0)
-            xpos += 0x200;
-        xpos -= 0xbe;
+// =============================================================================================
+// SPRITE_IMPLEMENTATION_SPEC.md S1.2: LINEBUF core -- schedule table,
+// decode-once, replay-many (both replay strategies D/D'), ROM prefetch.
+// Scalar/portable only (S1; NEON replay/decode land in S4). Nothing here
+// keeps state across sprites: line[]/rec[]/nrec are scratch reused per row,
+// sched_tab is a pure cache keyed by zoom.
+// =============================================================================================
 
- //       // initialize the end address to the start address
- //       ramBuff[data+7] = addr;
+// sched(zoom): builds (on first use) and caches run[SPR_SCHED_LEN] for this
+// (already post-halving) zoom -- one run length per nibble position, by the
+// same reference accumulator the shipped renderer's row loop used
+// (verbatim recurrence): "xacc = 0; for i: r = 0; while (xacc < 0x200) {
+// r++; xacc += zoom; } xacc -= 0x200; run[i] = r;". This is the
+// division-free closed form of SCHEDULE_VERIFICATION.md's scaling law:
+// run[i] == ceil(512*(i+1)/zoom) - ceil(512*i/zoom) (proved by unit s1a).
+const uint8_t* hwsprites::sched(uint32_t zoom)
+{
+    std::unique_ptr<uint8_t[]>& slot = sched_tab[zoom & 0xfff];
+    if (!slot) {
+        slot.reset(new uint8_t[SPR_SCHED_LEN]);
+        uint32_t xacc = 0;
+        for (int32_t i = 0; i < SPR_SCHED_LEN; i++) {
+            int32_t r = 0;
+            while (xacc < 0x200) { r++; xacc += zoom; }
+            xacc -= 0x200;
+            assert(zoom < (uint32_t)SPR_FAST_ZOOM_MIN || r <= 4);
+            slot[i] = (uint8_t)r;
+        }
+    }
+    return slot.get();
+}
 
-        // clamp to within the memory region size
-        if (numbanks)
-            bank %= numbanks;
+// emit(type, pos): appends a span-type change at output position pos to
+// rec[]/nrec, applying the two rules that keep records the maximal runs of
+// one type (S2's glow depends on this): a zero-length record -- a run-0
+// pixel landed exactly on the previous boundary -- is dropped by
+// decrementing nrec first; a record whose type equals the (possibly
+// just-uncovered) previous record's type is a no-op merge.
+void hwsprites::emit(uint8_t type, int32_t pos)
+{
+    if (nrec > 0 && rec[nrec - 1].pos == (uint16_t)pos)
+        nrec--;
+    if (nrec > 0 && rec[nrec - 1].type == type)
+        return;
+    rec[nrec].pos = (uint16_t)pos;
+    rec[nrec].type = type;
+    rec[nrec].flags = 0;
+    nrec++;
+}
 
-        const uint32_t* spriterom = sprites + 0x10000 * bank;
-        uint32_t* spriterom_flipped = sprites_flipped + 0x10000 * bank;
-        uint8_t* spriterom_shadowinfo = sprites_shadowinfo + 0x10000 * bank;
+// decode_row: expands source row j of sprite r into line[] (output-order
+// n|color halfwords, always written four-at-a-time regardless of this
+// nibble's own run length -- safe because any overrun lands on positions
+// the next source pixel overwrites, or beyond the sentinel where replay
+// never reads, per SPR_LB_LEN's margin) and into rec[]/nrec (the maximal-run
+// span records). Reads each ROM word once, mirrors flipped rows on the fly
+// with nibrev() (no sprites_flipped side table) and classifies shadow per
+// nibble during decode (no sprites_shadowinfo side table).
+void hwsprites::decode_row(const SpriteRec& r, int32_t j, int32_t pend)
+{
+    int32_t pos = 0;
+    int32_t words = 0;
+    nrec = 0;
+    uint8_t prev = SPR_GAP;
+    const uint8_t* run = sched((uint32_t)r.zoom);
+    const int64_t rowbase = (int64_t)r.bank * 0x10000 + r.addr + (int64_t)r.pitch * j;
 
-        // loop from top to bottom
-        ytarget = top + ydelta * height;
+    for (;;) {
+        if (pos >= pend || words == SPR_WMAX) break;
+        const int64_t widx = r.flip ? (rowbase + r.pitch - 1 - words) : (rowbase + words);
+        if (widx < 0 || widx >= (int64_t)SPRITES_LENGTH) break;
 
-        // Adjust for widescreen mode
-        xpos += config.s16_x_off;
+        uint32_t w = sprites[widx];
+        if (r.flip) w = nibrev(w);
 
-        // Adjust for hi-res mode
-        if (config.video.hires) {
-            xpos <<= 1;
-            top <<= 1;
-            ytarget <<= 1;
-            zoom >>= 1;
+        for (int k = 0; k < 8; k++) {
+            const unsigned n = (w >> (28 - 4 * k)) & 0xF;
+            const uint8_t t = (n == 0 || n == 15) ? SPR_GAP
+                             : ((r.shadow && n == 10) ? SPR_SHADOW : SPR_COLOUR);
+            if (t != prev) { emit(t, pos); prev = t; }
+
+            const uint16_t v = (uint16_t)(n | r.color);
+            const uint64_t fill = (uint64_t)v * 0x0001000100010001ULL;
+            std::memcpy(line + pos, &fill, 8);
+
+            pos += run[words * 8 + k];
         }
 
-        // JJP - maintain converted sprites to aid writing them
-        uint32_t sprite_height = 0;
-        // Determine underlying sprite height
-        int32_t steps = ytarget - top;  // true as ydelta is always + or - 1.
-        // Use 64-bit multiply to avoid overflow
-        sprite_height = ((uint64_t)steps * zoom) >> 9;
+        words++;
+        if ((w & 0xF0) == 0xF0) break; // terminator, tested on the (mirrored) word after it is fully drawn
+    }
+    emit(SPR_GAP, pos); // sentinel; guarantees the last record is a GAP
+}
 
-//std::cout << "\rSprite height: " << height << ", Calculated Height: " << sprite_height << ", raw height: " << rawh << "\n";
+// prefetch_rom_row: read-prefetch the two ROM words decode_row will touch
+// first and last for source row jrow ("the words at k = 0 and k = pitch -
+// 1"), mirrored for flip so the two hinted addresses are always the row's
+// actual first/last read regardless of direction. Bounds-checked; a row
+// that will never be decoded, or whose hinted words fall outside the ROM
+// image, simply prefetches nothing.
+void hwsprites::prefetch_rom_row(const SpriteRec& r, int32_t jrow) const
+{
+    if (jrow < 0) return;
+    const int64_t rowbase = (int64_t)r.bank * 0x10000 + r.addr + (int64_t)r.pitch * jrow;
+    const int64_t w_first = r.flip ? (rowbase + r.pitch - 1) : rowbase;
+    const int64_t w_last  = r.flip ? rowbase : (rowbase + r.pitch - 1);
+    if (w_first >= 0 && w_first < (int64_t)SPRITES_LENGTH) cb_prefetch_r(&sprites[w_first]);
+    if (w_last  >= 0 && w_last  < (int64_t)SPRITES_LENGTH) cb_prefetch_r(&sprites[w_last]);
+}
 
-/* The above replaces...
-        uint32_t yacc_t = 0;
-        for (int y = top; y != ytarget; y += ydelta) {
-            yacc_t += zoom;
-            sprite_height += (yacc_t >> 9);
-            yacc_t &= 0x1ff;
-        }
-*/
-        static uint32_t converted_sprites = 0;
-        static uint32_t processed_lines = 0;
+// replay: writes the just-decoded row's records onto destination rows
+// [da, db) of sprite r. COLOUR spans are store-only -- D copies the whole
+// span once per row (memcpy); D' loads each 4-halfword chunk of the span
+// exactly once and stores it to every destination row, with a scalar
+// halfword tail -- the destination is never read by either. SHADOW spans
+// are an inline read-modify-write, one pixel at a time, and are never
+// deferred or batched across rows. Both modes write exactly [lo, hi) and
+// nothing outside it; replay_mode just selects between them (measured, not
+// verified separately -- S1.5 picks the shipped default).
+void hwsprites::replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t db, int32_t cx0, int32_t cx1)
+{
+#ifdef CB_RENDER_TEST
+    // S1.4 negative control only (never set by the game, never true unless
+    // the driver's own negative-control test sets it): widen the right edge
+    // of the clip window past x2 by a fixed margin, so replay draws some of
+    // the pixels decode_row already decoded (it overshoots pend by up to
+    // ~34, S1.2) but the real clip test would have discarded -- an F2-scale
+    // overrun (a handful of pixels past the sprite's true edge) rather than
+    // an unbounded one. This is deliberately NOT "cx0 = 0, cx1 = SPR_LB_LEN"
+    // (disable clipping outright): that widens by up to ~4096 pixels per
+    // row, which reliably walks clean off the end of the pixel allocation
+    // and corrupts the heap allocator's own bookkeeping (observed here as
+    // an unconditional abort on the next operator delete/new, before the
+    // driver's memcmp -- and therefore its PASS/FAIL report -- ever runs).
+    // A bounded overrun still lands outside the sprite's clipped extent
+    // (into the pad, the spare rows, or a neighbouring row/sprite's pixels)
+    // often enough for fuzz's whole-allocation memcmp to reliably catch it,
+    // which is the property this control exists to demonstrate, without
+    // crashing the harness before it can report that.
+    if (debug_disable_clip) { cx1 += 32; }
+#endif
 
-        if (xdelta == -1) {
-            xdelta = 1;       // always draw left-to-right
-            xpos  -= (width << (config.video.hires ? 1 : 0));   // move draw position left by rendered width
-            if (flip) {
-                flip = 0;
-                addr -= (pitch - 1);
+    const int32_t scrn_width = (int32_t)config.s16_width;
+    uint16_t* const base = pixels + (size_t)r.top * scrn_width + r.xpos;
+
+    for (int32_t k = 0; k + 1 < nrec; k++) {
+        if (rec[k].type == SPR_GAP) continue;
+
+        const int32_t lo = std::max<int32_t>(rec[k].pos, cx0);
+        const int32_t hi = std::min<int32_t>(rec[k + 1].pos, cx1);
+        if (hi <= lo) continue;
+
+        if (rec[k].type == SPR_COLOUR) {
+            if (replay_mode == 0) {
+                // D: span-copy, one memcpy per destination row.
+                for (int32_t d = da; d < db; d++)
+                    std::memcpy(base + (size_t)d * scrn_width + lo, line + lo,
+                                (size_t)(hi - lo) * sizeof(uint16_t));
             } else {
-                flip = 1;
-                addr += (pitch - 1);
-            }
-        }
-
-        uint32_t shadowaddr = addr;
-
-        if (flip) {
-/*
-            converted_sprites++;
-            if (converted_sprites==1024) {
-                write_bytes_u32("sprites_flipped.bin", sprites_flipped, SPRITES_LENGTH);
-                write_bytes_u8("sprites_shadowinfo.bin", sprites_shadowinfo, SPRITES_LENGTH);
-                converted_sprites=0;
-            }
-*/
-            // first encounter of sprite, created flipped entry
-            shadowaddr -= (pitch - 1); // start of data, if unflipped
-
-            for (int y = 0; y < sprite_height; y++) {
-//            for (int y = 0; y < height; y++) {
-                // calculate the addresses for this line
-                uint32_t readaddr     = shadowaddr;
-                uint32_t writeaddr    = shadowaddr + pitch;
-                uint32_t shadow_found = 0;
-                if (spriterom_flipped[readaddr] == 0xffffffff) {
-/*
-processed_lines++;
-std::cout << "\r\t\t\t\t" << processed_lines << " sprite lines flipped";
-*/
-                    // first time we've seen this row
-                    for (int x = 0; x < pitch; x++) {
-                        uint32_t pixels = spriterom[readaddr++];
-                        uint8_t  px[8];
-                        // check for shadows
-                        uint32_t pxt = pixels ^ 0xAAAAAAAAu;
-                        if (((pxt - 0x11111111u) & ~pxt & 0x88888888u) != 0)
-                            shadow_found = 0x11;
-                        // process eight pixels
-                        px[0] = (pixels >> 28) & 0xf;
-                        px[1] = (pixels >> 24) & 0xf;
-                        px[2] = (pixels >> 20) & 0xf;
-                        px[3] = (pixels >> 16) & 0xf;
-                        px[4] = (pixels >> 12) & 0xf;
-                        px[5] = (pixels >>  8) & 0xf;
-                        px[6] = (pixels >>  4) & 0xf;
-                        px[7] = (pixels >>  0) & 0xf;
-
-                        spriterom_flipped[--writeaddr] =
-                            (px[0] <<  0) |
-                            (px[1] <<  4) |
-                            (px[2] <<  8) |
-                            (px[3] << 12) |
-                            (px[4] << 16) |
-                            (px[5] << 20) |
-                            (px[6] << 24) |
-                            (px[7] << 28);
-                    };
-                    spriterom_shadowinfo[shadowaddr] = shadow_found;
+                // D': load each chunk once, store it to every destination row.
+                int32_t p = lo;
+                for (; p + 4 <= hi; p += 4) {
+                    uint64_t chunk;
+                    std::memcpy(&chunk, line + p, 8);
+                    for (int32_t d = da; d < db; d++)
+                        std::memcpy(base + (size_t)d * scrn_width + p, &chunk, 8);
                 }
-                shadowaddr += pitch;
-            }
-        } else {
-            // not flipped
-            for (int y = 0; y < sprite_height; y++) {
-                if (spriterom_shadowinfo[shadowaddr] == 0xff) {
-                    // first time seeing this sprite line
-                    uint32_t readaddr = shadowaddr;
-                    uint32_t shadow_found = 0;
-                    for (int i = 0; i < pitch; ++i) {
-                        uint32_t pixels = spriterom[readaddr++];
-                        // check for shadows
-                        uint32_t pxt = pixels ^ 0xAAAAAAAAu;
-                        if (((pxt - 0x11111111u) & ~pxt & 0x88888888u) != 0) {
-                            shadow_found = 0x11;
-                            break;
-                        }
-                    }
-                    spriterom_shadowinfo[shadowaddr] = shadow_found;
-                }
-                shadowaddr += pitch;
-            }
-        }
-
-        // adjust x-position with pre-determined offset for hi-res sprite rendering
-        if (config.video.hiresprites == 1)
-            xpos += offset;
-
-        // choose which ROM to read from - flipped or non-flipped
-        const uint32_t* spritedata;
-        if (flip) {
-            addr = addr - pitch + 1; // set pointer to start of sprite row
-            spritedata = &spriterom_flipped[0];
-        } else {
-            spritedata = &spriterom[0];
-        }
-
-        const uint16_t scrn_width = config.s16_width;
-        const unsigned span = (unsigned)(x2 - x1);
-
-        uint32_t jump_key = 3;
-        // drawing loop
-        for (y = top; y != ytarget; y += ydelta)
-        {
-            // skip drawing if not within the cliprect
-            if (y >= 0 && y < config.s16_height)
-            {
-                uint16_t* pPix1 = pixels + ((y+0) * scrn_width) + xpos;
-                uint32_t spriteaddr = addr;
-                int32_t xacc = 0;
-
-                // determine how many rows will be written on this pass
-                uint16_t count = 1;
-                uint32_t frac = yacc + zoom;
-                uint16_t countmax = std::min( (uint16_t)(ytarget - y),
-                                              std::min<uint16_t>(3, config.s16_height - y));
-                while (frac < 0x200 && count < countmax) {
-                    frac += zoom;
-                    count++;
-                }
-                // count now contains a value between 1 and 3.
-                // we can also use (count-1) as the *minimum* number of pixels that will be written out
-                // but each x-pass, since hzoom=vzoom.
-
-                bool shadowfound = shadow && (spriterom_shadowinfo[addr] == 0x11);
-
-                // the following should compile to a jump table, making it much quicker to get to the
-                // optimised drawing path we need without wading through layers of if/else etc
-
-                count = (count - 1) & 3; // 0..3
-                //uint32_t jump_key = //((xdelta>0)     ? 0u : 1u)   /* draw direction */
-                jump_key =   (count                   ) | /* output rows, 1-4, selected via 0-3 */
-                             ((clip)         ? 0u : 4u) | /* sprite requires x-clip */
-                             ((shadowfound)  ? 8u : 0u); /* sprite has shadows */
-
-                // Note - the proportion of sprite *lines* following the (shadowfound) path (jump_key>7) is
-                // low, approx 10%, however the cost of rendering them is much, much higher.
-
-//std::cout << "Clip: " << clip << ", Count: " << count << ", flip: " << flip << ", jump_key: " << jump_key << std::endl;
-
-                switch (jump_key) {
-
-                    case 0:
-                    {
-                        // no shadows, clipped, count==1, not flipped
-                        for (int32_t x = xpos; (xdelta > 0 && x < scrn_width) || (xdelta < 0 && x >= 0); ) {
-                            uint32_t pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_1row_ns();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_1row_ns();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_1row_ns();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_1row_ns();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_1row_ns();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_1row_ns();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_1row_ns();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_1row_ns();
-                            // stop if the second-to-last pixel in the group was 0xf
-                            if ((pixels & 0x000000f0) == 0x000000f0)
-                                break;
-                        }
-                        break;
-                    }
-                    case 1:
-                    {
-                        // no shadows, clipped, count==2, not-flipped
-                        uint16_t* pPix2 = pixels + ((y+1) * scrn_width) + xpos;
-                        for (int32_t x = xpos; (xdelta > 0 && x < scrn_width) || (xdelta < 0 && x >= 0); ) {
-                            uint32_t pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_2row_ns();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_2row_ns();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_2row_ns();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_2row_ns();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_2row_ns();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_2row_ns();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_2row_ns();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_2row_ns();
-                            // stop if the second-to-last pixel in the group was 0xf
-                            if ((pixels & 0x000000f0) == 0x000000f0)
-                                break;
-                        }
-                        // accumulate extra zoom factor
-                        yacc += zoom;
-                        addr += pitch * (yacc >> 9);
-                        yacc &= 0x1ff;
-                        y++;
-                        break;
-                    }
-                    case 2:
-                    {
-                        // no shadows, clipped, count==3, not-flipped
-                        uint16_t* pPix2 = pixels + ((y+1) * scrn_width) + xpos;
-                        uint16_t* pPix3 = pixels + ((y+2) * scrn_width) + xpos;
-                        for (int32_t x = xpos; (xdelta > 0 && x < scrn_width) || (xdelta < 0 && x >= 0); ) {
-                            uint32_t pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_3row_ns();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_3row_ns();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_3row_ns();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_3row_ns();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_3row_ns();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_3row_ns();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_3row_ns();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_3row_ns();
-                            // stop if the second-to-last pixel in the group was 0xf
-                            if ((pixels & 0x000000f0) == 0x000000f0)
-                                break;
-                        }
-                        // accumulate extra zoom factors
-                        for (int i=1; i<2; i++) {
-                            yacc += zoom;
-                            addr += pitch * (yacc >> 9);
-                            yacc &= 0x1ff;
-                            y++;
-                        }
-                        break;
-                    }
-                    case 3: break; // count==4 - not used as <1%
-                    case 4:
-                    {
-                        // no shadows, not clipped, count==1, not flipped
-                        //for (int32_t x = xpos; (xdelta > 0 && x < scrn_width) || (xdelta < 0 && x >= 0); ) {
-                        uint32_t pixels;
-                        do {
-                            pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_1row_nc_ns();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_1row_nc_ns();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_1row_nc_ns();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_1row_nc_ns();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_1row_nc_ns();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_1row_nc_ns();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_1row_nc_ns();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_1row_nc_ns();
-                            // stop if the second-to-last pixel in the group was 0xf
-                        } while ((pixels & 0x000000f0) != 0x000000f0);
-                        break;
-                    }
-                    case 5:
-                    {
-                        // no shadows, not clipped, count==2, not flipped
-                        uint16_t* pPix2 = pixels + ((y+1) * scrn_width) + xpos;
-                        uint32_t pixels;
-                        do {
-                            pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_2row_nc_ns();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_2row_nc_ns();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_2row_nc_ns();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_2row_nc_ns();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_2row_nc_ns();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_2row_nc_ns();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_2row_nc_ns();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_2row_nc_ns();
-                            // stop if the second-to-last pixel in the group was 0xf
-                        } while ((pixels & 0x000000f0) != 0x000000f0);
-                        // accumulate extra zoom factor
-                        yacc += zoom;
-                        addr += pitch * (yacc >> 9);
-                        yacc &= 0x1ff;
-                        y++;
-                        break;
-                    }
-                    case 6:
-                    {
-                        // no shadows, not clipped, count==3, not flipped
-                        uint16_t* pPix2 = pixels + ((y+1) * scrn_width) + xpos;
-                        uint16_t* pPix3 = pixels + ((y+2) * scrn_width) + xpos;
-                        uint32_t pixels;
-                        do {
-                            pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_3row_nc_ns();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_3row_nc_ns();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_3row_nc_ns();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_3row_nc_ns();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_3row_nc_ns();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_3row_nc_ns();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_3row_nc_ns();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_3row_nc_ns();
-                            // stop if the second-to-last pixel in the group was 0xf
-                        } while ((pixels & 0x000000f0) != 0x000000f0);
-                        // accumulate extra zoom factors
-                        for (int i=1; i<2; i++) {
-                            yacc += zoom;
-                            addr += pitch * (yacc >> 9);
-                            yacc &= 0x1ff;
-                            y++;
-                        }
-                        break;
-                    }
-                    case 7: break; // count==4 - not used as <1%
-                    case 8:
-                    {
-                        // shadows, clipped, count==1, not flipped
-                        for (int32_t x = xpos; (xdelta > 0 && x < scrn_width) || (xdelta < 0 && x >= 0); ) {
-                            uint32_t pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_1row();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_1row();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_1row();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_1row();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_1row();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_1row();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_1row();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_1row();
-                            // stop if the second-to-last pixel in the group was 0xf
-                            if ((pixels & 0x000000f0) == 0x000000f0)
-                                break;
-                        }
-                        break;
-                    }
-                    case 9:
-                    {
-                        // shadows, clipped, count==2, not-flipped
-                        uint16_t* pPix2 = pixels + ((y+1) * scrn_width) + xpos;
-                        for (int32_t x = xpos; (xdelta > 0 && x < scrn_width) || (xdelta < 0 && x >= 0); ) {
-                            uint32_t pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_2row();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_2row();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_2row();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_2row();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_2row();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_2row();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_2row();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_2row();
-                            // stop if the second-to-last pixel in the group was 0xf
-                            if ((pixels & 0x000000f0) == 0x000000f0)
-                                break;
-                        }
-                        // accumulate extra zoom factor
-                        yacc += zoom;
-                        addr += pitch * (yacc >> 9);
-                        yacc &= 0x1ff;
-                        y++;
-                        break;
-                    }
-                    case 10:
-                    {
-                        // shadows, clipped, count==3, not-flipped
-                        uint16_t* pPix2 = pixels + ((y+1) * scrn_width) + xpos;
-                        uint16_t* pPix3 = pixels + ((y+2) * scrn_width) + xpos;
-                        for (int32_t x = xpos; (xdelta > 0 && x < scrn_width) || (xdelta < 0 && x >= 0); ) {
-                            uint32_t pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_3row();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_3row();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_3row();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_3row();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_3row();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_3row();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_3row();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_3row();
-                            // stop if the second-to-last pixel in the group was 0xf
-                            if ((pixels & 0x000000f0) == 0x000000f0)
-                                break;
-                        }
-                        // accumulate extra zoom factors
-                        for (int i=1; i<2; i++) {
-                            yacc += zoom;
-                            addr += pitch * (yacc >> 9);
-                            yacc &= 0x1ff;
-                            y++;
-                        }
-                        break;
-                    }
-                    case 11: break; // count==4 - not used as <1%
-                    case 12:
-                    {
-                        // shadows, not clipped, count==1, not flipped
-                        //for (int32_t x = xpos; (xdelta > 0 && x < scrn_width) || (xdelta < 0 && x >= 0); ) {
-                        uint32_t pixels;
-                        do {
-                            pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_1row_nc();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_1row_nc();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_1row_nc();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_1row_nc();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_1row_nc();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_1row_nc();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_1row_nc();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_1row_nc();
-                            // stop if the second-to-last pixel in the group was 0xf
-                        } while ((pixels & 0x000000f0) != 0x000000f0);
-                        break;
-                    }
-                    case 13:
-                    {
-                        // shadows, not clipped, count==2, not flipped
-                        uint16_t* pPix2 = pixels + ((y+1) * scrn_width) + xpos;
-                        uint32_t pixels;
-                        do {
-                            pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_2row_nc();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_2row_nc();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_2row_nc();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_2row_nc();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_2row_nc();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_2row_nc();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_2row_nc();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_2row_nc();
-                            // stop if the second-to-last pixel in the group was 0xf
-                        } while ((pixels & 0x000000f0) != 0x000000f0);
-                        // accumulate extra zoom factor
-                        yacc += zoom;
-                        addr += pitch * (yacc >> 9);
-                        yacc &= 0x1ff;
-                        y++;
-                        break;
-                    }
-                    case 14:
-                    {
-                        // shadows, not clipped, count==3, not flipped
-                        uint16_t* pPix2 = pixels + ((y+1) * scrn_width) + xpos;
-                        uint16_t* pPix3 = pixels + ((y+2) * scrn_width) + xpos;
-                        uint32_t pixels;
-                        do {
-                            pixels = spritedata[spriteaddr++];
-                            uint32_t pix;
-                            // draw eight pixels
-                            pix = (pixels >> 28) & 0xf; draw_pixel_3row_nc();
-                            pix = (pixels >> 24) & 0xf; draw_pixel_3row_nc();
-                            pix = (pixels >> 20) & 0xf; draw_pixel_3row_nc();
-                            pix = (pixels >> 16) & 0xf; draw_pixel_3row_nc();
-                            pix = (pixels >> 12) & 0xf; draw_pixel_3row_nc();
-                            pix = (pixels >>  8) & 0xf; draw_pixel_3row_nc();
-                            pix = (pixels >>  4) & 0xf; draw_pixel_3row_nc();
-                            pix = (pixels >>  0) & 0xf; draw_pixel_3row_nc();
-                            // stop if the second-to-last pixel in the group was 0xf
-                        } while ((pixels & 0x000000f0) != 0x000000f0);
-                        // accumulate extra zoom factors
-                        for (int i=1; i<2; i++) {
-                            yacc += zoom;
-                            addr += pitch * (yacc >> 9);
-                            yacc &= 0x1ff;
-                            y++;
-                        }
-                        break;
-                    }
-                    case 15: break; // count==4 - not used as <1%
+                for (; p < hi; p++) {
+                    const uint16_t v = line[p];
+                    for (int32_t d = da; d < db; d++)
+                        (base + (size_t)d * scrn_width)[p] = v;
                 }
             }
-            // accumulate zoom factors; if we carry into the high bit, skip an extra row
-            yacc += zoom;
-            addr += pitch * (yacc >> 9);
-            yacc &= 0x1ff;
+        } else { // SPR_SHADOW: inline read-modify-write, never deferred, never batched across rows
+            for (int32_t d = da; d < db; d++) {
+                uint16_t* rowp = base + (size_t)d * scrn_width;
+                for (int32_t p = lo; p < hi; p++)
+                    rowp[p] |= S16_PALETTE_ENTRIES;
+            }
         }
+    }
+}
+
+// draw_sprite_fast: the closed-form LINEBUF vertical loop. Every destination
+// row d in [d_lo, d_hi) reads source row src(d) = (d*zoom) >> 9
+// (division-free once zoom is fixed, exactly the shipped accumulator's
+// result -- unit s1a); consecutive d's sharing a source row are grouped so
+// that row is decoded exactly once and replayed onto every row in the
+// group. render()'s dispatch guarantees r.ydelta == 1 here (ydelta == -1
+// routes to draw_sprite_px), so y = r.top + d and d_lo/d_hi need only clip
+// to [0, s16_height).
+void hwsprites::draw_sprite_fast(const SpriteRec& r, uint16_t* pixels, int32_t pend)
+{
+    const int32_t d_lo = std::max<int32_t>(0, -r.top);
+    const int32_t d_hi = std::min<int32_t>(r.H, (int32_t)config.s16_height - r.top);
+    if (d_lo >= d_hi) return;
+
+    const int32_t cx0 = (int32_t)x1 - r.xpos;
+    const int32_t cx1 = pend;
+
+    // Initial ROM prefetch: the first two source rows this sprite will read.
+    {
+        const int32_t j0 = (int32_t)(((int64_t)d_lo * r.zoom) >> 9);
+        prefetch_rom_row(r, j0);
+        prefetch_rom_row(r, j0 + 1);
+    }
+
+    int32_t d = d_lo;
+    while (d < d_hi) {
+        const int32_t j = (int32_t)(((int64_t)d * r.zoom) >> 9);
+        const int32_t da = d;
+        d++;
+        while (d < d_hi && (int32_t)(((int64_t)d * r.zoom) >> 9) == j) d++;
+        const int32_t db = d;
+
+        prefetch_rom_row(r, j + SPR_ROM_PF_ROWS);
+
+        decode_row(r, j, pend);
+        replay(r, pixels, da, db, cx0, cx1);
     }
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stdint.hpp"
+#include <memory>
 
 class video;
 
@@ -15,7 +16,11 @@ public:
     void swap();
     uint8_t read(const uint16_t adr);
     void write(const uint16_t adr, const uint16_t data);
-    void render(uint16_t* pixels, const uint8_t);
+    // SPRITE_IMPLEMENTATION_SPEC.md S1.2: dest_clean is the S3 "row already
+    // clean" hint (video.cpp's fg_enabled); default false so every existing
+    // call site (video.cpp:350, the driver) keeps compiling unchanged. S1
+    // does not consult it yet (that lands with S3's shadow_rows bitmap).
+    void render(uint16_t* pixels, uint8_t priority, bool dest_clean = false);
 
     // ---------------------------------------------------------------------
     // SPRITE_IMPLEMENTATION_SPEC.md S0.5: unconditional test/inspection
@@ -65,13 +70,15 @@ private:
     static const uint16_t COLOR_BASE = 0x800;
 
     uint32_t sprites[SPRITES_LENGTH];               // Little-endian forward sprites
-    uint32_t sprites_flipped[SPRITES_LENGTH];       // Little-endian flipped sprites
-    // sprites_shadowinfo contains, at the start address of each sprite,
-    // - 0xff for each row that has not yest been processed
-    // - 0x11 for each row that contains a shadow entry (0xA);
-    // - 0x00 otherwise
-    // This helps with rendering as we can use a lower-cost routine 90% of the time
-    uint8_t sprites_shadowinfo[SPRITES_LENGTH];
+    // SPRITE_IMPLEMENTATION_SPEC.md S1.2: the shipped renderer's lazy
+    // "sprites_flipped"/"sprites_shadowinfo" side tables (2.25 MB, and the
+    // source of finding F1, the preamble's history-dependence defect) are
+    // dropped from the game build here. draw_sprite_fast mirrors flipped rows
+    // on the fly with nibrev() and classifies shadow nibbles per-nibble
+    // during decode instead. The _ref twin keeps its own copies
+    // (sprites_flipped_ref/sprites_shadowinfo_ref below, CB_RENDER_TEST only)
+    // so it can still reproduce the shipped renderer's history-dependent
+    // behaviour for the S0 selftest/replay classifier.
 
     // Two halves of RAM
     uint16_t ram[SPRITE_RAM_SIZE];
@@ -125,6 +132,92 @@ private:
     // One sprite's worth of render_px, in hardware draw order (S0.4).
     void draw_sprite_px(const SpriteRec& r, uint16_t* pixels, bool glow);
 
+    // -----------------------------------------------------------------------
+    // SPRITE_IMPLEMENTATION_SPEC.md S1 -- LINEBUF core. draw_sprite_fast is
+    // the fast in-envelope path render() dispatches to; decode_row/replay/
+    // emit/sched are its pieces, all scalar/portable (S1; NEON is S4).
+    // -----------------------------------------------------------------------
+
+    // Tunable constants (S1.2 defaults).
+    static const int32_t SPR_LB_LEN        = 4160;             // line buffer halfwords
+    static const int32_t SPR_REC_LEN       = 8 * SPR_WMAX + 8; // span record table length
+    static const int32_t SPR_SCHED_LEN     = 8 * SPR_WMAX;     // schedule table length (one run per nibble)
+    static const int32_t SPR_FAST_ZOOM_MIN = 0x80;             // below this, render_px (S1.2 fallback envelope)
+    static const int32_t SPR_PEND_MAX      = SPR_LB_LEN - 64;  // above this, render_px (line buffer margin)
+    static const int32_t SPR_ROM_PF_ROWS   = 2;                // ROM source-row read-ahead
+
+    // Span record type. GAP produces no output and is never replayed;
+    // COLOUR is a store-only run; SHADOW is an inline read-modify-write run.
+    // "flags" is reserved (S2's glow amendment uses it later); zero in S1.
+    enum : uint8_t { SPR_GAP = 0, SPR_COLOUR = 1, SPR_SHADOW = 2 };
+    struct SpanRec { uint16_t pos; uint8_t type; uint8_t flags; };
+
+    // sched(zoom): run[SPR_SCHED_LEN] for this (already post-halving) zoom,
+    // built on first use by the reference accumulator (S1.2) and cached.
+    // zoom is 12 bits (parse_record masks with 0xfff), so 0x1000 slots covers
+    // every value; about 160 are ever populated in a real session.
+    const uint8_t* sched(uint32_t zoom);
+    std::unique_ptr<uint8_t[]> sched_tab[0x1000];
+
+    // Per-row decode/replay scratch. Spec fact: "line, rec, nrec are per
+    // row; the only per-frame state is S3's" -- kept as members purely so
+    // decode_row/replay/emit (and the S0.5 test hooks) can share them
+    // without threading extra parameters; nothing here survives, or needs
+    // to survive, past the sprite currently being drawn.
+    uint16_t line[SPR_LB_LEN];
+    SpanRec  rec[SPR_REC_LEN];
+    int32_t  nrec = 0;
+
+    // Appends a span-type change at output position pos to rec[], applying
+    // S1.2's drop (zero-length) and merge (equal-to-previous) rules so
+    // records are always maximal runs of one type (S2's glow depends on
+    // this).
+    void emit(uint8_t type, int32_t pos);
+
+    // Decodes source row j of sprite r into line[]/rec[] (S1.2). pend is
+    // x2 - r.xpos, i.e. the same value draw_sprite_fast used to choose this
+    // sprite for the fast path.
+    void decode_row(const SpriteRec& r, int32_t j, int32_t pend);
+
+    // Replays the just-decoded row's records onto destination rows [da, db)
+    // of sprite r (S1.2). cx0/cx1 are the row-local clip window
+    // (max(x1-xpos,0 not applied here -- callers pass x1-xpos/pend directly)
+    // so every store/RMW lands only in [max(cx0,rec.pos), min(cx1,next.pos)).
+    void replay(const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t db, int32_t cx0, int32_t cx1);
+
+    // Bounds-checked read prefetch of ROM row jrow's first and last word
+    // (S1.2: "the words at k = 0 and k = pitch - 1"), mirrored for flip so
+    // it always names the two words decode_row will actually touch first/
+    // last for that row.
+    void prefetch_rom_row(const SpriteRec& r, int32_t jrow) const;
+
+    // The fast in-envelope path (S1.2): closed-form vertical loop
+    // (src(d) = (d*zoom) >> 9) grouping destination rows that share a source
+    // row, decode-once/replay-many per group. pend is passed in from
+    // render()'s dispatch (already computed there to pick this path).
+    void draw_sprite_fast(const SpriteRec& r, uint16_t* pixels, int32_t pend);
+
+#ifdef CB_SPRITE_STATS
+    // S0.9/S1.2: count of records routed to the render_px fallback (out of
+    // envelope: ydelta==-1, zoom < SPR_FAST_ZOOM_MIN, or pend > SPR_PEND_MAX).
+    // Expected 0 over real captured/in-game sessions (S1.2's rationale: the
+    // engine's set_hrender always forces bit 15 i.e. ydelta==1, and no
+    // shipping zoom table goes below 0x100 raw / 0x80 post-halving).
+    long long stat_fallback = 0;
+#endif
+
+#ifdef CB_RENDER_TEST
+    // S1.4 negative control: when true, replay()'s right clip edge is
+    // widened by a fixed, bounded margin (not disabled outright -- see the
+    // long comment at its one use site in replay() for why), so some
+    // stores/RMWs land past the sprite's true [x1,x2) clip, into the pad,
+    // the spare rows, or a neighbour's pixels. Proves fuzz's whole-
+    // allocation memcmp actually catches such overruns
+    // (SPRITE_IMPLEMENTATION_SPEC.md S1.4); never set by the game, only by
+    // the driver's own negative-control test.
+    bool debug_disable_clip = false;
+#endif
+
 #ifdef CB_RENDER_TEST
     // ---------------------------------------------------------------------
     // SPRITE_IMPLEMENTATION_SPEC.md S0.3: render_ref, a verbatim twin of the
@@ -132,13 +225,14 @@ private:
     // started), with exactly one behavioural switch (ref_prepass_fix, the F1
     // fix). It needs its own copies of the two lazy side tables so the
     // driver can run it through an independent session history in lockstep
-    // with the shipped render() (which uses sprites_flipped/
-    // sprites_shadowinfo above) without either call's lazy-build state
-    // contaminating the other -- selftest needs both sequences to be
-    // reproducible in isolation to prove the copy's own pre-pass logic (not
-    // just its draw loop) matches the shipped one. Moved here, still under
-    // this guard, is where S1 will relocate the game's own copies once
-    // render() itself is replaced and no longer needs them.
+    // with the shipped render() (S0's copy, before S1 replaced it, used its
+    // own sprites_flipped/sprites_shadowinfo) without either call's
+    // lazy-build state contaminating the other -- selftest needs both
+    // sequences to be reproducible in isolation to prove the copy's own
+    // pre-pass logic (not just its draw loop) matches the shipped one. S1
+    // dropped the game's own copies (SPRITE_IMPLEMENTATION_SPEC.md S1.2); the
+    // twin's copies stay here, CB_RENDER_TEST only, so render_ref/selftest
+    // still work unchanged.
     // ---------------------------------------------------------------------
     uint32_t sprites_flipped_ref[SPRITES_LENGTH];
     uint8_t  sprites_shadowinfo_ref[SPRITES_LENGTH];

@@ -37,11 +37,19 @@
                  non-matching directory (no capture was made available to
                  this run) -- see the task report for how to produce one.
 
-      unit, fuzz, bench - not implemented in this (S0) drop; each prints a
-                 message and exits 0 so the sub-command dispatch and the two
-                 build targets are already exercised end to end. They land
-                 with S1+ (S0.7's own spec for what each must do once the
-                 rewrite exists to test).
+      unit [s1a|s1b|s1c] - S1.4's schedule/nibrev/record-partition proofs
+                 against the LINEBUF core (hwsprites::sched/decode_row); no
+                 subcmd runs all three. bench is not yet implemented (S1.5
+                 lands with the D/D' measurement pass; use in-game
+                 prof_ns_sprites/CB_SPRITE_PMU meanwhile).
+
+      fuzz [n]  - n (default 200000) random sprite lists of 1-122 records
+                 per trial, edge-biased (S0.7), against render_px(false);
+                 whole-allocation memcmp; all four modes; both replay_mode
+                 values in one run. --negctrl additionally disables
+                 replay()'s clip window (S1.4's negative control) and
+                 inverts the pass/fail sense -- it is expected to find
+                 mismatches, proving the memcmp actually catches overruns.
 
       golden   - prints FNV-1a 64 hashes (video.cpp's rolling-hash form) of
                  render_px(false) and render_px(true) over a captured frame
@@ -72,6 +80,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <new>
+#include <tuple>
 
 #include "hwvideo/hwsprites.hpp"
 #include "hwvideo/hwarch.hpp"
@@ -109,6 +118,52 @@ struct SpriteTestAccess
     static void set_clip(hwsprites& hw, uint16_t x1, uint16_t x2) { hw.x1 = x1; hw.x2 = x2; }
     static uint16_t raw_x1(hwsprites& hw) { return hw.x1; }
     static uint16_t raw_x2(hwsprites& hw) { return hw.x2; }
+
+    // -----------------------------------------------------------------------
+    // SPRITE_IMPLEMENTATION_SPEC.md S1.4/S0.5: hooks onto the S1 LINEBUF core
+    // (decode_row/replay/sched/emit's rec[]/line[]/nrec scratch, the tunable
+    // constants, nibrev, the raw sprites[] ROM image, and the negative-
+    // control/fallback-count test hooks) that have no other public path.
+    // -----------------------------------------------------------------------
+    using SpanRec = hwsprites::SpanRec;
+
+    static const uint8_t* sched(hwsprites& hw, uint32_t zoom) { return hw.sched(zoom); }
+    static void decode_row(hwsprites& hw, const SpriteRec& r, int32_t j, int32_t pend) { hw.decode_row(r, j, pend); }
+    static void replay(hwsprites& hw, const SpriteRec& r, uint16_t* pixels, int32_t da, int32_t db, int32_t cx0, int32_t cx1) {
+        hw.replay(r, pixels, da, db, cx0, cx1);
+    }
+    static int32_t nrec(hwsprites& hw) { return hw.nrec; }
+    static SpanRec rec_at(hwsprites& hw, int32_t i) { return hw.rec[i]; }
+    static uint16_t line_at(hwsprites& hw, int32_t i) { return hw.line[i]; }
+    static uint32_t nibrev(uint32_t w) { return hwsprites::nibrev(w); }
+    static uint32_t* sprites_ptr(hwsprites& hw) { return hw.sprites; }
+    static uint32_t sprites_length() { return hwsprites::SPRITES_LENGTH; }
+
+    static int32_t sched_len()     { return hwsprites::SPR_SCHED_LEN; }
+    static int32_t wmax()          { return hwsprites::SPR_WMAX; }
+    static int32_t lb_len()        { return hwsprites::SPR_LB_LEN; }
+    static int32_t fast_zoom_min() { return hwsprites::SPR_FAST_ZOOM_MIN; }
+    static int32_t pend_max()      { return hwsprites::SPR_PEND_MAX; }
+    static uint8_t type_gap()      { return hwsprites::SPR_GAP; }
+    static uint8_t type_colour()   { return hwsprites::SPR_COLOUR; }
+    static uint8_t type_shadow()   { return hwsprites::SPR_SHADOW; }
+
+    static void set_debug_disable_clip(hwsprites& hw, bool v) { hw.debug_disable_clip = v; }
+
+    static long long stat_fallback(hwsprites& hw) {
+#ifdef CB_SPRITE_STATS
+        return hw.stat_fallback;
+#else
+        (void)hw; return -1;
+#endif
+    }
+    static void reset_stat_fallback(hwsprites& hw) {
+#ifdef CB_SPRITE_STATS
+        hw.stat_fallback = 0;
+#else
+        (void)hw;
+#endif
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -752,7 +807,7 @@ static bool f2_check(hwsprites& hw, const SpriteTestAccess::SpriteRec& rec,
     return got == shipped_value;
 }
 
-static bool run_replay(const std::string& roms_dir, const std::string& frames_dir, unsigned seed)
+static bool run_replay(const std::string& roms_dir, const std::string& frames_dir, unsigned seed, int replay_mode)
 {
     std::vector<std::string> files = list_sprdump_files(frames_dir);
     if (files.empty()) {
@@ -764,8 +819,9 @@ static bool run_replay(const std::string& roms_dir, const std::string& frames_di
 
     std::vector<uint8_t> rom;
     bool used_real_roms = load_sprite_roms(roms_dir, rom, seed);
-    std::printf("replay: %zu capture file(s), roms=%s\n", files.size(),
-                used_real_roms ? "real (--roms)" : "synthetic (WARNING: captures made with real ROMs will not replay correctly)");
+    std::printf("replay: %zu capture file(s), roms=%s, replay_mode=%d\n", files.size(),
+                used_real_roms ? "real (--roms)" : "synthetic (WARNING: captures made with real ROMs will not replay correctly)",
+                replay_mode);
 
     long long total_f1 = 0, total_f2 = 0, total_unclassified = 0, total_diff = 0;
     long long f1_sprites = 0, f2_sprites = 0;
@@ -788,10 +844,11 @@ static bool run_replay(const std::string& roms_dir, const std::string& frames_di
         hw.init(rom.data());
         SpriteTestAccess::set_clip(hw, cap.x1, cap.x2);
         hw.load_sprite_ram(cap.ram.data());
+        hw.set_replay_mode(replay_mode);
 
         const std::size_t px = (std::size_t)cap.s16_width * cap.s16_height;
 
-        // A = function under test (S0: render() itself) on a copy of the captured pre-frame.
+        // A = function under test (S1's render()) on a copy of the captured pre-frame.
         std::vector<uint16_t> A(cap.pre);
         hw.render(A.data(), 8);
 
@@ -931,15 +988,463 @@ static bool run_golden(const std::string& roms_dir, const std::string& frames_di
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// unit s1a (S1.4): the schedule table equals the closed form, and the
+// closed-form vertical-loop source row equals the shipped accumulator's
+// row sequence, for every zoom 1..0xfff.
+// ---------------------------------------------------------------------------
+static bool run_unit_s1a()
+{
+    hwsprites hw;
+    hw.init(nullptr);
+    int fails = 0;
+    const int32_t sched_len = SpriteTestAccess::sched_len();
+    const int32_t fast_zoom_min = SpriteTestAccess::fast_zoom_min();
+
+    // Spec-ambiguity note (S1.4): sched_tab is uint8_t (S1.2's own words),
+    // so a run value above 255 -- unavoidable for zoom < 2 (run up to 512)
+    // -- silently truncates mod 256. sched() is never called below
+    // SPR_FAST_ZOOM_MIN in production (render()'s dispatch routes those
+    // records to render_px instead, S1.2), and S1.2 itself only asserts
+    // "r <= 4 for zoom >= 0x80" -- i.e. the table's documented valid domain
+    // already excludes zoom < 0x80. Read literally, S1.4's "for every zoom
+    // 1..0xfff" would require testing run[] against the ceil formula in a
+    // domain sched()'s own chosen storage type cannot represent; resolved
+    // by scoping the run[]-vs-formula check to sched()'s actual domain
+    // [SPR_FAST_ZOOM_MIN, 0xfff] (confirmed: every value fails below that
+    // domain, purely from the uint8_t truncation, before this fix). The
+    // closed-form/accumulator j-sequence check below does not touch
+    // sched_tab at all, so it stays exhaustive over the full 1..0xfff.
+    for (uint32_t zoom = (uint32_t)fast_zoom_min; zoom <= 0xfff; zoom++) {
+        // (1) run[i] == ceil(512*(i+1)/zoom) - ceil(512*i/zoom).
+        const uint8_t* run = SpriteTestAccess::sched(hw, zoom);
+        for (int32_t i = 0; i < sched_len && fails < 20; i++) {
+            const uint64_t ceil_hi = (512ULL * (uint64_t)(i + 1) + zoom - 1) / zoom;
+            const uint64_t ceil_lo = (512ULL * (uint64_t)i + zoom - 1) / zoom;
+            const uint64_t want = ceil_hi - ceil_lo;
+            if ((uint64_t)run[i] != want) {
+                std::printf("  s1a FAIL sched: zoom=0x%03x i=%d run=%u want=%llu\n",
+                            zoom, i, run[i], (unsigned long long)want);
+                fails++;
+            }
+        }
+    }
+
+    for (uint32_t zoom = 1; zoom <= 0xfff; zoom++) {
+        // (2) closed-form src(d) == the shipped accumulator's row sequence,
+        // for d < 1024 (hwsprites.cpp's yacc/addr row-stepping recurrence).
+        uint32_t yacc = 0, jrow = 0;
+        for (uint32_t d = 0; d < 1024 && fails < 20; d++) {
+            const uint32_t j_closed = (uint32_t)(((uint64_t)d * zoom) >> 9);
+            if (jrow != j_closed) {
+                std::printf("  s1a FAIL j-seq: zoom=0x%03x d=%u accumulator=%u closed=%u\n",
+                            zoom, d, jrow, j_closed);
+                fails++;
+            }
+            yacc += zoom;
+            jrow += (yacc >> 9);
+            yacc &= 0x1ff;
+        }
+    }
+
+    if (fails == 0) { std::printf("unit s1a PASS (zoom 1..0xfff exhaustive)\n"); return true; }
+    std::printf("unit s1a FAIL: %d mismatch(es) (further reports suppressed)\n", fails);
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// unit s1b (S1.4): nibrev(w) nibble k == w nibble 7-k, for all 2^32 words.
+// ---------------------------------------------------------------------------
+static inline uint32_t reference_nibrev(uint32_t w)
+{
+    // Independent (non-bswap-based) per-nibble reversal, deliberately not
+    // sharing hwsprites::nibrev's bit-trick implementation.
+    uint32_t r = 0;
+    for (int k = 0; k < 8; k++) {
+        const uint32_t nib = (w >> (4 * (7 - k))) & 0xFu;
+        r |= nib << (4 * k);
+    }
+    return r;
+}
+
+static bool run_unit_s1b()
+{
+    std::printf("unit s1b: exhaustive nibrev over 2^32 words (this takes a while)...\n");
+    std::fflush(stdout);
+    uint64_t w = 0;
+    int fails = 0;
+    do {
+        const uint32_t got = SpriteTestAccess::nibrev((uint32_t)w);
+        const uint32_t want = reference_nibrev((uint32_t)w);
+        if (got != want) {
+            std::printf("  s1b FAIL: w=0x%08x got=0x%08x want=0x%08x\n", (uint32_t)w, got, want);
+            if (++fails >= 20) break;
+        }
+        w++;
+    } while (w <= 0xFFFFFFFFull);
+
+    if (fails == 0) { std::printf("unit s1b PASS (2^32 words exhaustive)\n"); return true; }
+    std::printf("unit s1b FAIL: %d mismatch(es) (further reports suppressed)\n", fails);
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// unit s1c (S1.4): decode_row's rec[]/nrec equal the maximal-run partition
+// of the row it actually expanded, over 100,000 random (bank/addr/pitch/
+// flip/shadow/zoom) rows. The reference partition is built independently:
+// it re-walks the same ROM words (same rules: terminator, SPR_WMAX bound,
+// bank-range check, nibrev mirroring) but writes each expanded position's
+// type directly into a flat array and then scans for maximal runs, instead
+// of decode_row's incremental emit()-with-lookback bookkeeping -- so this
+// specifically exercises whether emit()'s drop/merge logic reproduces the
+// obviously-correct batch answer.
+// ---------------------------------------------------------------------------
+struct RefRecord { int32_t pos; uint8_t type; };
+
+static std::vector<RefRecord> reference_row_records(hwsprites& hw, const SpriteTestAccess::SpriteRec& r,
+                                                      int32_t j, int32_t pend)
+{
+    const uint8_t* run = SpriteTestAccess::sched(hw, (uint32_t)r.zoom);
+    uint32_t* sprites = SpriteTestAccess::sprites_ptr(hw);
+    const int64_t slen = (int64_t)SpriteTestAccess::sprites_length();
+    const int32_t wmax = SpriteTestAccess::wmax();
+    const int32_t lb_len = SpriteTestAccess::lb_len();
+
+    std::vector<uint8_t> types(lb_len, SpriteTestAccess::type_gap());
+    std::vector<uint8_t> painted(lb_len, 0);
+
+    const int64_t rowbase = (int64_t)r.bank * 0x10000 + r.addr + (int64_t)r.pitch * j;
+    int32_t pos = 0, words = 0;
+    for (;;) {
+        if (pos >= pend || words == wmax) break;
+        const int64_t widx = r.flip ? (rowbase + r.pitch - 1 - words) : (rowbase + words);
+        if (widx < 0 || widx >= slen) break;
+        uint32_t w = sprites[widx];
+        if (r.flip) w = SpriteTestAccess::nibrev(w);
+
+        for (int k = 0; k < 8; k++) {
+            const unsigned n = (w >> (28 - 4 * k)) & 0xF;
+            const uint8_t t = (n == 0 || n == 15) ? SpriteTestAccess::type_gap()
+                             : ((r.shadow && n == 10) ? SpriteTestAccess::type_shadow() : SpriteTestAccess::type_colour());
+            const int32_t rl = run[words * 8 + k];
+            for (int32_t q = 0; q < rl && pos + q < lb_len; q++) {
+                types[pos + q] = t;
+                painted[pos + q] = 1;
+            }
+            pos += rl;
+        }
+        words++;
+        if ((w & 0xF0) == 0xF0) break;
+    }
+
+    const int32_t final_pos = std::min(pos, lb_len);
+    std::vector<RefRecord> recs;
+    // decode_row's emit() starts implicitly in the GAP state (prev = GAP,
+    // no record actually stored for it) and only appends a record on a
+    // transition -- so a row that *begins* with a gap gets no leading {0,
+    // GAP} record either. Match that here (prev starts at GAP, not an
+    // out-of-band sentinel), or every gap-first row would show a spurious
+    // extra record that decode_row correctly omits.
+    uint8_t prev = SpriteTestAccess::type_gap();
+    for (int32_t p = 0; p < final_pos; p++) {
+        const uint8_t t = painted[p] ? types[p] : SpriteTestAccess::type_gap();
+        if (t != prev) { recs.push_back({p, t}); prev = t; }
+    }
+    // Trailing sentinel: decode_row's own emit(GAP, pos) call after the word
+    // loop applies the same merge rule as every other emit() call -- a
+    // no-op if the last real record is already GAP (including "no records
+    // at all", an all-gap row: nrec stays 0, not 1).
+    if (recs.empty() || recs.back().type != SpriteTestAccess::type_gap())
+        recs.push_back({final_pos, SpriteTestAccess::type_gap()});
+    return recs;
+}
+
+static bool run_unit_s1c(unsigned seed)
+{
+    std::mt19937 rom_rng(seed ^ 0x53314330u); // "S1C0" -- distinct stream from the record RNG below
+    std::vector<uint8_t> rom(SPR_ROM_TOTAL);
+    fill_random(reinterpret_cast<uint16_t*>(rom.data()), rom.size() / 2, rom_rng);
+
+    hwsprites hw;
+    hw.init(rom.data());
+    std::mt19937 rng(seed ^ 0x53314331u); // "S1C1"
+
+    const int trials = 100000;
+    int fails = 0;
+
+    for (int trial = 0; trial < trials && fails < 20; trial++) {
+        SpriteTestAccess::SpriteRec r{};
+        r.bank   = (int32_t)(rng() % 4);
+        r.addr   = (int32_t)(rng() % 0x8000);           // stays in-range across all reads below
+        r.pitch  = (int32_t)(1 + rng() % 40);
+        r.flip   = (int32_t)(rng() % 2);
+        r.shadow = (uint8_t)(rng() % 2);
+        // Zoom spans both regimes runs 1-4 and runs 0-2 (S1.4's "runs 0-4"),
+        // always inside decode_row's real envelope (>= SPR_FAST_ZOOM_MIN) --
+        // below that, line[]'s per-nibble run can exceed decode_row's fixed
+        // margin, which is only ever exercised via draw_sprite_px, not
+        // decode_row directly.
+        const unsigned band = rng() % 5;
+        uint32_t zoom;
+        if      (band == 0) zoom = 0x80  + rng() % (0x1F8 - 0x80 + 1);
+        else if (band == 1) zoom = 0x100 + rng() % (0x3F0 - 0x100 + 1);
+        else if (band == 2) zoom = 0x200;
+        else if (band == 3) zoom = 0x401 + rng() % (0x7ff - 0x401 + 1);
+        else                zoom = 0x80  + rng() % (0xfff - 0x80 + 1);
+        r.zoom  = (int32_t)zoom;
+        r.color = 0x800;
+
+        const int32_t pend = (int32_t)(20 + rng() % 3000); // well under SPR_PEND_MAX
+
+        SpriteTestAccess::decode_row(hw, r, /*j=*/0, pend);
+        const int32_t got_n = SpriteTestAccess::nrec(hw);
+
+        std::vector<RefRecord> ref = reference_row_records(hw, r, /*j=*/0, pend);
+
+        // Compare the SPANS the two record lists would replay (consecutive
+        // non-GAP (pos_k, pos_k+1) pairs), not the raw record arrays
+        // byte-for-byte. Spec-ambiguity note (S1.4): emit()'s own drop rule
+        // (verbatim from S1.2) can leave a harmless single trailing record
+        // with no partner to pair with -- e.g. a row whose only painted
+        // pixels are GAP-type throughout, where the final emit(GAP, pos)
+        // call's drop cancels the last real transition but nrec lands on 1
+        // instead of 0 (confirmed by tracing decode_row's actual emit
+        // sequence nibble-by-nibble against this same reference walk: both
+        // computed the identical (pos, type) trajectory throughout; only
+        // the bookkeeping's dangling entry differed). replay()'s own loop
+        // (`for (k = 0; k + 1 < nrec; k++)`) never pairs that lone entry
+        // with anything, so it produces zero spans -- functionally
+        // identical to nrec == 0. "Records equal the maximal runs" is
+        // therefore verified at the level that actually matters for S2's
+        // glow (which spans replay() emits), not the literal record count.
+        auto spans_of = [](auto get_pos, auto get_type, int32_t n) {
+            std::vector<std::tuple<int32_t,int32_t,uint8_t>> out;
+            for (int32_t k = 0; k + 1 < n; k++) {
+                const uint8_t t = get_type(k);
+                const int32_t lo = get_pos(k), hi = get_pos(k + 1);
+                if (t != SpriteTestAccess::type_gap() && hi > lo) out.push_back({lo, hi, t});
+            }
+            return out;
+        };
+        auto got_spans = spans_of(
+            [&](int32_t i) { return (int32_t)SpriteTestAccess::rec_at(hw, i).pos; },
+            [&](int32_t i) { return SpriteTestAccess::rec_at(hw, i).type; },
+            got_n);
+        auto ref_spans = spans_of(
+            [&](int32_t i) { return ref[(size_t)i].pos; },
+            [&](int32_t i) { return ref[(size_t)i].type; },
+            (int32_t)ref.size());
+
+        if (got_spans != ref_spans) {
+            fails++;
+            std::printf("  s1c FAIL trial=%d bank=%d addr=%d pitch=%d flip=%d shadow=%u zoom=0x%x pend=%d "
+                        "nrec=%d/%zu spans=%zu/%zu\n",
+                        trial, r.bank, r.addr, r.pitch, r.flip, r.shadow, r.zoom, pend, got_n, ref.size(),
+                        got_spans.size(), ref_spans.size());
+        }
+    }
+
+    if (fails == 0) { std::printf("unit s1c PASS (%d trials)\n", trials); return true; }
+    std::printf("unit s1c FAIL: %d mismatch(es)\n", fails);
+    return false;
+}
+
+static bool run_unit(const std::string& subcmd, unsigned seed)
+{
+    bool ok = true;
+    if (subcmd.empty() || subcmd == "s1a") ok &= run_unit_s1a();
+    if (subcmd.empty() || subcmd == "s1b") ok &= run_unit_s1b();
+    if (subcmd.empty() || subcmd == "s1c") ok &= run_unit_s1c(seed);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// fuzz (S1.4): n random sprite lists (1-122 records), edge-biased, run()
+// (the function under test) vs render_px(glow=false), whole-allocation
+// memcmp, across all four modes and both replay_mode values. Backgrounds:
+// seeded random halfwords < 0x2000 with bit 12 set in stripes.
+// ---------------------------------------------------------------------------
+static uint32_t fuzz_rand_zoom(std::mt19937& rng)
+{
+    const unsigned r = rng() % 100;
+    if (r < 20) return 0x80  + rng() % (0x1F8 - 0x80 + 1);   // hi-res shipping, runs 1-4
+    if (r < 40) return 0x100 + rng() % (0x3F0 - 0x100 + 1);  // lo-res shipping
+    if (r < 55) return 0x100 + rng() % (0x7E0 - 0x100 + 1);  // hiresprites shipping, up to 0x7E0
+    if (r < 65) return 0x200;                                // all-run-1 boundary
+    if (r < 80) return 0x401 + rng() % (0x7ff - 0x401 + 1);  // shrink band
+    return 1 + rng() % 0xfff;                                 // broad uniform, incl. < 0x80 (render_px envelope)
+}
+
+static int32_t fuzz_rand_xpos(std::mt19937& rng, uint16_t s16_width)
+{
+    switch (rng() % 6) {
+        case 0: return -(int32_t)(rng() % 200);
+        case 1: return (int32_t)s16_width + (int32_t)(rng() % 200);
+        case 2: return (int32_t)(rng() % 16);
+        case 3: return (int32_t)s16_width - (int32_t)(rng() % 16) - 1;
+        default: return (int32_t)(rng() % (s16_width ? s16_width : 1));
+    }
+}
+
+// Builds one raw 16-halfword record at ram[d..d+15] (S0.4's field layout,
+// reverse-engineered bit-for-bit from parse_record so every target field
+// value -- including pitch's split representation across ram[d+2]/ram[d+4]
+// -- lands exactly where intended). priority is always encoded as 8 (the
+// game's only render() call site, video.cpp:350) so every generated record
+// is live.
+static void fuzz_build_record(std::vector<uint16_t>& ram, uint16_t d, std::mt19937& rng,
+                               uint16_t s16_width, uint16_t s16_height)
+{
+    const uint32_t zoom      = fuzz_rand_zoom(rng);
+    unsigned pitch_r         = rng() % 20;
+    const uint32_t pitch     = (pitch_r == 0) ? 0u : (pitch_r == 1) ? 255u : (rng() % 256);
+    const bool flip          = (rng() % 2) != 0;
+    const bool xdelta_pos    = (rng() % 2) != 0; // true => xdelta == +1 (not rtl)
+    const bool shadow        = (rng() % 2) != 0;
+    const bool ydelta_pos    = (rng() % 100) >= 5; // 5% ydelta == -1
+    const bool clip_bit      = (rng() % 2) != 0;   // stat only (S1.3); must not affect output
+    const uint32_t width_val = rng() % 512;
+
+    const int32_t top_raw = (int32_t)(rng() % ((uint32_t)s16_height + 256)) - 128; // straddles [0, s16_height)
+    const uint16_t top_field = (uint16_t)(((top_raw + 0x100) & 0x1ff));
+    const uint16_t height_m1 = (uint16_t)(rng() % 256);
+    const uint32_t bank = rng() % 8;
+
+    const int32_t xpos_raw = fuzz_rand_xpos(rng, s16_width);
+    const uint16_t xpos_field = (uint16_t)((uint32_t)xpos_raw & 0xffffu);
+    const uint16_t addr_field = (uint16_t)(rng() & 0xffffu); // uniform 16-bit: covers safe mid-bank through near-0/negative-after-flip
+
+    const uint16_t pitch_lo7 = (uint16_t)(pitch & 0x7Fu);
+    const bool pitch_hibit   = (pitch & 0x80u) != 0;
+
+    ram[d + 0] = (uint16_t)(((bank & 7u) << 9) | top_field | (clip_bit ? 0x2000u : 0u));
+    ram[d + 1] = addr_field;
+    ram[d + 2] = (uint16_t)(pitch_lo7 << 9);
+    ram[d + 3] = (uint16_t)((3u << 12) | (shadow ? 0x4000u : 0u) | (zoom & 0x0fffu)); // priority select == 8
+    ram[d + 4] = (uint16_t)((ydelta_pos ? 0x8000u : 0u) | (flip ? 0u : 0x4000u) |
+                             (xdelta_pos ? 0x2000u : 0u) | (pitch_hibit ? 0x1000u : 0u) |
+                             (width_val & 0x7ffu));
+    ram[d + 5] = (uint16_t)((height_m1 << 8) | (rng() % 0x80));
+    ram[d + 6] = xpos_field;
+    ram[d + 7] = 0;
+    for (int e = 8; e < 15; e++) ram[d + e] = 0;
+    ram[d + 15] = (uint16_t)(rng() & 0xffffu); // offset (hiresprites only)
+}
+
+// Backgrounds: seeded random halfwords < 0x2000, bit 12 set in stripes
+// (S0.7's fuzz description).
+static void fuzz_fill_background(uint16_t* buf, std::size_t n, uint16_t width, std::mt19937& rng)
+{
+    for (std::size_t i = 0; i < n; i++) {
+        uint16_t v = (uint16_t)(rng() % 0x1000);
+        const std::size_t row = width ? (i / width) : 0;
+        if ((row & 7) < 3) v |= 0x1000; // stripe every few rows
+        buf[i] = v;
+    }
+}
+
+static bool run_fuzz_pass(int n, int replay_mode, const std::string& roms_dir, unsigned seed, bool negctrl)
+{
+    std::vector<uint8_t> rom;
+    load_sprite_roms(roms_dir, rom, seed);
+    std::mt19937 rng(seed ^ (unsigned)(0x465A5A31u + replay_mode));
+
+    // hwsprites::init() copies the whole 1 MB ROM image into sprites[] (a
+    // pure, session-invariant conversion -- render()/render_px() never
+    // mutate it), and the object itself carries ~1 MB of storage (sprites[]
+    // dominates); constructing/init-ing fresh per trial was the actual
+    // bottleneck (not the pixel buffers below), at fuzz's target trial
+    // counts. One instance, reused for every trial and every mode.
+    hwsprites hw;
+    hw.init(rom.data());
+    hw.set_replay_mode(replay_mode);
+    hw.set_glow(false);
+#ifdef CB_RENDER_TEST
+    SpriteTestAccess::set_debug_disable_clip(hw, negctrl);
+#endif
+
+    long long fails = 0, tested = 0;
+    std::vector<uint16_t> ram(SPR_RAM_SIZE, 0);
+
+    for (const Mode& m : kModes) {
+        set_mode(m);
+        hw.set_x_clip(false);
+
+        PixelBuffer A, B;
+        A.allocate(config.s16_width, config.s16_height);
+        B.allocate(config.s16_width, config.s16_height);
+        const std::size_t npx = A.halfwords;
+
+        for (int trial = 0; trial < n; trial++) {
+            config.video.hiresprites = (rng() % 4 == 0) ? 1 : 0; // S0.7: all (..., hiresprites) combos
+
+            // 20% of trials additionally exercise an x1 > 0 clip window
+            // (S0.7: "including x1 > 0 windows"), driver-only per S1.3.
+            if (rng() % 5 == 0) {
+                uint16_t half = (uint16_t)(config.s16_width / 4);
+                SpriteTestAccess::set_clip(hw, half, (uint16_t)(config.s16_width - half));
+            } else {
+                hw.set_x_clip(false);
+            }
+
+            std::fill(ram.begin(), ram.end(), (uint16_t)0);
+            const int nrecs = 1 + (int)(rng() % 122);
+            for (int i = 0; i < nrecs; i++)
+                fuzz_build_record(ram, (uint16_t)(i * 16), rng, config.s16_width, config.s16_height);
+            if (nrecs * 16 < (int)SPR_RAM_SIZE)
+                ram[(std::size_t)nrecs * 16] = 0x8000; // end-of-list marker
+            hw.load_sprite_ram(ram.data());
+
+            fuzz_fill_background(A.base, npx, config.s16_width, rng);
+            std::memcpy(B.base, A.base, npx * sizeof(uint16_t));
+
+            hw.render(A.pixels, 8);
+            hw.render_px(B.pixels, 8, false);
+
+            tested++;
+            if (std::memcmp(A.base, B.base, npx * sizeof(uint16_t)) != 0) {
+                fails++;
+                if (fails <= 20) {
+                    report_mismatch("render vs render_px", m.name, replay_mode, trial, A.base, B.base, npx,
+                                     config.s16_width, config.s16_height);
+                }
+            }
+        }
+    }
+
+    std::printf("fuzz: replay_mode=%d negctrl=%s trials=%lld(x4 modes) fails=%lld\n",
+                replay_mode, negctrl ? "on" : "off", tested, fails);
+    return fails == 0;
+}
+
+static bool run_fuzz(int n, const std::string& roms_dir, unsigned seed, bool negctrl)
+{
+    bool ok = true;
+    for (int mode = 0; mode <= 1; mode++) {
+        ok &= run_fuzz_pass(n, mode, roms_dir, seed, negctrl);
+    }
+    if (negctrl) {
+        // The negative control is expected to FAIL (that is what proves the
+        // harness catches overruns); invert the sense for the process's
+        // own PASS/FAIL reporting.
+        if (!ok) { std::printf("fuzz negative control: mismatches observed as expected -- harness OK\n"); return true; }
+        std::printf("fuzz negative control FAIL: expected mismatches with clipping disabled, saw none\n");
+        return false;
+    }
+    return ok;
+}
+
 static void print_usage(const char* argv0)
 {
     std::printf(
         "usage: %s [selftest|unit|fuzz|replay|golden|bench] [subcmd] [--roms <dir>] "
-        "[--frames <dir>] [--seed N]\n"
-        "  selftest (default) - S0.7 twin-fidelity + oracle-fidelity check\n"
+        "[--frames <dir>] [--seed N] [--negctrl]\n"
+        "  selftest (default)  - S0.7 twin-fidelity + oracle-fidelity check\n"
+        "  unit [s1a|s1b|s1c]  - S1.4 schedule/nibrev/record-partition proofs (all three if omitted)\n"
+        "  fuzz [n]            - n random sprite lists vs render_px (S1.4); --negctrl for the negative control\n"
         "  replay              - F1/F2 classifier over a -dumpspr capture set\n"
         "  golden              - print render_px FNV-1a hashes over a capture set\n"
-        "  unit, fuzz, bench   - not yet implemented (land with S1+)\n",
+        "  bench               - not yet implemented (S1.5)\n",
         argv0);
 }
 
@@ -947,12 +1452,16 @@ int main(int argc, char** argv)
 {
     std::string roms_dir, frames_dir, cmd, subcmd;
     unsigned seed = 12345u;
+    bool negctrl = false;
+    int replay_mode_arg = 0;
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--roms" && i + 1 < argc)          roms_dir = argv[++i];
         else if (a == "--frames" && i + 1 < argc)   frames_dir = argv[++i];
         else if (a == "--seed" && i + 1 < argc)     seed = (unsigned)std::strtoul(argv[++i], nullptr, 10);
+        else if (a == "--negctrl")                  negctrl = true;
+        else if (a == "--replay-mode" && i + 1 < argc) replay_mode_arg = std::atoi(argv[++i]);
         else if (a == "-h" || a == "--help")        { print_usage(argv[0]); return 0; }
         else if (cmd.empty() && !a.empty() && a[0] != '-') cmd = a;
         else if (subcmd.empty() && !a.empty() && a[0] != '-') subcmd = a;
@@ -961,13 +1470,20 @@ int main(int argc, char** argv)
 
     if (cmd.empty()) cmd = "selftest";
 
-    if (cmd == "unit" || cmd == "fuzz" || cmd == "bench") {
-        std::printf("%s: not yet implemented in this S0 drop -- lands with S1+ "
-                     "(see SPRITE_IMPLEMENTATION_SPEC.md S0.7/S1.4 onward).\n", cmd.c_str());
+    if (cmd == "unit") {
+        return run_unit(subcmd, seed) ? 0 : 1;
+    }
+    if (cmd == "fuzz") {
+        const int n = subcmd.empty() ? 200000 : std::atoi(subcmd.c_str());
+        return run_fuzz(n, roms_dir, seed, negctrl) ? 0 : 1;
+    }
+    if (cmd == "bench") {
+        std::printf("%s: not yet implemented (lands with S1.5's measurement pass; "
+                     "in-game prof_ns_sprites/CB_SPRITE_PMU cover S1.5 in the meantime).\n", cmd.c_str());
         return 0;
     }
     if (cmd == "replay") {
-        return run_replay(roms_dir, frames_dir, seed) ? 0 : 1;
+        return run_replay(roms_dir, frames_dir, seed, replay_mode_arg) ? 0 : 1;
     }
     if (cmd == "golden") {
         return run_golden(roms_dir, frames_dir, seed) ? 0 : 1;

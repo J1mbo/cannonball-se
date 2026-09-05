@@ -931,12 +931,15 @@ static bool parse_command_line(int argc, char* argv[]) {
             std::cout << "Sprite glow (hardware pixel accuracy) enabled.\n";
         }
         else if (strcmp(argv[i], "-spritereplay") == 0 && i+1 < argc) {
-            // -spritereplay N (S1 stub): selects the colour-replay strategy
-            // (0 = D, 1 = D') once draw_sprite_fast exists; harmless no-op
-            // before S1 beyond recording the value.
+            // -spritereplay N (S1.2): selects draw_sprite_fast's colour-replay
+            // strategy -- 0 = D (span-copy, one memcpy per destination row),
+            // 1 = D' (load each chunk once, store to every row). Both modes
+            // produce identical output (SPRITE_IMPLEMENTATION_SPEC.md S1.2);
+            // the choice is a measured performance tradeoff (S1.5), not a
+            // correctness one.
             video.sprite_layer->set_replay_mode(std::atoi(argv[i+1]));
             std::cout << "Sprite replay mode set to " << video.sprite_layer->get_replay_mode()
-                       << " (no effect before S1).\n";
+                       << " (0 = D span-copy, 1 = D' shared-load).\n";
         }
         else if (   (strcmp(argv[i], "-help") == 0)  ||
                     (strcmp(argv[i], "--help") == 0) ||
@@ -965,8 +968,10 @@ static bool parse_command_line(int argc, char* argv[]) {
                          "                       been written (default 300); does not quit\n\n" <<
 #endif
                          "-noglow / -glow      : Disable/enable sprite glow (hardware pixel accuracy)\n" <<
-                         "-spritereplay N      : Select the sprite colour-replay strategy (no effect\n" <<
-                         "                       before the S1 renderer rewrite)\n\n" <<
+                         "-spritereplay N      : Select the sprite colour-replay strategy: 0 = D\n" <<
+                         "                       (span-copy), 1 = D' (shared-load). Output is\n" <<
+                         "                       identical either way; this is a performance tuning\n" <<
+                         "                       knob, not a correctness one\n\n" <<
                          "CannonBall-SE man page is in the res folder. Open it with 'man -l docs/cannonball-se.6'" << std::endl;
             _Exit(0);
         }
