@@ -713,10 +713,13 @@ static void main_loop() {
             int fps = renderedFrames / 2;
             int totalFrames = renderedFrames + droppedFrames;
             int droppedPercent = (totalFrames > 0) ? (droppedFrames * 100 / totalFrames) : 0;
-            // --- measurement only (branch sprite-a53) -------------------------
-            // Per-frame cost of each prepare_frame() layer, measured in situ so
-            // it includes contention from the render threads, the audio thread
-            // and the GPU. Deltas since the last report.
+            // Detailed per-frame phase timing, shown only when the FPS/debug
+            // display is enabled (config.video.fps_count); off by default, when
+            // the plain FPS line below is printed instead. Per prepare_frame()
+            // layer plus the frame-pipeline breakdown (gen/ntsc/present/swap/
+            // wwait), measured in situ so it includes render/audio-thread and
+            // GPU contention. Deltas since the last report.
+            if (config.video.fps_count)
             {
                 static uint64_t l_tv = 0, l_rb = 0, l_tb = 0, l_tf = 0, l_rf = 0;
                 static uint64_t l_sp = 0, l_tx = 0, l_fr = 0;
@@ -756,12 +759,11 @@ static void main_loop() {
                            (double)(sw - l_sw) / dfr / 1e6,
                            (double)(ww - l_ww) / dfr / 1e6,
                            (double)((pr-l_pr)+(sw-l_sw)+(ww-l_ww)) / dfr / 1e6);
-                    // R3 diagnostics: cumulative count of audio callback
-                    // "starvation" events (ring not ready in time, filled
-                    // with silence instead of blocking/underrunning). Zero
-                    // on a healthy system; gated behind the existing
-                    // fps_counter debug toggle so normal runs stay quiet.
-                    if (config.video.fps_count && audio.sound_enabled) {
+                    // Cumulative count of audio callback "starvation" events
+                    // (ring not ready in time, filled with silence instead of
+                    // blocking/underrunning). Zero on a healthy system. Already
+                    // inside the fps_count debug branch, so normal runs stay quiet.
+                    if (audio.sound_enabled) {
                         uint64_t fb = audio.stat_fallbacks.load(std::memory_order_relaxed);
                         printf("\n     AUDIO: consumer starvation fallbacks (cumulative) %llu",
                                (unsigned long long)fb);
@@ -772,6 +774,10 @@ static void main_loop() {
                 l_tv = tv; l_rb = rb; l_tb = tb; l_tf = tf; l_rf = rf;
                 l_sp = sp; l_tx = tx; l_fr = fr;
                 l_rn = rn; l_pr = pr; l_sw = sw; l_ww = ww;
+            }
+            else
+            {
+                printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
             }
             fflush(stdout);
             fps_counter = fps;
@@ -1103,13 +1109,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "\nAvailable SDL video drivers: ";
-    int ndri = SDL_GetNumVideoDrivers();
-    for (int i = 0; i < ndri; ) {
-        std::cout << SDL_GetVideoDriver(i);
-        if (++i < ndri) std::cout << ", ";
-    }
-    std::cout << std::endl;
 
     // Load patched widescreen tilemaps
     if (!omusic.load_widescreen_map(config.data.res_path))

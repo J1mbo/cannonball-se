@@ -23,7 +23,7 @@
 #include <cstring>      // std::memset
 #include <iostream>
 #include <bit>          // std::byteswap (C++20/23)
-#include <chrono>       // measurement only (branch sprite-a53)
+#include <chrono>       // per-frame phase timing (FPS/debug report)
 #include <cstring>      // std::memcpy
 
 #include "video.hpp"

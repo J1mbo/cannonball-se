@@ -46,7 +46,7 @@ public:
     // is about to overwrite in full.
     uint8_t road_fg_rows[S16_HEIGHT];
 
-    // --- measurement only (branch sprite-a53) ---------------------------------
+    // --- per-frame phase timing (shown in the FPS/debug report) ---------------
     // Nanoseconds accumulated inside prepare_frame(), split by layer, plus the
     // number of sprite scanlines drawn.  Written by whichever thread runs
     // prepare_frame(), read by the main thread for the periodic report: these
@@ -60,7 +60,7 @@ public:
     uint64_t prof_ns_road_fg    = 0;   // hwroad render_foreground
     uint64_t prof_ns_sprites    = 0;
     uint64_t prof_ns_text       = 0;
-    // Frame-pipeline phase timing (added for the A7 GPU/CPU/bandwidth study).
+    // Frame-pipeline phase timing (the rest of the frame outside prepare_frame).
     // prepare_frame's own cost is the sum of the eight prof_ns_* above; these
     // four cover the rest of the frame so the whole 16.6ms budget is accounted:
     uint64_t prof_ns_render     = 0;   // render_frame -> draw_frame: NTSC/Blargg filter (render thread)

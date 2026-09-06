@@ -579,7 +579,6 @@ void Outrun::main_switch()
                 if (ohiscore.score_position()>-1) {
                     // JJP - always save when timer reaches zero. This avoids scores being lost
                     // if the player leaves it flashing on 'ED'
-                    std::cout << "Saving new high score" << std::endl;
                     config.save_scores(outrun.cannonball_mode == Outrun::MODE_ORIGINAL);
                 }
                 //ROM:0000B700                 bclr    #5,(ppi1_value).l                   ; Turn screen off (not activated until PPI written to)

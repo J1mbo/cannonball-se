@@ -198,8 +198,11 @@ void Audio::start_audio(bool list_devices_only)
             }
         }
 
-        // Display available devices, user may wish to use a particular device e.g. external DAC
-        printf("Available audio devices:\n");
+        // Enumerate playback devices. The list is needed to resolve
+        // config.sound.playback_device by index below, but is only printed when
+        // explicitly requested via -list-sound-devices (list_devices_only), so a
+        // normal startup stays quiet.
+        if (list_devices_only) printf("Available audio devices:\n");
         int numDevices = SDL_GetNumAudioDevices(0); // 0 requests playback devices
         if (numDevices > 32) {
             // clamp to 32 max, probably way more than any setup will have
@@ -210,7 +213,7 @@ void Audio::start_audio(bool list_devices_only)
 
         for (int i = 0; i < numDevices; i++) {
             device_name[i] = SDL_GetAudioDeviceName(i, 0);
-            printf("   %d: %s\n", i, device_name[i]);
+            if (list_devices_only) printf("   %d: %s\n", i, device_name[i]);
         }
 
         if (list_devices_only)
