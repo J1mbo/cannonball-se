@@ -11,11 +11,9 @@
     Based on MAME source code.
 
     Copyright Aaron Giles.
-    Performance optimisations Copyright (c) 2025, James Pearce
     All rights reserved.
 
-    This version for CannonBall-SE incorporates revisions Copyright (c)
-    2025 James Pearce:
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce:
     - Performance tuning
 ***************************************************************************/
 

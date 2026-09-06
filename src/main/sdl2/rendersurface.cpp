@@ -4,7 +4,7 @@
 
     See license.txt for more details.
 
-    This version, for CannnonBall SE, Copyright (c) 2020,2025 James Pearce.
+    Modifications for Cannonball-SE are Copyright (c) 2020, 2025, 2026 James Pearce.
 
     Provides:
     - GLES display with GLSL shaders via gl_backend.hpp

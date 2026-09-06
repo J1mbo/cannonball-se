@@ -3,7 +3,7 @@
 
     Copyright (c) 2012,2020 Manuel Alfayate and Chris White.
 
-    Modifications for CannonBall-SE are Copyright (c) 2020,2025 James Pearce.
+    Modifications for Cannonball-SE are Copyright (c) 2020, 2025, 2026 James Pearce.
 
     See license.txt for more details.
 

@@ -7,8 +7,8 @@
     This driver is based upon the MAME source code, with some minor
     modifications to integrate it into the Cannonball framework.
 
-    Modifications for CannonBall-SE, including performance tuning in
-    YM2151::stream_update(), are Copyright (c) 2025 James Pearce.
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce,
+    including performance tuning in YM2151::stream_update().
 
     See http://mamedev.org/source/docs/license.txt for more details.
 ***************************************************************************/

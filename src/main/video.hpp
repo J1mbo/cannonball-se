@@ -7,6 +7,8 @@
 
     Copyright Chris White.
     See license.txt for more details.
+
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #pragma once

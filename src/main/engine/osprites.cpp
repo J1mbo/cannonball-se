@@ -11,7 +11,7 @@
     Copyright Chris White.
     See license.txt for more details.
 
-    Modifications for CannonBall-SE (c) 2005 James Pearce
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #include "../trackloader.hpp"
@@ -598,15 +598,6 @@ void OSprites::do_sprite(oentry* input)
         hide_hwsprite(input, output);
         return;
     }
-/*
-// dumps the WH_TABLE contents
-std::cout << "\n";
-for (uint32_t i=0; i<0x8000; ) {
-    std::cout << std::dec << uint16_t(roms.rom0p->read8(WH_TABLE + i++));
-    std::cout << "," << std::dec << uint16_t(roms.rom0p->read8(WH_TABLE + i++)) << "\n";
-}
-std::exit(9);
-*/
     // Sprite Width/Height Settings
     uint16_t width = 0;
     uint16_t height = 0;
@@ -771,16 +762,6 @@ std::exit(9);
         offset      = 0;
     }
 
-/*
-{
-if ((calc_width < width) || (calc_height < height)) {
-    std::cout << "\rGame Width/Height: " << width << "/" << height <<
-      "\t\tDetermined: " << sprite_width << "/" << sprite_height <<
-      "\t\tCalculated: " << ((0x200 * sprite_width) / zoom) << "/" << ((0x200 * sprite_height) / zoom) <<
-      "\t\t(zoom: " << std::hex << zoom << std::dec << ")\n";
-    }
-}
-*/
     // loc 9582:
 //    input->width = width;
     input->width = calc_width;

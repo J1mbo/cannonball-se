@@ -7,8 +7,7 @@
     Copyright Chris White.
     See license.txt for more details.
 
-    This version for CannonBall-SE encorporates revisions that are
-    Copyright (c) 2025 James Pearce:
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce:
     - Refactored to remove Boost dependencies using xml_loader.h shim and
       C++20 function equivalents
     - Automatic custom music loader

@@ -16,7 +16,7 @@
     All rights reserved.
 ***************************************************************************/
 
-/* This version is tuned for CannonBall-SE, modifications Copyright (c) 2025, James Pearce
+/* Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
    Approx. 40% speed-up on Pi2 */
 
 /*******************************************************************************************

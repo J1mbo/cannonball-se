@@ -5,7 +5,7 @@
     Copyright (c) Chris White.
     See license.txt for more details.
 
-    Modifications for CannonBall-SE Copyright (c) 2025, James Pearce
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #include "main.hpp"
@@ -365,15 +365,6 @@ void Menu::init(bool init_main_menu)
     cannonball::audio.clear_wav();
     osoundint.init();
     osoundint.has_booted = true;
-/*
-std::cout << "Pausing audio\n";
-    cannonball::audio.pause_audio();
-std::cout << "osound.init...\n";
-    osoundint.init();
-std::cout << "Resuming audio\n";
-    cannonball::audio.resume_audio();
-std::cout << "Done.\n";
-*/
     frame = 0;
     message_counter = 0;
 

@@ -6,6 +6,8 @@
 
     Copyright Chris White.
     See license.txt for more details.
+
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #include <iostream>
@@ -54,7 +56,6 @@ Input::~Input(void)
 
 void Input::init(int pad_id, int* key_config, int* pad_config, int analog, int* axis, bool* invert, int* analog_settings)
 {
-//    std::cout << "Setting up key mappings." << std::endl; 
     this->pad_id      = pad_id;
     this->key_config  = key_config;
     this->pad_config  = pad_config;
@@ -117,8 +118,6 @@ void Input::open_joy()
                     // Get the vendor ID and product ID.
                     vendor = SDL_JoystickGetVendor(joy);
                     product = SDL_JoystickGetProduct(joy);
-                    // printf("Vendor ID: 0x%04x\n", vendor);
-                    // printf("Product ID: 0x%04x\n", product);
                 }
 
                 // Next, try and find the device via udev
@@ -158,8 +157,6 @@ void Input::open_joy()
                             Uint16 product_udev = (Uint16)strtol(product_str, NULL, 16);
 
                             if (vendor_str && product_str) {
-                                //printf("Found hidraw device %s: vendor=%s, product=%s\n",
-                                //    devNode, vendor_str, product_str);
                                 // Check if these match joystick/wheel IDs.
                                 if ((vendor == vendor_udev) && (product == product_udev)) {
                                     // Device matches; devNode (e.g. /dev/hidrawX) can be used to control rumble
@@ -222,9 +219,6 @@ void Input::open_joy()
 
     }
 
-//    if (SDL_JoystickNumButtons(controller)) {
-//      std::cout << "Joystick buttons detected: " << SDL_JoystickNumButtons() << std::endl;
-//    }
     reset_axis_config();
     wheel = a_wheel = CENTRE;
 }
@@ -453,7 +447,6 @@ void Input::handle_axis(const uint8_t ax, const int16_t value)
     if (analog)
     {
         int workingv = value;
-//        if (ax!=0) std::cout << "ax: " << (int)ax << " value " << value << std::endl; // JJP
         store_last_axis(ax, value);
 
         // Steering
@@ -480,7 +473,6 @@ void Input::handle_axis(const uint8_t ax, const int16_t value)
                     adjusted = CENTRE;
             }
 
-//            std::cout << "wheel zone : " << wheel_zone << " : " << std::hex << " : " << (int) adjusted << std::endl;
             a_wheel = adjusted;
         }
         // Accelerator [Single Axis]
@@ -488,7 +480,6 @@ void Input::handle_axis(const uint8_t ax, const int16_t value)
         {
             a_accel = scale_trigger(invert[1] ? -workingv : workingv);
             if (a_accel > 0xff) a_accel = 0xff;
-//            std::cout << "throttle zone : " << value << ", processed: " << std::hex << " : " << (int) a_accel << std::endl;
         }
 
         // Brake [Single Axis]
@@ -496,7 +487,6 @@ void Input::handle_axis(const uint8_t ax, const int16_t value)
         {
             a_brake = scale_trigger(invert[2] ? -workingv : workingv);
             if (a_brake > 0xff) a_brake = 0xff;
-//            std::cout << "brake zone : " << value << ", processed: " << std::hex << " : " << (int) a_brake << std::endl;
         }
 
         // Motor Banking (Moving Cabient Only with SmartyPi)
@@ -570,7 +560,6 @@ void Input::handle_joy_down(SDL_JoyButtonEvent* evt)
     if (controller != NULL) return;
     // Latch joystick button presses for redefines
     joy_button = evt->button;
-//    std::cout << "Joystick button pressed event: Button " << joy_button << std::endl;
     handle_joy(evt->button, true);
 }
 
@@ -583,7 +572,6 @@ void Input::handle_joy_up(SDL_JoyButtonEvent* evt)
 void Input::handle_controller_down(SDL_ControllerButtonEvent* evt)
 {
     joy_button = evt->button;
-//    std::cout << "SDL Controller button pressed event: Button " << joy_button << std::endl;
     handle_joy(evt->button, true);
 }
 

@@ -10,8 +10,8 @@
     See license.txt for more details.
 
     In the original implementation, and possibly the original game,
-    ghost cars can appear near checkpoints. Modification in CannonBall-SE
-    to surpress these is Copyright (c) 2025, James Pearce.
+    ghost cars can appear near checkpoints; this is suppressed here.
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #include "engine/obonus.hpp"

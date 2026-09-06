@@ -7,7 +7,7 @@
     Copyright Chris White.
     See license.txt for more details.
 
-    Modifications for CannonBall-SE (c) 2005 James Pearce
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #include "engine/osprite.hpp"

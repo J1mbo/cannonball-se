@@ -12,6 +12,8 @@
     
     Copyright Chris White.
     See license.txt for more details.
+
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #include "../trackloader.hpp"
@@ -372,10 +374,6 @@ void OLevelObjs::do_sprite_routine()
                 case 14:
                     do_thickness_sprite(sprite, outrun.adr.sprite_sand);
                     break;
-
-                /*default:
-                    std::cout << "do_sprite_routine() " << int16_t(sprite->function_holder) << std::endl;
-                    break;*/
             }
         }
     }

@@ -2,7 +2,7 @@
 # Consolidated CannonBall-SE CMake File
 #
 # For CannonBall-SE - https://github.com/J1mbo/cannonball
-# Copyright (c) James Pearce, 2025
+# Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce
 #
 # CannonBall is Copyright (c) Chris White, see: https://github.com/djyt/cannonball
 #

@@ -7,7 +7,7 @@
  *   WAV/MP3 playback with background loading giving near‑instant
  *   start on low‑power SD‑card systems such as the Raspberry Pi 2.
  *
- * Copyright (c) 2025 James Pearce.
+ * Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
  *
  * Derived from:
  *   • SDL audio code Copyright (c) 2012, 2020 Chris White

@@ -1,6 +1,6 @@
 /* Based on snes_ntsc 0.2.2. http://www.slack.net/~ant/
 
-Updates for CannonBall-SE are Copyright (c) 2025-2026 James Pearce:
+Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce:
 - S16 emulation at 24-bit output depth
 - threaded initialisation
 - slot-indexed, phase-major kernel table (snes_ntsc_init()/update_slot(s)(), see

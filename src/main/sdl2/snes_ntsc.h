@@ -2,7 +2,7 @@
 
 /* Based on snes_ntsc 0.2.2
 
-Updates for CannonBall-SE are Copyright (c) 2025, James Pearce:
+Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce:
 - to provide S16 emulation at 24-bit output depth,
 - to provide SIMD optimised processing for clamp and RGB conversion.
 Updates Sep-26: slot-indexed, phase-major kernel table (Part A of the NTSC filter

@@ -2,7 +2,7 @@
 
 # install.sh
 # Install script for CannonBall-SE, a CannonBall fork by James Pearce
-# Copyright (c) 2025, James Pearce
+# Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce
 # Supports Ubuntu 24.04 and RaspberryPi OS (CLI only)
 
 # Exit on unset vars and errors

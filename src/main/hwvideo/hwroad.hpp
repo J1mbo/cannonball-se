@@ -1,4 +1,7 @@
 #pragma once
+/***************************************************************************
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
+***************************************************************************/
 
 #include "stdint.hpp"
 #include "globals.hpp"      // S16_HEIGHT (S3: foreground_row_mask/check_foreground_rows signatures)

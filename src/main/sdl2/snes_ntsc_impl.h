@@ -16,6 +16,8 @@ details. You should have received a copy of the GNU Lesser General Public
 License along with this module; if not, write to the Free Software Foundation,
 Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
 
+/* Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce. */
+
 #define DISABLE_CORRECTION 0
 
 #undef PI
@@ -158,16 +160,7 @@ static void init_filters( init_t* impl, snes_ntsc_setup_t const* setup )
 			}
 		}
 	}
-	
-	/*
-	printf( "luma:\n" );
-	for ( i = kernel_size; i < kernel_size * 2; i++ )
-		printf( "%f\n", kernels [i] );
-	printf( "chroma:\n" );
-	for ( i = 0; i < kernel_size; i++ )
-		printf( "%f\n", kernels [i] );
-	*/
-	
+
 	/* generate linear rescale kernels */
 	#if rescale_out > 1
 	{

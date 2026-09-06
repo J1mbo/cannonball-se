@@ -8,7 +8,7 @@
     Copyright Chris White.
     See license.txt for more details.
 
-    Revisions for CannonBall-SE Copyright (c) 2025 James Pearce:
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce:
     - Removed Boost alignment helpers.
     - Use C++23 for:
       - aligned new/delete for pixel buffers (portable on x86/ARM)

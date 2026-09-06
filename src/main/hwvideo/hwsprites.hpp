@@ -1,4 +1,7 @@
 #pragma once
+/***************************************************************************
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
+***************************************************************************/
 
 #include "stdint.hpp"
 #include "hwvideo/hwarch.hpp" // SPRITE_R1_LLD.md sec. 2.1: CB_ALWAYS_INLINE, used below

@@ -9,6 +9,8 @@
     
     Copyright Chris White.
     See license.txt for more details.
+
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #include <cstring>
@@ -727,7 +729,7 @@ void OHud::blit_text_new(uint16_t x, uint16_t y, const char* text, uint16_t pal)
         // Convert lowercase characters to uppercase
         if (c >= 'a' && c <= 'z')
             c -= 0x20;
-        else if (c == '©')
+        else if (c == 'ï¿½')
             c = 0x10;
         else if (c == '-')
             c = 0x2d;

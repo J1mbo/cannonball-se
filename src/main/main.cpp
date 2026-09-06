@@ -4,8 +4,7 @@
     Copyright (c) Chris White.
     See license.txt for more details.
 
-    This version for CannonBall-SE incorporates revisions Copyright (c)
-    2025 James Pearce:
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce:
     - Threaded operation
     - Automatic 30/60fps operation
     - Rumble on tire smoke

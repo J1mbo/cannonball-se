@@ -4,7 +4,7 @@
 
     See license.txt for more details.
 
-    This version, for CannnonBall SE, Copyright (c) 2020,2025 James Pearce.
+    Modifications for Cannonball-SE are Copyright (c) 2020, 2025, 2026 James Pearce.
 
     Provides:
     - Internal format palette conversion for Blargg filter (eliminates one step)

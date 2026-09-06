@@ -9,7 +9,7 @@
     present (as a no-op fallback where needed) on every target, so calling
     code never has to #ifdef around a missing symbol.
 
-    Copyright (c) 2025 James Pearce.
+    Modifications for Cannonball-SE are Copyright (c) 2026 James Pearce.
 ***************************************************************************/
 
 #include <cstdint>

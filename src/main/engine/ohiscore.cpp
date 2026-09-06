@@ -4,6 +4,8 @@
 
     Copyright Chris White.
     See license.txt for more details.
+
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #include "main.hpp"
@@ -240,14 +242,6 @@ void OHiScore::check_name_entry()
         ohud.draw_timer2(ostats.time_counter, 0x1101EC, BIG_RED_FONT);
         // Input from controls
         do_input(score_adr);
-
-        // Save new score info
-        /* this is now handled in outrun.cpp
-        if ((state == STATE_DONE) || (ostats.time_counter < 0)) {
-            // JJP - always save on timeout
-            std::cout << "Saving new high score" << std::endl;
-            config.save_scores(outrun.cannonball_mode == Outrun::MODE_ORIGINAL);
-        } */
     }
 }
 

@@ -16,6 +16,8 @@
     
     Copyright Chris White.
     See license.txt for more details.
+
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
 #include "engine/oanimseq.hpp"
@@ -1524,15 +1526,9 @@ void OFerrari::convert_revs_speed(int32_t new_torque, int32_t &d2)
     // Setup New Car Increment Speed
     d2 = ((d2 >> 16) * 0x1A90) >> 8;
     d2 = (d2 << 16) >> 4;
-    
-    /*if (!new_torque)
-    {
-        std::cout << "convert_revs_speed error!" << std::endl;
-    }*/
 
     const int max_speed = !config.engine.turbo ? MAX_SPEED : (int) (MAX_SPEED * 1.2f);
     d2 = (d2 / new_torque) * 0x480;
-    //std::cout << std::hex << "d2: " << (int)d2 << " new_torque: " << new_torque << " torque index: " << std::hex << (int) torque_index << std::endl;
     if (d2 < 0) d2 = 0;
     else if (d2 > max_speed) d2 = max_speed;
 }
