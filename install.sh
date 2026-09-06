@@ -86,28 +86,37 @@ EOF
   sudo udevadm trigger
 '
 
-# 6. Install dependencies
+# 6. Grant real-time audio scheduling (rtprio), used by the audio mix/SDL
+#    threads to avoid ALSA underruns under CPU load (see
+#    tools/AUDIO_PERF_PLAN.md). Falls back gracefully at runtime if this
+#    step is skipped or fails - the game just runs without RT priority.
+run_step "Grant audio group rtprio access" bash -c '
+  sudo usermod -aG audio "$USER"
+  sudo cp res/50-cannonball-audio.conf /etc/security/limits.d/50-cannonball-audio.conf
+'
+
+# 7. Install dependencies
 run_step "Install dependencies" sudo apt install -y \
   build-essential git cmake libsdl2-dev libglu1-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev
 
-# 7. Prepare and build CannonBall
+# 8. Prepare and build CannonBall
 run_step "Prepare build directories" mkdir -p build roms
 run_step "Configure Project with CMake" cmake -S . -B build
 run_step "Compile" cmake --build build --parallel $NUMTHREADS
 #cd build && cmake ../cmake && make -j"$NUMTHREADS"'
 run_step "Create default config file" bash -c 'cp res/config.xml .'
 
-# 8. List and select audio device
+# 9. List and select audio device
 env_command="build/cannonball-se -list-audio-devices"
 run_step "List audio devices" bash -c "$env_command"
 read -rp "Enter the number of the audio device to use for CannonBall [0]: " audio_device
 audio_device=${audio_device:-0}
 run_step "Configure audio device" bash -c 'sed -i "s|<playback_device>.*</playback_device>|<playback_device>'"$audio_device"'</playback_device>|" config.xml'
 
-# 9. Final summary
+# 10. Final summary
 print_summary
 
-# 10. Prompt to view the man page
+# 11. Prompt to view the man page
 read -rp "Would you like to view the man page now? [y/N] " view_man
 STEP_ORDER+=("View man page prompt")
 if [[ "$view_man" =~ ^[Yy] ]]; then

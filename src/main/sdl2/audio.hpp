@@ -30,6 +30,7 @@
 #include <string>
 #include <SDL.h>
 #include <semaphore>
+#include <chrono>
 
 #ifdef COMPILE_SOUND_CODE
 
@@ -72,6 +73,13 @@ public:
     // Enable/Disable Sound
     bool sound_enabled;
 
+    // R3: consumer-side robustness counter. Incremented by
+    // sdl_callback_trampoline() each time the ring buffer wasn't ready within
+    // its timed wait and the callback fell back to silence instead of
+    // blocking. Zero on a healthy system; readable from anywhere (e.g. the
+    // periodic diagnostics in main.cpp) for field diagnosis.
+    std::atomic<uint64_t> stat_fallbacks{0};
+
     // In-class Constructor
     Audio()
       : sound_enabled(false),
@@ -108,6 +116,13 @@ private:
     uint32_t mix_buffer_bytes; // Each frame is 250 samples and 8ms at 31250kHz sample rate.
     int audio_paused;
     SDL_AudioDeviceID dev;
+
+    // R3: how long sdl_callback_trampoline() will wait on samplesReady before
+    // giving up and filling the callback with silence. Set from the actual
+    // negotiated SDL period in start_audio() (period / 2); defaulted here to
+    // a sane value (4ms, i.e. an 8ms period) in case it's ever read before
+    // start_audio() runs.
+    std::chrono::microseconds callback_wait{4000};
 
     void clear_buffers();
 

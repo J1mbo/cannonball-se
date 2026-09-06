@@ -756,6 +756,16 @@ static void main_loop() {
                            (double)(sw - l_sw) / dfr / 1e6,
                            (double)(ww - l_ww) / dfr / 1e6,
                            (double)((pr-l_pr)+(sw-l_sw)+(ww-l_ww)) / dfr / 1e6);
+                    // R3 diagnostics: cumulative count of audio callback
+                    // "starvation" events (ring not ready in time, filled
+                    // with silence instead of blocking/underrunning). Zero
+                    // on a healthy system; gated behind the existing
+                    // fps_counter debug toggle so normal runs stay quiet.
+                    if (config.video.fps_count && audio.sound_enabled) {
+                        uint64_t fb = audio.stat_fallbacks.load(std::memory_order_relaxed);
+                        printf("\n     AUDIO: consumer starvation fallbacks (cumulative) %llu",
+                               (unsigned long long)fb);
+                    }
                 } else {
                     printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
                 }

@@ -27,6 +27,11 @@
 #include <algorithm>        // for std::min & std::clamp
 #include <cstring>
 
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#endif
+
 #include "sdl2/audio.hpp"
 
 //#include "frontend/config.hpp" // fps
@@ -104,6 +109,39 @@ static const MpgLike kWavApi = {
 // 2^18 samples at 44.1kHz stereo is about 3 seconds
 static constexpr uint32_t FADE_BITS    = 18;
 static constexpr uint32_t FADE_LEN     = (1u << FADE_BITS);
+
+
+// ---------------------------------------------------------------------------
+// R2 - opportunistic SCHED_FIFO for the two audio threads (the mix thread and
+// SDL's own audio callback thread). Linux-only: pthread_setschedparam/SCHED_FIFO
+// is POSIX-only, so this is a no-op on Windows (guarded out entirely - no
+// <pthread.h>/<sched.h> dependency there).
+//
+// Both threads are self-throttling by construction (the mix thread blocks on
+// spaceAvailable when the ring is full; the SDL thread blocks inside
+// snd_pcm_writei on the hardware), so a modest fixed FIFO priority is safe -
+// a runaway would require a bug that also breaks audio output. If the
+// process doesn't have an rtprio grant (the common case out of the box),
+// pthread_setschedparam fails with EPERM; we log a single line naming the
+// fix and keep running at normal (CFS) priority - the game must never fail
+// to start just because real-time scheduling isn't provisioned.
+// ---------------------------------------------------------------------------
+#if defined(__linux__)
+namespace {
+void audio_set_rt(pthread_t handle, const char* who, int prio) {
+    sched_param sp{};
+    sp.sched_priority = prio;
+    int rc = pthread_setschedparam(handle, SCHED_FIFO, &sp);
+    if (rc != 0) {
+        std::cerr << "audio: " << who << ": SCHED_FIFO(" << prio << ") refused ("
+                  << std::strerror(rc) << "). Grant rtprio, e.g. by installing "
+                     "res/50-cannonball-audio.conf to /etc/security/limits.d/ "
+                     "('@audio - rtprio 80') and logging in again; continuing at "
+                     "normal (CFS) priority." << std::endl;
+    }
+}
+} // namespace
+#endif
 
 
 Audio::~Audio()
@@ -226,6 +264,13 @@ void Audio::start_audio(bool list_devices_only)
 
         mix_buffer_bytes = obtained.samples * CHANNELS * (BITS / 8);
 
+        // R3: the SDL callback will wait at most half of one callback period
+        // for a ring slot before falling back to silence, so a stalled
+        // producer degrades gracefully well before the ALSA hardware ring
+        // (2 periods) would actually underrun.
+        callback_wait = std::chrono::microseconds(
+            (static_cast<uint64_t>(obtained.samples) * 1000000ULL) / (2ULL * FREQ));
+
         clear_buffers();
         clear_wav();
 
@@ -297,6 +342,14 @@ void Audio::tick()
         running.store(true);
         // launch mixing thread
         mixThread = std::thread(&Audio::mixing_loop, this);
+#if defined(__linux__)
+        // R2: give the producer a modest real-time priority so it isn't left
+        // waiting on a busy CFS run queue. Below the SDL callback thread's
+        // priority (55, set on its first invocation) since the callback has
+        // the tighter ~8ms ALSA deadline. EPERM (no rtprio grant) is logged
+        // and otherwise ignored - see audio_set_rt().
+        audio_set_rt(mixThread.native_handle(), "mix thread", 50);
+#endif
 
         // and unpause the device
         SDL_PauseAudioDevice(dev, 0);
@@ -426,9 +479,35 @@ void Audio::fill_and_mix(uint8_t *stream, int len)
 void Audio::sdl_callback_trampoline(void* udata, Uint8* stream, int len)
 {
     auto* self = static_cast<Audio*>(udata);
-    // wait until a buffer is ready
-    self->samplesReady.acquire();
-    // copy one buffer
+
+#if defined(__linux__)
+    // R2: this function *is* SDL's audio callback thread. Raise it once, on
+    // first entry, to a priority just above the mix thread's (55 vs 50) -
+    // it's the consumer with the tighter ~8ms ALSA deadline. EPERM is logged
+    // once and otherwise ignored; see audio_set_rt().
+    static std::once_flag rt_once;
+    std::call_once(rt_once, [] { audio_set_rt(pthread_self(), "SDL callback thread", 55); });
+#endif
+
+    // R3: bounded wait instead of an unconditional acquire. This callback
+    // runs while SDL holds its audio device mutex, so an unconditional block
+    // here previously stalled any game-thread call that also needs that lock
+    // (SDL_LockAudioDevice(), used by clear_buffers()/clear_wav()) whenever
+    // the ring ran dry. A timed wait removes that hazard for free: on
+    // timeout we return promptly instead of blocking indefinitely.
+    if (!self->samplesReady.try_acquire_for(self->callback_wait)) {
+        // Producer stalled past our budget: emit silence for this callback
+        // rather than blocking further (which is what caused an ALSA
+        // underrun before). Ring state (consIndex/spaceAvailable) is left
+        // untouched, so the late slot simply plays next callback - stream
+        // time shifts by at most one period per event and can never drift
+        // beyond the ring depth.
+        std::memset(stream, 0, len);
+        self->stat_fallbacks.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    // Normal path - unchanged from before: copy one ready buffer verbatim.
     auto &src = self->ringBuffer[self->consIndex.load()];
     memcpy(stream, src.data(), len);
     self->consIndex = (self->consIndex + 1) % BUFFER_COUNT;
