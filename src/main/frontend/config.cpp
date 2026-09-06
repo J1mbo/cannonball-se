@@ -252,6 +252,11 @@ void Config::load()
     sound.music_timer = cfg.get_int("sound.music_timer", 0);
     // JJP - allow either standard 8ms audio callbacks, or a slower 16ms rate (required with WSL2)
     sound.callback_rate   = cfg.get_int("sound.callback_rate",0);
+    // JJP - request SCHED_FIFO for the audio threads. Default 0 (off): on some
+    // boards RT audio preempts the render threads and costs fps; keep off until
+    // that is tuned (core affinity / poll cadence). R3's robust consumer +
+    // callback_rate handle underruns without it.
+    sound.rt_priority     = cfg.get_int("sound.rt_priority",0);
     // Index of SDL playback device to request, -1 for default
     sound.playback_device = cfg.get_int("sound.playback_device", -1);
 
@@ -430,6 +435,7 @@ bool Config::save()
     cfg.put_int("sound.fix_samples",        sound.fix_samples);
     cfg.put_int("sound.rate",               sound.rate);             // audio sampling rate e.g. 44100 (Hz)
     cfg.put_int("sound.callback_rate",      sound.callback_rate);    // JJP - 0=8ms callbacks, 1=16ms
+    cfg.put_int("sound.rt_priority",        sound.rt_priority);      // JJP - 0=off (default), 1=SCHED_FIFO audio threads
     cfg.put_int("sound.playback_device",    sound.playback_device);  // JJP - Index of SDL playback device to request, -1 for default  
     cfg.put_int("sound.wave_volume",        sound.wave_volume);      // JJP - volume adjustment to .wav files
 

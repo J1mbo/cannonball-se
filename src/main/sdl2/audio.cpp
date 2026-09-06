@@ -347,8 +347,12 @@ void Audio::tick()
         // waiting on a busy CFS run queue. Below the SDL callback thread's
         // priority (55, set on its first invocation) since the callback has
         // the tighter ~8ms ALSA deadline. EPERM (no rtprio grant) is logged
-        // and otherwise ignored - see audio_set_rt().
-        audio_set_rt(mixThread.native_handle(), "mix thread", 50);
+        // and otherwise ignored - see audio_set_rt(). Gated off by default
+        // (config.sound.rt_priority): RT audio can preempt the render threads
+        // and cost fps on some boards - opt in once affinity/poll cadence are
+        // tuned. R3's robust consumer + callback_rate cover underruns without it.
+        if (config.sound.rt_priority)
+            audio_set_rt(mixThread.native_handle(), "mix thread", 50);
 #endif
 
         // and unpause the device
@@ -485,8 +489,12 @@ void Audio::sdl_callback_trampoline(void* udata, Uint8* stream, int len)
     // first entry, to a priority just above the mix thread's (55 vs 50) -
     // it's the consumer with the tighter ~8ms ALSA deadline. EPERM is logged
     // once and otherwise ignored; see audio_set_rt().
-    static std::once_flag rt_once;
-    std::call_once(rt_once, [] { audio_set_rt(pthread_self(), "SDL callback thread", 55); });
+    // Gated off by default (config.sound.rt_priority) - see the mix-thread
+    // call site in Audio::tick() for why.
+    if (config.sound.rt_priority) {
+        static std::once_flag rt_once;
+        std::call_once(rt_once, [] { audio_set_rt(pthread_self(), "SDL callback thread", 55); });
+    }
 #endif
 
     // R3: bounded wait instead of an unconditional acquire. This callback
