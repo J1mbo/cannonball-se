@@ -493,21 +493,21 @@ inline void set_pixel_x4(uint16_t *buf, uint32_t data, uint16_t width)
 static inline void tile_row_hires(uint16_t* buf, uint32_t p0, uint32_t nPalette, uint16_t width)
 {
 #if defined(CB_HAVE_NEON)
-    const uint32_t sw = __builtin_bswap32(p0);                     // bytes: c0c1, c2c3, c4c5, c6c7
+    const uint32_t sw = cb_bswap32(p0);                             // bytes: c0c1, c2c3, c4c5, c6c7
     uint8x8_t  b   = vreinterpret_u8_u32(vdup_n_u32(sw));           // lanes 0..3 hold those bytes
     uint8x8_t  hi  = vshr_n_u8(b, 4);                               // c0 c2 c4 c6 ..
     uint8x8_t  lo  = vand_u8(b, vdup_n_u8(0x0F));                   // c1 c3 c5 c7 ..
-    uint8x8_t  nib = vzip1_u8(hi, lo);                              // c0 c1 c2 c3 c4 c5 c6 c7
+    uint8x8_t  nib = cb_zip1_u8(hi, lo);                            // c0 c1 c2 c3 c4 c5 c6 c7
     uint16x8_t n16 = vmovl_u8(nib);
     uint16x8_t col = vaddq_u16(n16, vdupq_n_u16((uint16_t)nPalette));
-    uint16x8_t L   = vzip1q_u16(col, col);                          // c0 c0 c1 c1 c2 c2 c3 c3
-    uint16x8_t R   = vzip2q_u16(col, col);                          // c4 c4 .. c7 c7
+    uint16x8_t L   = cb_zip1q_u16(col, col);                        // c0 c0 c1 c1 c2 c2 c3 c3
+    uint16x8_t R   = cb_zip2q_u16(col, col);                        // c4 c4 .. c7 c7
     if (((((p0 & 0x77777777u) + 0x77777777u) | p0) & 0x88888888u) == 0x88888888u) {   // all 8 nibbles non-zero
         vst1q_u16(buf, L); vst1q_u16(buf + 8, R);
         vst1q_u16(buf + width, L); vst1q_u16(buf + width + 8, R);
     } else {
         uint16x8_t m  = vtstq_u16(n16, n16);                        // 0xFFFF where nibble != 0
-        uint16x8_t mL = vzip1q_u16(m, m), mR = vzip2q_u16(m, m);
+        uint16x8_t mL = cb_zip1q_u16(m, m), mR = cb_zip2q_u16(m, m);
         uint16_t* r1 = buf + width;
         vst1q_u16(buf,     vbslq_u16(mL, L, vld1q_u16(buf)));
         vst1q_u16(buf + 8, vbslq_u16(mR, R, vld1q_u16(buf + 8)));

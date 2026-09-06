@@ -67,3 +67,11 @@ target_compile_definitions(sprite_test_scalar PRIVATE CB_FORCE_SCALAR=1)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64" AND NOT MSVC)
     target_compile_options(sprite_test PRIVATE -mcpu=cortex-a53)
 endif()
+
+# On a 32-bit ARM Pi (Cortex-A7, e.g. Pi 2 v1.1), enable NEON explicitly so the
+# native driver actually exercises the CB_HAVE_NEON path there (R2,
+# SPRITE_REPLAN_FABLE.md sec. 5.3) -- sprite_test_scalar is untouched, it always
+# builds -DCB_FORCE_SCALAR=1 regardless of target.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7" AND NOT MSVC)
+    target_compile_options(sprite_test PRIVATE -mcpu=cortex-a7 -mfpu=neon-vfpv4)
+endif()

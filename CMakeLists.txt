@@ -486,6 +486,50 @@ if(WITH_MARCH_NATIVE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   endif()
 endif()
 
+# --- ARMv7/AArch64 NEON portability (SPRITE_REPLAN_FABLE.md sec. 5.3) -------------
+# WITH_MARCH_NATIVE=ON (default) already resolves to NEON on a Cortex-A7 (GCC >= 8
+# gives armv7ve+simd, __ARM_NEON defined) and a Cortex-A53 (cortex-a53+crc), and to
+# scalar on ARMv6 (armv6kz+fp, no NEON). WITH_NEON32 is only needed for a non-native
+# 32-bit build (e.g. cross-compiling, or a distro default of -march=armv6 with no
+# -march=native) that still wants NEON forced on.
+option(WITH_NEON32 "Force -mfpu=neon-vfpv4 on armv7 when not using -march=native" OFF)
+if(WITH_NEON32 AND NOT WITH_MARCH_NATIVE AND CMAKE_SYSTEM_PROCESSOR MATCHES "armv7"
+   AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(cannonball-se PRIVATE -mfpu=neon-vfpv4)
+  message(STATUS "WITH_NEON32: forcing -mfpu=neon-vfpv4 for armv7 NEON")
+endif()
+
+# Configure-time message printing the detected arch, so a measurement is never
+# again taken on the wrong path (Raspberry Pi OS armhf defaults to ARMv6 with no
+# NEON, and a Debug build silently drops -march=native). This mirrors what
+# hwarch.hpp computes at compile time (CB_HAVE_NEON / CB_HAVE_NEON_A64) via an
+# independent check_cxx_source_compiles probe using the same flags the target
+# will actually build with.
+include(CheckCXXSourceCompiles)
+set(_CB_NEON_PROBE_SRC "
+#if !defined(__ARM_NEON) && !defined(__ARM_NEON__)
+#error no NEON
+#endif
+int main(){return 0;}
+")
+set(CMAKE_REQUIRED_FLAGS "")
+if(WITH_MARCH_NATIVE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
+  set(CMAKE_REQUIRED_FLAGS "-march=native")
+elseif(WITH_NEON32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set(CMAKE_REQUIRED_FLAGS "-mfpu=neon-vfpv4")
+endif()
+check_cxx_source_compiles("${_CB_NEON_PROBE_SRC}" CB_DETECT_NEON)
+unset(CMAKE_REQUIRED_FLAGS)
+if(CB_DETECT_NEON)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    message(STATUS "Sprite/tile renderer arch: NEON-A64 detected (${CMAKE_SYSTEM_PROCESSOR})")
+  else()
+    message(STATUS "Sprite/tile renderer arch: NEON-A32 detected (${CMAKE_SYSTEM_PROCESSOR})")
+  endif()
+else()
+  message(STATUS "Sprite/tile renderer arch: scalar (no NEON detected for this compiler/flags/target ${CMAKE_SYSTEM_PROCESSOR})")
+endif()
+
 option(WITH_RVV "Enable RISC-V Vector (RVV) SIMD (requires -march=..._v)" OFF)
 if(WITH_RVV AND CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64")
     target_compile_options(cannonball-se PRIVATE -march=rv64gcv)

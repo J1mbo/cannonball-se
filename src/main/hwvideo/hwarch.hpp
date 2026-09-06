@@ -21,18 +21,71 @@
 
 // CB_FORCE_SCALAR: build every optimised path with its portable fallback (any host).
 // Set by the road_tiles_test_scalar driver target; never defined by the game build.
+//
+// R2 (SPRITE_REPLAN_FABLE.md sec. 5.2): two-tier NEON detection.
+//   CB_HAVE_NEON      - the portable ARMv7/AArch64 NEON subset. Defined whenever the
+//                        compiler offers NEON at all: AArch64 always (when not force-
+//                        scalar); AArch32 only when built with -mfpu=neon* or an
+//                        -march=...+simd that turns NEON on (Raspberry Pi OS armhf
+//                        defaults to ARMv6 with no NEON, so this is off there unless
+//                        asked for). Code under plain CB_HAVE_NEON must compile on
+//                        both dialects.
+//   CB_HAVE_NEON_A64  - the AArch64-only dialect on top of CB_HAVE_NEON (vzip1q_u16
+//                        etc.). Anything gated on this needs a CB_HAVE_NEON-only
+//                        alternative beside it (see the cb_zip* shims below).
 #if !defined(CB_FORCE_SCALAR)
-  #if defined(__aarch64__) && (defined(__ARM_NEON) || defined(__ARM_NEON__))
-    #include <arm_neon.h>
-    #define CB_HAVE_NEON 1               // AArch64 NEON dialect only (vzip1q etc.)
+  #if defined(__ARM_NEON) || defined(__ARM_NEON__)   // AArch64: always. AArch32: only
+    #include <arm_neon.h>                            //   with -mfpu=neon* or -march=...+simd
+    #define CB_HAVE_NEON 1               // portable ARMv7/AArch64 subset only
+    #if defined(__aarch64__)
+      #define CB_HAVE_NEON_A64 1         // AArch64-only dialect, if ever needed
+    #endif
   #endif
 #endif
 
-#if defined(CB_HAVE_NEON)
-  #define CB_ARCH_NAME "NEON"
+#if defined(CB_HAVE_NEON_A64)
+  #define CB_ARCH_NAME "NEON-A64"
+#elif defined(CB_HAVE_NEON)
+  #define CB_ARCH_NAME "NEON-A32"
 #else
   #define CB_ARCH_NAME "scalar"
 #endif
+
+#if defined(CB_HAVE_NEON)
+// ---------------------------------------------------------------------------
+// Zip shims for the three AArch64-only intrinsics hwtiles.cpp's tile_row_hires
+// uses (SPRITE_REPLAN_FABLE.md sec. 5.2). On A64 these resolve to the direct
+// AArch64 zip instructions (identical codegen to before this header changed);
+// on A32 they fall back to the combined vzipq/vzip result-pair form, which
+// AArch32 NEON offers instead of separate zip1/zip2 instructions.
+// ---------------------------------------------------------------------------
+static inline uint16x8_t cb_zip1q_u16(uint16x8_t a, uint16x8_t b)
+{
+#if defined(CB_HAVE_NEON_A64)
+    return vzip1q_u16(a, b);
+#else
+    return vzipq_u16(a, b).val[0];
+#endif
+}
+
+static inline uint16x8_t cb_zip2q_u16(uint16x8_t a, uint16x8_t b)
+{
+#if defined(CB_HAVE_NEON_A64)
+    return vzip2q_u16(a, b);
+#else
+    return vzipq_u16(a, b).val[1];
+#endif
+}
+
+static inline uint8x8_t cb_zip1_u8(uint8x8_t a, uint8x8_t b)
+{
+#if defined(CB_HAVE_NEON_A64)
+    return vzip1_u8(a, b);
+#else
+    return vzip_u8(a, b).val[0];
+#endif
+}
+#endif // CB_HAVE_NEON
 
 // ---------------------------------------------------------------------------
 // SPRITE_IMPLEMENTATION_SPEC.md S0.1/S0.2: portable byte-swap and prefetch
@@ -102,11 +155,13 @@ static inline void cb_prefetch_w(const void* p)
   #define CB_UNROLL(n)
 #endif
 
-// Rules: 32-bit ARM (ARMv6/ARMv7, __ARM_NEON under -mfpu=neon) is deliberately
-// *not* given NEON, because the tile kernel uses AArch64-only intrinsics; it
-// takes the scalar path. MSVC ARM64 (_M_ARM64) is not a supported target and
-// takes the scalar path. x86-64 takes the scalar path for everything (no SSE2
-// port is specified; the scalar code is what MSVC ships).
+// Rules: 32-bit ARM (ARMv7 built with -mfpu=neon*/-march=...+simd, e.g. Cortex-A7)
+// now gets CB_HAVE_NEON via the cb_zip* shims above (R2); ARMv6 with no NEON still
+// takes the scalar path, as does any AArch32 build without __ARM_NEON defined.
+// MSVC ARM64 (_M_ARM64) is not a supported target and takes the scalar path (MSVC
+// does not define __ARM_NEON/__ARM_NEON__, so it falls through the same gate).
+// x86-64 takes the scalar path for everything (no SSE2 port is specified; the
+// scalar code is what MSVC ships).
 
 // ---------------------------------------------------------------------------
 // Test-only macros (documented here for reference; defined by CMake, not by
