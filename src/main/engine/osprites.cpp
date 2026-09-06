@@ -751,6 +751,26 @@ std::exit(9);
     int32_t calc_width   = ceil((0x200 * sprite_width)  / zoom);
     int32_t calc_height  = ceil((0x200 * sprite_height) / zoom);
 
+    // Engine-side sizing fix (confirmed vs c51dc0e): the 5-anchor calc_width/
+    // calc_height approximation above was applied unconditionally, including
+    // for the default (hiresprites == 0) path, where it is a pure regression:
+    // the operands are uint32_t so the division truncates before ceil() (a
+    // no-op), leaving mid-to-far sprites (zoom bytes 0-62, SIZE5..SIZE2) up to
+    // 1px short. Traffic cars are oentry::BOTTOM-anchored, so that shed row is
+    // their bottom source row (wheels). For the original-size path, restore the
+    // exact ROM-derived width/height (already computed above in the
+    // hiresprites == 0 branch) and drop the hires-only x offset -- leaving all
+    // downstream consumers (input->width, set_width, set_sprite_xy, sprite_x2,
+    // sprite_y2, y_adj, set_height) exactly at their pre-c51dc0e values. The
+    // hiresprites == 1 path is unchanged. Renderer-side (hwsprites) is not
+    // touched by this fix.
+    if (config.video.hiresprites == 0)
+    {
+        calc_width  = width;
+        calc_height = height;
+        offset      = 0;
+    }
+
 /*
 {
 if ((calc_width < width) || (calc_height < height)) {
