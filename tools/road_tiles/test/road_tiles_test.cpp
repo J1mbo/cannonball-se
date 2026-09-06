@@ -352,6 +352,7 @@ static int road_selftest(HWRoad& road, const Mode& m, std::mt19937& rng)
     A.allocate(config.s16_width, config.s16_height);
     B.allocate(config.s16_width, config.s16_height);
     const std::size_t n = A.halfwords;
+    const int rows_per_line = m.hires ? 2 : 1;
 
     for (int control = 0; control < 8; control++) {
         for (int trial = 0; trial < 3; trial++) {
@@ -364,11 +365,40 @@ static int road_selftest(HWRoad& road, const Mode& m, std::mt19937& rng)
             road.read_road_control();
             road.write_road_control((uint8_t)control);
 
+            // Per-frame memory-work Tier 1 #1: road_fg_rows, computed
+            // exactly as Video::prepare_frame does (fg_enabled=true here --
+            // the all-zero/disabled mask is already exhaustively covered,
+            // for every mode and control value, by unit s3's mask_false
+            // sweep, and an all-zero mask makes render_background take
+            // exactly its pre-#1 path anyway).
+            uint8_t road_fg_rows[S16_HEIGHT];
+            road.foreground_row_mask(road_fg_rows, true);
+
+            // Background: shipping dispatch (mask-aware -- may now skip a
+            // masked line's sky fill entirely) vs the always-fills _ref
+            // twin. A masked line is allowed to diverge here: it is
+            // check_foreground_rows/unit s3's job to prove the foreground
+            // pass that follows always repaints it in full, not this
+            // function's -- so both buffers are stamped with an identical
+            // sentinel on masked lines before comparing, exactly as unit s5
+            // does for the tile layer's own mask.
             fill_random(A.base, n, rng);
             std::memcpy(B.base, A.base, n * sizeof(uint16_t));
-            (road.*road.render_background)(A.pixels); // shipping dispatch, as Video::prepare_frame uses it
+            (road.*road.render_background)(A.pixels, road_fg_rows); // shipping dispatch, as Video::prepare_frame uses it
             if (m.hires) RoadTilesTestAccess::bg_hires_ref(road, B.pixels);
             else         RoadTilesTestAccess::bg_lores_ref(road, B.pixels);
+            {
+                const uint16_t FG_CONST = 0x7bcd;
+                for (int yy = 0; yy < (int)S16_HEIGHT; yy++) {
+                    if (!road_fg_rows[yy]) continue;
+                    for (int r = 0; r < rows_per_line; r++) {
+                        const int y = yy * rows_per_line + r;
+                        uint16_t* rowA = A.pixels + (std::size_t)y * config.s16_width;
+                        uint16_t* rowB = B.pixels + (std::size_t)y * config.s16_width;
+                        for (int x = 0; x < config.s16_width; x++) { rowA[x] = FG_CONST; rowB[x] = FG_CONST; }
+                    }
+                }
+            }
             if (std::memcmp(A.base, B.base, n * sizeof(uint16_t)) != 0) {
                 report_mismatch("road background", m.name, control, trial, A.base, B.base, n, config.s16_width, config.s16_height);
                 fails++;
@@ -381,6 +411,26 @@ static int road_selftest(HWRoad& road, const Mode& m, std::mt19937& rng)
             else         RoadTilesTestAccess::fg_lores_ref(road, B.pixels);
             if (std::memcmp(A.base, B.base, n * sizeof(uint16_t)) != 0) {
                 report_mismatch("road foreground", m.name, control, trial, A.base, B.base, n, config.s16_width, config.s16_height);
+                fails++;
+            }
+
+            // Combined background+foreground pipeline vs ref+ref, from an
+            // identical seed and with no stamping this time -- the true
+            // per-frame contract (Video::prepare_frame's own call order:
+            // background then foreground into the same buffer). Passing
+            // this proves #1's skip is safe end to end: foreground is
+            // already independently proven identical to its _ref twin
+            // above, so any divergence here could only come from a masked
+            // line the foreground does NOT fully overwrite after all --
+            // exactly what check_foreground_rows/unit s3 rule out.
+            fill_random(A.base, n, rng);
+            std::memcpy(B.base, A.base, n * sizeof(uint16_t));
+            (road.*road.render_background)(A.pixels, road_fg_rows);
+            (road.*road.render_foreground)(A.pixels);
+            if (m.hires) { RoadTilesTestAccess::bg_hires_ref(road, B.pixels); RoadTilesTestAccess::fg_hires_ref(road, B.pixels); }
+            else         { RoadTilesTestAccess::bg_lores_ref(road, B.pixels); RoadTilesTestAccess::fg_lores_ref(road, B.pixels); }
+            if (std::memcmp(A.base, B.base, n * sizeof(uint16_t)) != 0) {
+                report_mismatch("road background+foreground", m.name, control, trial, A.base, B.base, n, config.s16_width, config.s16_height);
                 fails++;
             }
         }

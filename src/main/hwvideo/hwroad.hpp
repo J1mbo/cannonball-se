@@ -48,7 +48,11 @@ public:
     };
     uint16_t read_road_control();
     void write_road_control(const uint8_t);
-    void (HWRoad::*render_background)(uint16_t*);
+    // S1: render_background now also takes road_fg_rows (see the private
+    // declarations below) -- every caller (video.cpp, the road_tiles_test
+    // driver) already computes/holds that mask before calling through this
+    // pointer, so this is the only call-site change #1 requires.
+    void (HWRoad::*render_background)(uint16_t*, const uint8_t*);
     void (HWRoad::*render_foreground)(uint16_t*);
 
     // S0.4: unconditional accessors (needed by the game's future -dumpram, S0.5,
@@ -108,14 +112,34 @@ private:
     std::vector<uint16_t> run_tab;
     uint32_t run_first[ROAD_LINES + 1];  // run_tab index of line L's first entry; [ROAD_LINES] = total
 
-    // Two halves of RAM
-    uint16_t ram[ROAD_RAM_SIZE / 2];
-    uint16_t ramBuff[ROAD_RAM_SIZE / 2];
+    // Two halves of RAM. Per-frame memory-work Tier 1 #4: physical storage
+    // for the double-buffer, backing the `ram`/`ramBuff` pointer pair below
+    // instead of being the write/read buffers directly -- read_road_control()
+    // (hwroad.cpp) flips the two pointers instead of exchanging every
+    // element, so a frame's write-then-swap costs O(1) instead of O(RAM
+    // size). Indices into ram_store are otherwise never used directly.
+    uint16_t ram_store[2][ROAD_RAM_SIZE / 2];
+    // Writes (write16/write32 below) always target `ram`; every render_*
+    // function and the public road_ram_buffer()/foreground_row_mask/
+    // check_foreground_rows accessors always read `ramBuff` -- exactly the
+    // roles the two names had when they were the arrays themselves.
+    // read_road_control() swaps which physical buffer each name points at.
+    uint16_t* ram     = ram_store[0];
+    uint16_t* ramBuff = ram_store[1];
 
     void decode_road(const uint8_t*);
-    void render_background_lores(uint16_t*);
+    // S1 (per-frame memory-work Tier 1 #1): fg_rows[yy] (S16_HEIGHT entries,
+    // lo-res line indexed) is road_fg_rows as computed by
+    // HWRoad::foreground_row_mask -- 1 iff the foreground pass will fully
+    // repaint lo-res line yy this frame, in which case the sky fill below is
+    // skipped for that line (proved safe by check_foreground_rows/unit s3:
+    // whenever the mask is set, render_foreground overwrites the line in
+    // full, so whatever the background leaves there is never seen). Always a
+    // valid S16_HEIGHT array from every real call site (video.cpp computes
+    // it unconditionally, all-zero when the foreground is disabled).
+    void render_background_lores(uint16_t* pixels, const uint8_t* fg_rows);
     void render_foreground_lores(uint16_t*);
-    void render_background_hires(uint16_t*);
+    void render_background_hires(uint16_t* pixels, const uint8_t* fg_rows);
     void render_foreground_hires(uint16_t*);
 
     // S6.2: run-length row kernel used by render_foreground_hires's four

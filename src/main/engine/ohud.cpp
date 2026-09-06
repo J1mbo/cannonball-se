@@ -246,7 +246,7 @@ void OHud::draw_score(uint32_t addr, const uint32_t score, uint8_t font)
     // Blank tile for comparison purposes
     const uint16_t BLANK = 0x8020;
 
-    uint8_t* digits = new uint8_t[8];
+    uint8_t digits[8];
 
     // Topmost digit
     digits[0] = ((score >> 16) & 0xF000) >> 12;
@@ -274,7 +274,6 @@ void OHud::draw_score(uint32_t addr, const uint32_t score, uint8_t font)
     }
 
     video.write_text16(&addr, digits[7] + BASE); // Always draw last digit
-    delete[] digits;
 }
 
 // Same as above function but writes to tile ram instead.
@@ -287,7 +286,7 @@ void OHud::draw_score_tile(uint32_t addr, const uint32_t score, uint8_t font)
     // Blank tile for comparison purposes
     const uint16_t BLANK = 0x8020;
 
-    uint8_t* digits = new uint8_t[8];
+    uint8_t digits[8];
 
     // Topmost digit
     digits[0] = ((score >> 16) & 0xF000) >> 12;
@@ -315,7 +314,6 @@ void OHud::draw_score_tile(uint32_t addr, const uint32_t score, uint8_t font)
     }
 
     video.write_tile16(&addr, digits[7] + BASE); // Always draw last digit
-    delete[] digits;
 }
 
 // Modified Version Of Draw Digits

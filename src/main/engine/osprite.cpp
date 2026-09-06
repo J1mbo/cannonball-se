@@ -50,6 +50,7 @@ void osprite::init()
     for (int i=0; i<16; i++)
         data[i] = 0;
     scratch = 0;
+    is_traffic = false;
 }
 
 // X is now stored separately (not in the original data structure)

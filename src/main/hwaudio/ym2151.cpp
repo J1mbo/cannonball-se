@@ -2017,8 +2017,11 @@ void YM2151::advance()
 
 void YM2151::stream_update()
 {
-    SoundChip::clear_buffer();
-
+    // Perf: clear_buffer() removed here (Tier 1 #3, per-frame memory-work
+    // inventory) -- the loop below unconditionally write_buffer()s every
+    // LEFT/RIGHT sample in [0, frame_size) via `i`, i.e. every index of
+    // buffer[0, buffer_size) exactly once, before any of it is read. The
+    // preceding clear was therefore dead work: output-identical either way.
     const uint32_t length = frame_size;
 
     // Hoist pan masks out of the per-sample loop

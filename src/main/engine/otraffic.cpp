@@ -650,25 +650,29 @@ void OTraffic::traffic_logic()
 {
     uint16_t sprite_count = osprites.sprite_count - osprites.spr_cnt_shadow;
     uint16_t spawned = 0; // d5
-    
+
     if (!sprite_count)
     {
         calculate_avg_speed(0);
         return;
     }
-       
+
     oentry* first = 0;
     uint8_t index = 0;
     uint16_t spr_index = osprites.spr_cnt_shadow;
 
     // Find First Traffic Entry. Note we use the hardware sprite list here to extract the original object.
+    // Per-frame memory-work Tier 1 #5: sprite_entries[].is_traffic mirrors
+    // jump_table[scratch].control's TRAFFIC_SPRITE bit (set by
+    // OSprites::do_sprite() this same frame), so the ~64-byte oentry is only
+    // dereferenced for entries actually flagged as traffic instead of for
+    // every sprite just to test the one bit.
     for (index = 0; index < sprite_count; index++)
     {
-        uint16_t src_index = osprites.sprite_entries[spr_index++].scratch;
-
-        first = &osprites.jump_table[src_index];
-        if (first->control & OSprites::TRAFFIC_SPRITE)
+        const osprite& se = osprites.sprite_entries[spr_index++];
+        if (se.is_traffic)
         {
+            first = &osprites.jump_table[se.scratch];
             traffic_adr[spawned++] = first;
             break;
         }
@@ -686,10 +690,10 @@ void OTraffic::traffic_logic()
     // Compare Current Traffic Entry With Previous One
     for (uint8_t index2 = index + 1; index2 < sprite_count; index2++)
     {
-        uint16_t src_index = osprites.sprite_entries[spr_index++].scratch;
-        next = &osprites.jump_table[src_index];
-        if (next->control & OSprites::TRAFFIC_SPRITE)
+        const osprite& se = osprites.sprite_entries[spr_index++];
+        if (se.is_traffic)
         {
+            next = &osprites.jump_table[se.scratch];
             traffic_adr[spawned++] = next;
             next->traffic_proximity = 0;
 

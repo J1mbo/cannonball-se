@@ -278,7 +278,7 @@ void Video::prepare_frame()
         hwroad.foreground_row_mask(road_fg_rows, fg_enabled);
         const clk::time_point tA = clk::now();
 
-        (hwroad.*hwroad.render_background)(pixels);
+        (hwroad.*hwroad.render_background)(pixels, road_fg_rows);
         const clk::time_point tB = clk::now();
 
         tile_layer->render_tile_layer(pixels, 1, 0, road_fg_rows);      // background layer

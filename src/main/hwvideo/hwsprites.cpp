@@ -6,6 +6,7 @@
 #include <cassert>
 #include <algorithm>
 #include <iterator>
+#include <utility>   // S1: std::swap (hwsprites::swap()'s ram/ramBuff pointer flip)
 
 /***************************************************************************
     Video Emulation: OutRun Sprite Rendering Hardware.
@@ -128,8 +129,8 @@ void hwsprites::reset()
     // renderer used to reset here are gone (S1 drops them from the game
     // build); draw_sprite_fast/draw_sprite_px carry no state that
     // reset()/init() needs to clear.
-    std::fill_n(ram,     std::size(ram),     0x0);
-    std::fill_n(ramBuff, std::size(ramBuff), 0x0);
+    std::fill_n(ram,     SPRITE_RAM_SIZE, 0x0);
+    std::fill_n(ramBuff, SPRITE_RAM_SIZE, 0x0);
 }
 
 // Clip areas of the screen in wide-screen mode
@@ -170,18 +171,17 @@ void hwsprites::write(const uint16_t adr, const uint16_t data)
 }
 
 // Copy back buffer to main ram, ready for blit
+//
+// Per-frame memory-work Tier 1 #4: this used to exchange every element of
+// ram/ramBuff (a full read+write of both halves every frame). ram/ramBuff
+// are now a pointer pair over the two ram_store[] halves (hwsprites.hpp), so
+// flipping which physical half each name refers to is exactly equivalent --
+// every subsequent read of `ramBuff` sees what the element-wise swap would
+// have moved there, and every subsequent write via `ram`/write() lands in
+// the other half, precisely as before -- at O(1) instead of O(RAM size).
 void hwsprites::swap()
 {
-    uint16_t *src = (uint16_t *)ram;
-    uint16_t *dst = (uint16_t *)ramBuff;
-
-    // swap the halves of the road RAM
-    for (uint16_t i = 0; i < SPRITE_RAM_SIZE; i++)
-    {
-        uint16_t temp = *src;
-        *src++ = *dst;
-        *dst++ = temp;
-    }
+    std::swap(ram, ramBuff);
 }
 
 // S0.5: unconditional test/inspection accessor. Copies exactly what
@@ -190,7 +190,10 @@ void hwsprites::swap()
 // sprite RAM without needing friend access.
 void hwsprites::load_sprite_ram(const uint16_t* buf)
 {
-    std::memcpy(ramBuff, buf, sizeof(ramBuff));
+    // ramBuff is now a pointer (S1: the ram/ramBuff double-buffer flip), so
+    // sizeof(ramBuff) would be sizeof(uint16_t*) instead of the buffer's
+    // byte size -- spell it out explicitly.
+    std::memcpy(ramBuff, buf, SPRITE_RAM_SIZE * sizeof(uint16_t));
 }
 
 

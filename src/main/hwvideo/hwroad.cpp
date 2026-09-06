@@ -1,4 +1,5 @@
 #include <algorithm> // Required for std::fill_n
+#include <utility>   // S1: std::swap (read_road_control's ram/ramBuff pointer flip)
 #include <cstdio>    // S3: check_foreground_rows() diagnostic to stderr
 #include "hwvideo/hwroad.hpp"
 #include "hwvideo/hwarch.hpp"
@@ -303,16 +304,15 @@ void HWRoad::write32(uint32_t* adr, const uint32_t data)
 */
 uint16_t HWRoad::read_road_control()
 {
-    uint32_t *src = (uint32_t *)ram;
-    uint32_t *dst = (uint32_t *)ramBuff;
-
-    // swap the halves of the road RAM
-    for (uint16_t i = 0; i < ROAD_RAM_SIZE/4; i++)
-    {
-        uint32_t temp = *src;
-        *src++ = *dst;
-        *dst++ = temp;
-    }
+    // Per-frame memory-work Tier 1 #4: this used to exchange every element
+    // of ram/ramBuff (a full read+write of both 4 KB halves every frame).
+    // ram/ramBuff are now a pointer pair over the two ram_store[] halves
+    // (hwroad.hpp), so flipping which physical half each name refers to is
+    // exactly equivalent -- every subsequent read of `ramBuff` sees what the
+    // element-wise swap would have moved there, and every subsequent write
+    // via `ram` lands in the other half, precisely as before -- at O(1)
+    // instead of O(RAM size).
+    std::swap(ram, ramBuff);
 
     return 0xffff;
 }
@@ -327,12 +327,21 @@ void HWRoad::write_road_control(const uint8_t road_control)
 // ------------------------------------------------------------------------------------------------
 
 // Background: Look for solid fill scanlines
-void HWRoad::render_background_lores(uint16_t* pixels)
+void HWRoad::render_background_lores(uint16_t* pixels, const uint8_t* fg_rows)
 {
     const uint16_t* roadram = ramBuff;
 
     for (uint16_t y = 0; y < S16_HEIGHT; y++)
     {
+        // Per-frame memory-work Tier 1 #1: this lo-res line is about to be
+        // fully repainted by render_foreground_lores (video.cpp calls
+        // background then foreground back to back, same pixel buffer) --
+        // check_foreground_rows/unit s3 prove that whenever fg_rows[y] is
+        // set, the foreground writes every pixel of the line, so whatever is
+        // (or isn't) written here is never observed. Skip the fill.
+        if (fg_rows[y])
+            continue;
+
         const int data0 = roadram[0x000 + y];
         const int data1 = roadram[0x100 + y];
 
@@ -585,13 +594,22 @@ void HWRoad::render_foreground_lores(uint16_t* pixels)
 // ------------------------------------------------------------------------------------------------
 // High Resolution (Double Resolution) Road Rendering
 // ------------------------------------------------------------------------------------------------
-void HWRoad::render_background_hires(uint16_t* pixels)
+void HWRoad::render_background_hires(uint16_t* pixels, const uint8_t* fg_rows)
 {
     int x, y;
     uint16_t* roadram = ramBuff;
 
     for (y = 0; y < config.s16_height; y += 2)
     {
+        // Per-frame memory-work Tier 1 #1: as render_background_lores above,
+        // but fg_rows is lo-res-line indexed (S16_HEIGHT entries) while y
+        // steps in hi-res row pairs -- y>>1 is the matching lo-res line, and
+        // this fill (below) already covers both hi-res rows y and y+1 in one
+        // pass, exactly the granularity the foreground overwrite mask is
+        // defined at.
+        if (fg_rows[y >> 1])
+            continue;
+
         int data0 = roadram[0x000 + (y >> 1)];
         int data1 = roadram[0x100 + (y >> 1)];
 

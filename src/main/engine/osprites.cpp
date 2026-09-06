@@ -576,6 +576,14 @@ void OSprites::do_sprite(oentry* input)
     // Copy address sprite was copied from.
     // todo: pass pointer?
     output->scratch = input->jump_index;
+    // Per-frame memory-work Tier 1 #5: snapshot the TRAFFIC_SPRITE control
+    // bit here too, so OTraffic::traffic_logic() can test it straight off
+    // this record instead of re-dereferencing jump_table[scratch] for every
+    // sprite. Nothing between this assignment and traffic_logic()'s read of
+    // it (same tick, OSprites::finalise_sprites() calls blit_sprites() then
+    // traffic_logic() with no intervening control-bit writes) can change
+    // input->control, so the two stay in lockstep.
+    output->is_traffic = (input->control & TRAFFIC_SPRITE) != 0;
 
     // Hide Sprite if zoom lookup not set
     if (input->zoom == 0)

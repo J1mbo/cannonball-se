@@ -81,9 +81,19 @@ private:
     // so it can still reproduce the shipped renderer's history-dependent
     // behaviour for the S0 selftest/replay classifier.
 
-    // Two halves of RAM
-    uint16_t ram[SPRITE_RAM_SIZE];
-    uint16_t ramBuff[SPRITE_RAM_SIZE];
+    // Two halves of RAM. Per-frame memory-work Tier 1 #4: physical storage
+    // for the double-buffer, backing the `ram`/`ramBuff` pointer pair below
+    // instead of being the write/read buffers directly -- swap()
+    // (hwsprites.cpp) flips the two pointers instead of exchanging every
+    // element, so a frame's write-then-swap costs O(1) instead of O(RAM
+    // size). Indices into ram_store are otherwise never used directly.
+    uint16_t ram_store[2][SPRITE_RAM_SIZE];
+    // write()/read() always target `ram`; render()/render_px()/parse_record
+    // and the public sprite_ram_buffer() accessor always read `ramBuff` --
+    // exactly the roles the two names had when they were the arrays
+    // themselves. swap() flips which physical buffer each name points at.
+    uint16_t* ram     = ram_store[0];
+    uint16_t* ramBuff = ram_store[1];
 
     // ---------------------------------------------------------------------
     // S0.4: sprite record parse and the pixel-serial oracle's per-sprite
