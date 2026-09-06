@@ -60,6 +60,13 @@ public:
     uint64_t prof_ns_road_fg    = 0;   // hwroad render_foreground
     uint64_t prof_ns_sprites    = 0;
     uint64_t prof_ns_text       = 0;
+    // Frame-pipeline phase timing (added for the A7 GPU/CPU/bandwidth study).
+    // prepare_frame's own cost is the sum of the eight prof_ns_* above; these
+    // four cover the rest of the frame so the whole 16.6ms budget is accounted:
+    uint64_t prof_ns_render     = 0;   // render_frame -> draw_frame: NTSC/Blargg filter (render thread)
+    uint64_t prof_ns_present    = 0;   // present_frame -> finalize_frame: GPU draw + CRT shader (main thread)
+    uint64_t prof_ns_swap       = 0;   // swap_buffers -> GL SwapWindow: GPU present / vsync (main thread)
+    uint64_t prof_ns_workerwait = 0;   // main thread blocked on renderDone/prepareDone (>0 => a CPU worker is the bottleneck, not the GPU)
     uint64_t prof_frames        = 0;
     uint64_t prof_frame_cksum   = 1469598103934665603ULL; // CB_FRAME_CKSUM test aid
 

@@ -618,12 +618,21 @@ static void main_loop() {
             }
 
             // Run the GPU-bound work on the main thread (SDL limitation)
+            const auto _pf0 = std::chrono::steady_clock::now();
             video.present_frame();
+            const auto _pf1 = std::chrono::steady_clock::now();
 
             // await thread completion
             renderDone0.acquire();
             if (render_threads==2) renderDone1.acquire();
             if (prepare_threads)   prepareDone.acquire();
+            const auto _pf2 = std::chrono::steady_clock::now();
+            // present = GPU draw+CRT shader submitted on this thread; workerwait =
+            // how long the main thread then blocked for the NTSC/gen workers. A
+            // large workerwait means a CPU worker is the bottleneck; a small one
+            // with a large present/swap means the GPU is.
+            video.prof_ns_present    += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(_pf1 - _pf0).count();
+            video.prof_ns_workerwait += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(_pf2 - _pf1).count();
         } else {
             // 1 Game Thread. Run logic sequentially
             tick();
@@ -650,7 +659,9 @@ static void main_loop() {
         }
 
         // Swap the buffers for the next frame.
+        const auto _sw0 = std::chrono::steady_clock::now();
         video.swap_buffers();
+        video.prof_ns_swap += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - _sw0).count();
 
         // Check to see if anything happened needing a video restart
         if (config.videoRestartRequired) {
@@ -709,10 +720,13 @@ static void main_loop() {
             {
                 static uint64_t l_tv = 0, l_rb = 0, l_tb = 0, l_tf = 0, l_rf = 0;
                 static uint64_t l_sp = 0, l_tx = 0, l_fr = 0;
+                static uint64_t l_rn = 0, l_pr = 0, l_sw = 0, l_ww = 0;
                 uint64_t tv = video.prof_ns_tilevals, rb = video.prof_ns_road_bg;
                 uint64_t tb = video.prof_ns_tile_bg,  tf = video.prof_ns_tile_fg;
                 uint64_t rf = video.prof_ns_road_fg,  sp = video.prof_ns_sprites;
                 uint64_t tx = video.prof_ns_text,     fr = video.prof_frames;
+                uint64_t rn = video.prof_ns_render,   pr = video.prof_ns_present;
+                uint64_t sw = video.prof_ns_swap,     ww = video.prof_ns_workerwait;
                 uint64_t dfr = fr - l_fr;
                 if (dfr) {
                     printf("\n%i FPS (drop %i%%, %llu frames) ms/frame:"
@@ -728,11 +742,26 @@ static void main_loop() {
                            (double)(tx - l_tx) / dfr / 1e6,
                            (double)((tv-l_tv)+(rb-l_rb)+(tb-l_tb)+(tf-l_tf)+(rf-l_rf)
                                     +(sp-l_sp)+(tx-l_tx)) / dfr / 1e6);
+                    // Frame-pipeline breakdown. gen = the eight prepare_frame phases
+                    // above (CPU, prepare thread). ntsc = the Blargg filter (CPU,
+                    // render thread). present/swap = GPU (main thread). wwait = main
+                    // thread blocked on the workers. mainpath = present+swap+wwait, the
+                    // main thread's serial per-frame path (~= frame time). If mainpath
+                    // is dominated by present+swap with wwait~0 -> GPU-bound; if wwait
+                    // is large -> a CPU worker (gen or ntsc) is the bottleneck.
+                    printf("\n     PIPE ms/frame: gen %.3f | ntsc %.3f | present(gpu) %.3f | swap %.3f | wwait %.3f | mainpath %.3f",
+                           (double)((tv-l_tv)+(rb-l_rb)+(tb-l_tb)+(tf-l_tf)+(rf-l_rf)+(sp-l_sp)+(tx-l_tx)) / dfr / 1e6,
+                           (double)(rn - l_rn) / dfr / 1e6,
+                           (double)(pr - l_pr) / dfr / 1e6,
+                           (double)(sw - l_sw) / dfr / 1e6,
+                           (double)(ww - l_ww) / dfr / 1e6,
+                           (double)((pr-l_pr)+(sw-l_sw)+(ww-l_ww)) / dfr / 1e6);
                 } else {
                     printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
                 }
                 l_tv = tv; l_rb = rb; l_tb = tb; l_tf = tf; l_rf = rf;
                 l_sp = sp; l_tx = tx; l_fr = fr;
+                l_rn = rn; l_pr = pr; l_sw = sw; l_ww = ww;
             }
             fflush(stdout);
             fps_counter = fps;

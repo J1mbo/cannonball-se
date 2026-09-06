@@ -399,7 +399,12 @@ void Video::render_frame(int fastpass)
 {
     // draw the frame from the pixel buffer not in use for writing
     uint16_t* renderer_pixels = pixel_buffers[current_pixel_buffer ^ 1] + alignment;
+    const std::chrono::steady_clock::time_point r0 = std::chrono::steady_clock::now();
     renderer->draw_frame(renderer_pixels, fastpass);
+    // NTSC/Blargg CPU cost. With render_threads==2 (-t 4) two threads add to this
+    // concurrently (top/bottom halves), so a rare non-atomic lost update can
+    // slightly under-count; with render_threads==1 (-t 2) it is exact.
+    prof_ns_render += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
 }
 
 void Video::flush_ntsc_palette()
