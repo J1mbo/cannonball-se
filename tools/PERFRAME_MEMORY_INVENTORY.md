@@ -15,7 +15,15 @@ bandwidth (see tools/AUDIO_PERF_PLAN.md) - the direct audio fix is RT priority
 per-frame bus traffic reduces the contention the audio thread misses on, and
 buys general 60fps headroom. The two efforts stack.
 
-## Tier 1 - do now: high value or free, low risk, checksum-verifiable
+## Status
+
+**Tier 1 has shipped** - commit `c94f086` ("Tier 1: cut per-frame memory work / bus
+contention (output-identical)") implements all five items below. They are retained here as
+the record of what was changed and why, not as outstanding work.
+
+Tiers 2 and 3 remain open. Treat this file as a backlog for that work.
+
+## Tier 1 - SHIPPED in c94f086
 
 | # | Item | File | Bytes/frame | Risk |
 |---|---|---|---|---|
