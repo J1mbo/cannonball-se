@@ -2,3 +2,10 @@
 build/
 build-*/
 dist-win/
+
+# SEGA OutRun ROM binaries are copyrighted and must NEVER be committed.
+# Ignore everything under roms/ except the placeholder text file(s).
+/roms/*
+!/roms/roms.txt
+!/roms/README.txt
+!/roms/.gitkeep
