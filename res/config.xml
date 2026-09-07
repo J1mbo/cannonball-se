@@ -21,26 +21,89 @@
 	<vsync>0</vsync>
 	<x_offset>0</x_offset>
 	<y_offset>0</y_offset>
+
+	<!-- ==================================================================
+         PERFORMANCE LEVERS
+         These four settings dominate frame rate. If a board will not hold
+         your target frame rate, change these first, in this order.
+         See docs/PERFORMANCE-TUNING.md for the full board-by-board guide.
+    -->
+	<!-- Frame rate at startup: 0 = open at 30fps, 1 = open at 60fps.
+         The game auto-switches upward if the hardware can sustain it, so 0 is
+         a safe default. Use the -30 / -60 command-line flags to lock it. -->
+	<fps>0</fps>
+	<!-- Hi-resolution mode: 0 = original arcade resolution, 1 = double.
+         COST: high (roughly quadruples the CPU pixel work). This is the single
+         biggest lever on CPU-limited boards. -->
+	<hires>1</hires>
+	<!-- Hi-resolution sprites: 0 = exact ROM sprite sizes, 1 = sprites also
+         rendered at hi-res. Only has an effect when hires is 1.
+         COST: moderate, on the sprite renderer only. May cause slight
+         misalignment of some objects. -->
+	<hiresprites>0</hiresprites>
+	<!-- CRT shader: 0 = off (pass-through), 1 = fast, 2 = full.
+         COST: high, on the GPU. Measured on a Pi 2 (VideoCore IV at 500MHz,
+         1280x1024): full 9.03 ms/frame, fast 7.23 ms/frame. Dropping from full
+         to fast is the biggest lever on GPU-limited boards. -->
 	<shader_mode>2</shader_mode>
+
+	<!-- ==================================================================
+         CRT LOOK
+         These shape the picture. Apart from shadow_mask, none of them
+         meaningfully affect frame rate.
+    -->
+	<!-- Shadow mask: 0 = off, 1 = overlay based (cheapest), 2 = shader based
+         (looks better - can over-saturate bright pixels to white, which the
+         overlay cannot). The shader mask pattern is baked into a texture at
+         startup, so mode 2 is far cheaper than it used to be. -->
 	<shadow_mask>2</shadow_mask>
+	<!-- Shadow mask pitch in output pixels: 3 = normal. Use 4, 5 or 6 on
+         high-DPI displays so the mask stays visible rather than aliasing away.
+         Changing this re-bakes the mask texture; no video restart needed. -->
+	<mask_size>3</mask_size>
+	<!-- Mask dim / boost multipliers, as a percentage. maskDim darkens the
+         masked-off pixels, maskBoost brightens the lit ones. -->
 	<maskDim>75</maskDim>
 	<maskBoost>125</maskBoost>
+	<!-- Scanlines: 0 = off, 3 = maximum. -->
 	<scanlines>0</scanlines>
+	<!-- Screen curvature and bezel overlay: 0 = off, 1 = on. -->
 	<crt_shape>1</crt_shape>
+	<!-- Edge dimming, as a percentage (1 = 1%). -->
 	<vignette>30</vignette>
+	<!-- Analogue noise, as a percentage. This is per-pixel, per-frame work on
+         the GPU - the only "CRT look" setting with a real cost. -->
 	<noise>6</noise>
+	<!-- Barrel distortion along each axis, as a percentage. The bezel overlay
+         follows these automatically. -->
 	<warpX>1</warpX>
 	<warpY>3</warpY>
+	<!-- Desaturation, as a percentage. desaturate raises the black level over
+         the whole image; desaturate_edges adds more towards the edges. -->
 	<desaturate>5</desaturate>
 	<desaturate_edges>4</desaturate_edges>
+	<!-- Output brightness, as a percentage. -->
 	<brightboost>1</brightboost>
+
+	<!-- ==================================================================
+         NTSC (BLARGG) FILTER
+         A CPU-side composite-video filter applied before the shader.
+         See docs/SCREEN-FILTERS.md for what each mode looks like.
+    -->
+	<!-- 0 = off, 1 = on. COST: moderate, on the CPU. Automatically disabled on
+         single-core boards. -->
 	<blargg>1</blargg>
+	<!-- Filter tuning. None of these affect performance. -->
 	<saturation>30</saturation>
 	<contrast>0</contrast>
 	<brightness>0</brightness>
+	<!-- Edge blurring. -->
 	<sharpness>0</sharpness>
+	<!-- Horizontal resolution, -2 to 0. -->
 	<resolution>0</resolution>
+	<!-- Gamma, -3 to +3. -->
 	<gamma>0</gamma>
+	<!-- Hue, -10 to +10 (i.e. -0.1 to +0.1). -->
 	<hue>-2</hue>
 </video>
 <!-- 
@@ -54,7 +117,9 @@
 	<!-- play music on music selection screen -->
 	<preview>1</preview>
 	<fix_samples>1</fix_samples>
-	<playback_speed>125</playback_speed>
+	<!-- Countdown shown on the music/route select screen, in seconds.
+	     0 = arcade default (30). Otherwise 1-99. -->
+	<music_timer>0</music_timer>
 	<!-- Sample Rate:
 	     The arcade ran at 31,250Hz (or possibly 15,625Hz). This build supports that, except if using custom music via mp3,
 	     then 22050 or 44100 must be used. -->
@@ -82,6 +147,9 @@
         2 = Automatic 
     -->
 	<gear>2</gear>
+	<!-- Which attached controller to use, when more than one is present.
+	     0 = the first one SDL enumerates. -->
+	<pad_id>0</pad_id>
 	<!-- Keyboard Button Configuration. Easiest to configure with inbuilt menu. -->
 	<keyconfig>
 		<up>1073741906</up>
@@ -184,13 +252,13 @@
          Requires additional ROM files:
          epr-10380.133, epr-10382.118, epr-10381.132, epr-10383.117
          epr-10327.76,  epr-10329.58,  epr-10328.75,  epr-10330.57
-    --->
+    -->
 	<japanese_tracks>0</japanese_tracks>
 	<!-- Swap In Prototype Coconut Beach Track -->
 	<prototype>0</prototype>
 	<!-- Increase the number of allowed level objects. 
          This fixes the broken arches in Gateway for example.
-    --->
+    -->
 	<levelobjects>1</levelobjects>
 	<!-- Use the original random number generator seed to match the setup of
          the original game. Disable to use a truly random setup.
