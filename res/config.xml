@@ -90,8 +90,10 @@
          A CPU-side composite-video filter applied before the shader.
          See docs/SCREEN-FILTERS.md for what each mode looks like.
     -->
-	<!-- 0 = off, 1 = on. COST: moderate, on the CPU. Automatically disabled on
-         single-core boards. -->
+	<!-- 0 = off, 1 = composite, 2 = s-video, 3 = RGB.
+         Composite adds the most artifacts (shimmer, dot crawl); RGB is the
+         cleanest. COST: moderate, on the CPU, and the same for modes 1-3.
+         Automatically disabled on single-core boards. -->
 	<blargg>1</blargg>
 	<!-- Filter tuning. None of these affect performance. -->
 	<saturation>30</saturation>
@@ -158,7 +160,6 @@
 		<right>1073741903</right>
 		<acc>97</acc>
 		<brake>122</brake>
-		<gear>32</gear>
 		<start>115</start>
 		<coin>99</coin>
 		<menu>109</menu>
@@ -170,7 +171,6 @@
 	<padconfig>
 		<acc>1</acc>
 		<brake>0</brake>
-		<gear>22</gear>
 		<start>6</start>
 		<coin>4</coin>
 		<menu>5</menu>

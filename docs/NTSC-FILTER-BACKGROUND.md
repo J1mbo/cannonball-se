@@ -1,3 +1,17 @@
+# NTSC Filter — Background Reading
+
+*Why a CRT running a composite signal looks so different from the same pixels on an LCD.*
+
+This is background and motivation, not documentation of the code. It collects extracts from
+posts by Shay Green ('Blargg'), the original author of the NTSC filter CannonBall-SE uses.
+
+- For what the filters look like and how to configure them, see [SCREEN-FILTERS.md](SCREEN-FILTERS.md).
+- For the settings themselves, see [CONFIGURATION.md](CONFIGURATION.md).
+- Developers wanting the precise, bit-exact specification of the filter as implemented should
+  read `tools/ntsc_bench/analysis/ALGORITHM.md` instead. This file is not a specification.
+
+---
+
 The following are extracts from posts by Shay Green ('Blargg'), the original author of the NTSC filter used by CannonBall-SE. Together, the snippets help explain why CRT based images, specifically those that have been through NTSC encoding, look quite different to the same RGB data displayed on an LCD panel.
 
 Whilst the SEGA Outrun arcade machines used RGB connections, the screens image is still quite different. Blargg's filter includes an 'RGB' preset that, when combined with the other processing techniques included in CannonBall-SE, help recreate a softer, more analogue feel that many users will find visually appealing. So those wanting to soften the game image further and recreate a touch of 'shimmer', the Composite preset at 60fps does exactly that.

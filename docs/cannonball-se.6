@@ -86,6 +86,25 @@ Quit Game (Master Break Key)                     - Escape
 .RE
 .PP
 These can also be changed within the game (menu, settings, controls, redefine keys) and the master break key (Escape) can be changed to F10 in Menu, Settings.
+.PP
+The function keys are fixed and cannot be redefined:
+.RS
+.IP \(bu 2
+F1  - Pause
+.IP \(bu 2
+F2  - Advance one frame while paused
+.IP \(bu 2
+F3  - Toggle the game timer
+.IP \(bu 2
+F5  - Open the menu
+.IP \(bu 2
+F7  - Toggle hi-res sprites. Only works while the hi-res engine is active.
+.IP \(bu 2
+F8  - Toggle all video processing between fully off and the default CRT look.
+Useful for seeing what the filters are doing, and for a quick frame-rate comparison.
+.IP \(bu 2
+F9  - Toggle the shadow mask on and off, when the shader-based mask is in use.
+.RE
 
 .SH STEERING WHEELS
 Steering wheels, joysticks and gamepads can be setup in the game (menu, settings, controls, redefine gamepad).
@@ -142,13 +161,12 @@ fan, and a keyboard for diagnostics when needed. Higher resolution screens will 
 multi-core Pi, a CPU heatsink is required.
 .PP
 The game has automatic frame-rate control and drops frames as needed to keep gameplay at full speed on all systems.
-For Pi2/Pi3 users (and assuming 1280x1024):
-.RS
-.IP \(bu 2
-Pi2 (v1.1): 30fps in hi-res mode, 60fps in original res (use Fast Shader, Fast S16 Emulation, and Overlay Mask).
-.IP \(bu 2
-Pi2 (v1.2), Pi3, and Pi-Zero2W: 60fps in hi-res mode with Fast shader at stock clocks. Set GPU to 400MHz to use Full shader.
-.RE
+In summary, at 1280x1024: every quad-core Pi reaches 60fps, though the Pi 2 and Pi 3 class boards
+may need the fast shader or a GPU clock bump to do so; single-core boards run at 30fps.
+.PP
+Run \fBcannonball-se -perftest\fP to measure what your own board sustains. The full board-by-board
+guide, including which setting to change first and the clock recipes, is in
+\fIdocs/PERFORMANCE-TUNING.md\fP.
 .PP
 For single-core Pi Boards e.g. Pi1 and Pi-Zero(W), the following settings are automatically applied at launch:
 .RS
@@ -193,6 +211,20 @@ For systems with a hardware watchdog (including all RaspberryPi boards), CannonB
 automatically rebooted if a hang occurs, for example due to aggressive overclocking.
 
 .SH SEE ALSO
+Full documentation is in the \fIdocs\fP directory of the distribution:
+.RS
+.IP \(bu 2
+\fIdocs/INSTALL.md\fP            - building and installing on Linux, Raspberry Pi and Windows
+.IP \(bu 2
+\fIdocs/CONFIGURATION.md\fP      - reference for every setting in res/config.xml
+.IP \(bu 2
+\fIdocs/PERFORMANCE-TUNING.md\fP - board-by-board frame rate guide and what to change
+.IP \(bu 2
+\fIdocs/TROUBLESHOOTING.md\fP    - audio, controller and video problems
+.IP \(bu 2
+\fIdocs/SCREEN-FILTERS.md\fP     - what the CRT filter pipeline does
+.RE
+.PP
 Original CannonBall Wiki     : <github.com/djyt/cannonball/wiki>
 .PP
 Original CannonBall Manual   : <github.com/djyt/cannonball/wiki/Cannonball-Manual>
