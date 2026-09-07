@@ -1,5 +1,42 @@
 CannonBall-SE Change Log
 
+== v1.42 ==
+
+Rendering performance (Raspberry Pi 2 / Pi Zero 2 W / Pi 3 focus):
+1.  CRT shadow mask baked into a texture instead of computed per fragment. Bit-identical
+    output; full shader -17.9% GPU time, fast shader -12.8% on Pi 2 (VideoCore IV).
+2.  Sprite renderer rebuilt around a line-buffer core: closed-form scaling schedule,
+    decode-once/replay, per-sprite kernel selection, and a templated shift-OR fill.
+3.  Road and tile renderers rebuilt: run-length foreground kernel, on-screen tilemap
+    window scan only, overwrite mask and tile-layer clip, NEON tile-row kernel.
+4.  Portable NEON paths now cover 32-bit ARMv7 (Cortex-A7) as well as AArch64.
+5.  NTSC composite filter re-architected: slot-indexed phase-major kernel table,
+    adjacent-outputs vector kernel, run-length ladder (flat/chunk/pair kernels), and a
+    fused run classifier. Output is bit-exact against the scalar reference.
+6.  Per-frame memory work reduced to cut memory-bus contention (output-identical).
+
+Audio:
+7.  Optional real-time (SCHED_FIFO) scheduling for the audio threads, off by default,
+    enabled with <rt_priority>1</rt_priority> in config.xml. Requires an rtprio grant -
+    see res/50-cannonball-audio.conf.
+8.  More robust audio consumer path.
+
+Fixes:
+9.  F7 hotkey no longer enables hi-res sprites while the engine is in lo-res.
+10. NTSC filter phase discontinuity in the bottom half when render_threads == 2.
+11. Default (hiresprites == 0) path restored to exact ROM sprite sizes.
+12. Traffic passing sound effects restored (erroneously disabled previously).
+
+Other:
+13. Profiling output gated behind a build option; minor console output quietened.
+14. Frame-pipeline phase timing instrumentation (GPU/CPU/wait split).
+15. Windows preset builds explicitly for x64.
+
+== v1.41 ==
+
+1.  Added RISC-V RVV 1.0 SIMD path; SSE2 fallback for x86.
+2.  Improved formatting in Compiling-On-Windows.txt.
+
 == v1.4 ==
 
 1.  Hi-res sprite rendering mode (beta). Increases resolution of distant sprites. May result in some misalignment of objects.

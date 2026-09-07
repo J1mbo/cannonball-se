@@ -1,4 +1,4 @@
-As of September 2025:
+As of September 2026:
 
 - Audio may not play after system restart. This is caused by the SDL device ordering
   changing on some systems at each boot. Future revision may include the option to select

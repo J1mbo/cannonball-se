@@ -963,10 +963,10 @@ static bool parse_command_line(int argc, char* argv[]) {
         else if (strcmp(argv[i], "-noglow") == 0) {
             // SPRITE_IMPLEMENTATION_SPEC.md S0.2: glow is a runtime member
             // (hwsprites::glow), initialised from PIXEL_ACCURACY and
-            // settable here; not yet consulted by the shipped render()
-            // itself (that lands with S1/S2), so this currently affects
-            // only CB_SPRITE_REF_PX reference builds and -dumpspr's
-            // recorded header field.
+            // settable here. Since S2 shipped it is consulted by the live
+            // render path too (hwsprites.cpp: SpriteCtx::glow -> glow_on in
+            // replay_k), as well as by CB_SPRITE_REF_PX reference builds and
+            // -dumpspr's recorded header field.
             video.sprite_layer->set_glow(false);
             std::cout << "Sprite glow (hardware pixel accuracy) disabled.\n";
         }
@@ -995,6 +995,7 @@ static bool parse_command_line(int argc, char* argv[]) {
                          "-cfgfile             : Location and name of config.xml\n" <<
                          "-file                : LayOut Editor track data to load\n" <<
                          "-list-audio-devices  : Lists available playback devices then quit\n" <<
+                         "                       (-list-sound-devices is accepted as a synonym)\n" <<
                          "-30                  : Lock to 30fps\n" <<
                          "-60                  : Lock to 60fps\n" <<
                          "-t x                 : Number of game threads (1-4)\n" <<
@@ -1016,7 +1017,7 @@ static bool parse_command_line(int argc, char* argv[]) {
                          "                       (span-copy), 1 = D' (shared-load). Output is\n" <<
                          "                       identical either way; this is a performance tuning\n" <<
                          "                       knob, not a correctness one\n\n" <<
-                         "CannonBall-SE man page is in the res folder. Open it with 'man -l docs/cannonball-se.6'" << std::endl;
+                         "CannonBall-SE man page is in the docs folder. Open it with 'man -l docs/cannonball-se.6'" << std::endl;
             _Exit(0);
         }
     }

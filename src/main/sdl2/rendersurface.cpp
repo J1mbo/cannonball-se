@@ -903,7 +903,7 @@ void RenderSurface::init_shadow_mask()
 {
     // Bakes w = condA * (1 - extraMask) - the {0,1} shadow-mask weight the shaders' fastmask()
     // used to compute per fragment - for every output pixel into the 8-bit texture on sampler
-    // unit 2 (see tools/SHADOW_MASK_BAKE_LLD.md). The pattern depends only on dst_rect (fixed
+    // unit 2 (see tools/GLSL_SHADER_PERFORMANCE_ANALYSIS.md section 3). The pattern depends only on dst_rect (fixed
     // until the next video restart, which re-runs init()) and on the effective pitch
     // max(3, config.video.mask_size). It does NOT depend on shadow_mask, maskDim or maskBoost -
     // those stay in the baseOff/baseOn uniforms - so toggling the mask or changing its intensity

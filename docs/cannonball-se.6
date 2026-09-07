@@ -1,5 +1,5 @@
 .\" Manpage for CannonBall SE
-.TH "cannonball-se" "6" "September 2025" "CannonBall SE 1.1" "CannonBall SE Configuration Help"
+.TH "cannonball-se" "6" "September 2026" "CannonBall SE 1.42" "CannonBall SE Configuration Help"
 .SH OVERVIEW
 \fBCannonBall-SE\fP is a fork of Chris White's incredible cross-platform OutRun engine optimised for home-brew arcade cabinets.
 It adds adding enhanced image processing to provide an authentic CRT look, MP3 playback, and performance optimisations.
@@ -11,6 +11,7 @@ Command line options:
 -h                  : Displays the command-line options and man page link, then quits
 .IP \(bu 2
 -list-audio-devices : Lists available playback devices, then quits
+(\fB-list-sound-devices\fP is accepted as a synonym)
 .IP \(bu 2
 -cfgfile            : Set the location and name of config.xml
 .IP \(bu 2
@@ -23,12 +24,35 @@ Command line options:
 -x                  : Disable single-core RaspberryPi board detection
 .IP \(bu 2
 -1                  : Use single-core mode (game will run in one thread, plus sound)
+.IP \(bu 2
+-perftest           : Measure the maximum frame rate this machine can sustain, then quit.
+Use this to check whether your board has headroom for a heavier shader or hi-res mode.
+.RE
+.PP
+The following options exist for development and diagnostic use. They are documented for
+completeness; they are not needed to play the game.
+.RS
+.IP \(bu 2
+-dump <dir> [interval] [count]
+: Write the NTSC filter's input frames to <dir> every 'interval' rendered frames
+(default 30) until 'count' frames (default 60) have been written, then quit.
+.IP \(bu 2
+-dumpspr <dir> [interval] [count]
+: Write sprite RAM and before/after frame captures to <dir> every 'interval' rendered
+frames (default 37) until 'count' frames (default 300) have been written. Does not quit.
+Only present in builds configured with \fBSPRITE_DUMP\fP.
+.IP \(bu 2
+-noglow / -glow     : Disable or enable the System 16 sprite glow quirk (hardware pixel
+accuracy). The build default is set by the \fBPIXEL_ACCURACY\fP CMake option.
+.IP \(bu 2
+-spritereplay N     : Select the sprite colour-replay strategy - 0 = span-copy,
+1 = shared-load. Both produce identical output; this is a performance knob only.
 .RE
 
 .SH GETTING STARTED
 The following assumes that the game was downloaded and built in your home directory as ~/cannonball-se.
 .PP
-To run cannonball, copies of the original arcade ROMs are needed (more info in the ROMs section below) - copy these to ~/cannonball/roms before proceeding.
+To run cannonball, copies of the original arcade ROMs are needed (more info in the ROMs section below) - copy these to ~/cannonball-se/roms before proceeding.
 .PP
 To start the game, "cd ~/cannonball-se" then "build/cannonball-se".
 
@@ -68,7 +92,7 @@ Steering wheels, joysticks and gamepads can be setup in the game (menu, settings
 
 .SH ROMS
 CannonBall needs a copy of the OutRun 'revision B' romset to function. These should be copied to the roms subdirectory
-(usually ~/cannonball/roms). Please see the file roms.txt for file names and other information.
+(usually ~/cannonball-se/roms). Please see the file roms.txt for file names and other information.
 .PP
 \fBIMPORTANT:\fP Users of CannonBall (and CannonBall-SE) are expected to own licensed copies of the original arcade ROMs that
 are needed for the program to function. The use of ROM images may be restricted by copyright or other laws depending on jurisdiction.

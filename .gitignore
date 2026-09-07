@@ -9,3 +9,6 @@ dist-win/
 !/roms/roms.txt
 !/roms/README.txt
 !/roms/.gitkeep
+
+# working research, designs and measurements (local only)
+working-docs/

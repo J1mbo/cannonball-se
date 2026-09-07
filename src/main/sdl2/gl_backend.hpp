@@ -407,7 +407,7 @@ inline bool init(SDL_Window* window,
     // Shadow-mask weight texture (sampler unit 2). Same geometry and filtering as the overlay:
     // one texel per output pixel, NEAREST, CLAMP_TO_EDGE, GL_LUMINANCE (replicated to RGB, A=1).
     // Contents are undefined until update_mask_texture(); RenderSurface::init() bakes before
-    // the first draw (see tools/SHADOW_MASK_BAKE_LLD.md section 5).
+    // the first draw (see tools/GLSL_SHADER_PERFORMANCE_ANALYSIS.md section 3).
     glGenTextures(1, &G.texMask);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, G.texMask);
