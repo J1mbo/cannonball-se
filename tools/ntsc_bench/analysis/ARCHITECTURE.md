@@ -271,3 +271,369 @@ numbers and rationale.
   (`_fast`'s coarser 24-pixel repeat-block shortcut remains competitive on this specific
   metric even though `vec` wins everywhere else measured - random, mixed, 16-colour
   cycles/output, and portability to non-SIMD targets `_fast` cannot reach at all).
+
+## 14. Reviewer's guide: what changed and why
+
+This section is the reviewer's-eye comparison of the shipped code against the pre-rework
+baseline (commit `086591c`), organised by topic - table, kernel, run-length shortcut,
+deleted scaffolding, an unrelated fix, and what stayed the same - rather than
+chronologically; see `README.md`'s Stage 0-4 log (and section 15 below) for the
+chronological account and the bugs found along the way. It assumes intricate working
+knowledge of the filter as it stood at commit `086591c`: `snes_ntsc_blit_hires_fast`, the
+per-ISA `SNES_NTSC_HAVE_SIMD` dispatch, `CHECK_ALL_EQUAL_SSE4/NEON/AARCH64/RVV`,
+`INSERT_/EXTRACT_SIMD_REGISTER_VALUE`, `SNES_NTSC_CLAMP_AND_CONVERT_*`, and the
+65536-entry colour-indexed `snes_ntsc_t::table`; it does not re-derive that context. It
+covers commits `137ad66`..`0bdb9ff` on the `ntsc-rearch` branch:
+
+`137ad66` (SSE4 bugfix, pre-existing code) -> `7ec34e5` (table) -> `810a4be` (vector
+kernel) -> `a6dfa98` (run-length ladder) -> `583b689` (retire old paths) -> `6a46028`
+(review fixes) -> `0bdb9ff` (unrelated threading fix, see 14.6).
+
+### 14.1 The one-line answer
+
+The old code's SIMD idea - *pack four output accumulators, but fill each lane by
+scalar table-gather-then-insert* - is **replaced**, not extended. The new kernel
+instead *loads a contiguous 128-bit window straight out of the table into the
+accumulator*, which only works because the table layout changed first (14.2) to make
+that window exist and be safe to read. The old code's *chunking* (24 input pixels /
+28 outputs per iteration, 7 output accumulators) and its *repeat-run shortcut concept*
+are both preserved, but the run-length mechanism is generalised into a three-tier
+ladder driven by precomputed derived tables rather than one runtime vector-compare
+(14.4). The per-ISA macro scaffolding itself is deleted outright and replaced by one
+~12-op portable vector layer (14.5).
+
+### 14.2 Table: colour-indexed -> slot-indexed (not a SIMD change at all)
+
+This is the precondition for everything else, and it's a data-flow change, not a
+vectorisation change.
+
+- Old: `table[0x10000][128]`, indexed by the 16-bit packed colour value
+  (`SNES_NTSC_S16(ktable, n)` = `n` used directly as the row). Populated by
+  `rgb_blargg[]` in `RenderSurface::blargg_filter()` doing one lookup per pixel,
+  every frame, to convert the emulator's palette-slot buffer into colour values
+  before the blitter ever sees them.
+- New: `plane[3][8194][slot_words]`, indexed by the *palette slot* the emulator's S16
+  buffer already contains natively (0..4095, +0x1000 for shadow). The `rgb_blargg[]`
+  per-pixel conversion is gone; the blitter reads the game's own pixel buffer
+  directly. Regeneration is incremental: `RenderBase::convert_palette()` marks the
+  (at most two) affected slots dirty, and `RenderSurface::flush_ntsc_palette()`
+  regenerates just those slots from the main thread at the frame boundary, before
+  either render thread is released - this also closes a real pre-existing unlocked
+  race, where the old code wrote two `rgb_blargg[]` words directly into a table a
+  render thread might be concurrently reading.
+- Consequence for reviewers: `gen_kernel`/`correct_errors`/`merge_kernel_fields` are
+  untouched byte-for-byte; only what surrounds one generated entry (how it's
+  addressed, and that it can be regenerated one slot at a time) changed.
+- Each slot's block gained padding (16 words, later 20) around the 14 real kernel
+  words. The old table had no such padding - it didn't need it, because the old
+  kernel never issued a vector *load* against table memory (see 14.3). The padding
+  exists solely so the new kernel's unaligned windows never read outside a slot's
+  own memory or need masking.
+
+### 14.3 The kernel: `snes_ntsc_blit_hires_fast` -> `snes_ntsc_blit_hires_vec`
+
+#### What the old kernel actually vectorised
+
+Worth stating precisely, because it's the crux of "preserved vs. replaced": the old
+kernel already grouped work into **4 sub-blocks of 6 input pixels -> 28 outputs**, held
+in **7 accumulator registers of 4 lanes each** (`xmm10..xmm16`) - the same chunk
+granularity the new kernel uses. But within that structure, every output value was
+computed as **12 scalar table reads and adds** (`SNES_NTSC_COLOR_IN` doing pointer
+arithmetic per pixel, `SNES_NTSC_HIRES_OUT_SIMD_` summing scalars), and the resulting
+scalar sum was then placed into its accumulator lane with
+`INSERT_SIMD_REGISTER_VALUE`. The *only* place the vector unit did real arithmetic on
+more than one output at a time was the final clamp/convert/store. In other words: SIMD
+was used as a **packing container for scalar results**, not as compute. This is also
+why `_fast2` existed as an abandoned, uncommitted A7-tuned variant before this project
+started - its stated goal was to stop *extracting input lanes back to GPRs* for the
+gather (which stalls an in-order core), while still keeping the same scalar-sum,
+insert-into-lane structure for the outputs. It's a half-measure along the same axis,
+not the axis change described next, and none of its code survives on this branch (it
+also had a bit-exactness bug in its repeat-block reuse, unrelated to the phase fix in
+14.6).
+
+#### What the new kernel does instead
+
+`snes_ntsc_blit_hires_vec` exploits a fact about the table layout that the old code
+never used (it's proven in `ALGORITHM.md` section 6.2): **adjacent output positions read
+adjacent words within a kernel block.** So instead of computing a scalar sum and
+inserting it, each pixel contributes 4-5 **unaligned 128-bit loads** taken directly
+from its table block, added straight into the 7 accumulators with vector adds. There
+is no per-tap scalar gather-and-insert; the "gather" is reduced to one 16-bit load per
+pixel (to find its slot) plus integer address arithmetic, and the FIR summation itself
+is genuine vector work. Loads per output fall from 12 scalar reads to roughly 3.6
+vector loads. The 24-pixel/28-output/7-accumulator chunk shape carries over unchanged
+from the old kernel, including how a group's tail 3 accumulators are carried into the
+next group's leading 3 - that bookkeeping pattern is inherited, not reinvented.
+
+#### Portability consequence
+
+Because the new kernel's only primitives are unaligned load, vector add, and a handful
+of bitwise/shift ops for clamp+convert, it needs no per-ISA gather trick and no
+SSE4.1-specific instruction (`_mm_extract_epi16`/`insert` are gone). One kernel body,
+one `snes_ntsc_simd.h` layer (14.5), covers NEON/SSE2/RVV/plain-C.
+
+### 14.4 The repeat-run shortcut: generalised, not just ported
+
+- Old: `CHECK_ALL_EQUAL_{SSE4,NEON,AARCH64,RVV}` vector-compares a fixed 24-pixel
+  window each iteration; if uniform, it broadcasts the *previous* iteration's already-
+  clamped 7-vector output instead of recomputing. One shortcut, one granularity
+  (whole 4-chunk group), detected fresh every iteration by a vector reduction. (The
+  SSE4 feeder for this check - `ROTATE_OUT_SSE4` - had a real, independent bug found
+  and fixed at `137ad66`: its two byte-shifts were swapped, so on x86 it sampled four
+  pixels from the wrong side of the load boundary. NEON was correct. Synthetic test
+  patterns never triggered it; real game content with long flat runs did. This is a
+  fix to pre-existing code, unrelated to the redesign, and is the one place bit-
+  exactness against the *original* `_fast` output required accepting a corrected
+  reference rather than the shipped value - see section 15.1 for the full write-up.)
+- New: a three-level ladder, evaluated per **6-pixel chunk** (finer than the old
+  24-pixel granularity) with run-length carried as scalar state across chunks (no
+  per-chunk vector reduction needed):
+  1. **Flat** - 3+ consecutive uniform chunks of one slot: output is a precomputed,
+     already-clamped-and-converted RGBA pattern per slot/phase (`plane_flat`),
+     applied as 2 loads + 2 ORs (for alpha) + 2 stores, with no accumulation at all.
+     A group whose four chunks are all flat skips the general kernel entirely.
+  2. **Chunk kernel** - one uniform 6-pixel chunk not (yet) in a run: one precomputed
+     19-word window (`plane_ck`) replaces six separate pixel-window adds.
+  3. **Pair kernel** - an identical even/odd pixel pair: one precomputed 15-word
+     window (`plane_pk`) replaces two pixel-window adds. Measured to cost more than
+     it saves on the Cortex-A53 target (extra branch/lookup not repaid), so it's
+     compiled in but **off by default** (`SNES_NTSC_LADDER_MASK` selects it).
+  All three derived tables are *exact integer sums* of the same base kernel words
+  generated in `gen_slot()` - `PK[n] = K[n] + K[n-1]`, `CK = PK0 + PK1<<2 + PK2<<4`,
+  `FLAT` from `CK` - proven exact via the table's associative wrap-around addition,
+  not approximated. A run-length classifier tracks state across chunks and applies a
+  retroactive correction for one or two chunks that turn out not to extend into a
+  flat run (the "skip now, add back later if wrong" case) - there is no equivalent
+  bookkeeping in the old code, whose shortcut only ever looked backward one iteration
+  (see section 15.3 for a bug this retroactive correction produced and how it was found).
+
+Net effect: the old code had a binary flat/not-flat decision at coarse granularity;
+the new code recognises runs, isolated uniform chunks, and pairs separately, at finer
+granularity, backed by precomputed algebra instead of a runtime vector reduction.
+
+### 14.5 Scaffolding: deleted, not refactored
+
+Gone entirely: `SNES_NTSC_HAVE_SIMD`/`SNES_NTSC_X86_LEVEL`/`SNES_NTSC_HAVE_RVV`
+detection and intrinsic includes in `snes_ntsc.h`, `SIMD_REGISTER_t`/
+`SIMD_INPUT_REGISTER_t` and every per-ISA macro built on them
+(`LOAD_/INSERT_/EXTRACT_SIMD_REGISTER_VALUE`, `ROTATE_OUT_*`,
+`SET_SNES_MASK_VECTORS*`, `SNES_NTSC_CLAMP_*_{SSE4,NEON,RVV}`,
+`SNES_NTSC_CLAMP_AND_CONVERT_*`, `SNES_NTSC_RGB_OUT_STORE_*`, `SNES_NTSC_RGB_STORE_*`,
+`CHECK_ALL_EQUAL_*`, `SNES_NTSC_HIRES_OUT_SIMD`), plus `snes_ntsc_blit_hires_fast`
+itself and the separate 749-wide scalar `snes_ntsc_blit_hires`. Replacing all of it:
+one new header, `snes_ntsc_simd.h`, exposing a `v4u32` type and ~12 operations
+(unaligned/aligned load, aligned/unaligned store, splat, add, sub, and/or/andnot,
+shift-by-immediate, zero) with NEON, SSE2, RVV and plain-C backends, plus a generic
+clamp+convert built from those primitives. `SNES_NTSC_FORCE_SCALAR_SIMD` selects the
+plain-C backend on any machine for testing it. One blitter,
+`snes_ntsc_blit_hires_vec`, runs on every platform - there is no longer a separate
+non-SIMD fallback call in `RenderSurface`. Net: about 830 lines removed. Review-wise,
+this means the four-to-five-way per-ISA duplication that made the old file hard to
+audit (four `CHECK_ALL_EQUAL` variants, three `CLAMP_AND_CONVERT` variants, etc.) no
+longer exists to compare against.
+
+### 14.6 Unrelated: the phase-continuity fix (`0bdb9ff`)
+
+Not a filter-algorithm or SIMD change - flag it separately in review. `draw_frame()`
+used to advance the shared burst-phase counter only on the "top half" call and let the
+concurrently-running "bottom half" render thread read it unsynchronised, with no
+row-count offset applied. Fixed by moving the phase advance to the main thread before
+either render thread is released (matching the pattern already used for
+`flush_ntsc_palette()`), and having `blargg_filter()` compute each section's own
+correct starting phase. Verified directly against `snes_ntsc_blit_hires_vec`: a split
+render using the new formula is bit-identical to a continuous single-call render at
+every phase; the old same-phase approach provably isn't.
+
+### 14.7 What a reviewer should NOT expect to have changed
+
+- The FIR structure itself: 14 taps, 6-in/7-out grid, `t0(j)`/alignment formulas,
+  clamp/bias constants, S16 decode, YIQ generation, `correct_errors`,
+  `merge_kernel_fields`. Byte-identical generation code throughout.
+- The lores path (`snes_ntsc_blit`): untouched except for the slot-vs-colour
+  indexing change in 14.2 (which applies uniformly) and one incidental correctness fix
+  (its black-padding sentinel now correctly points at the reserved black slot instead
+  of colour value 0 - the old value happened to still resolve correctly under the old
+  table, so this was latent, not visibly broken).
+- Bit-exactness: every stage gates on matching the original `_fast` output (post the
+  14.4 bugfix) across synthetic, stress, and 24 real captured game frames, on
+  NEON/SSE2/plain-C, including MSVC. The one deliberate, documented exception is the
+  14.4 bugfix itself.
+
+### 14.8 Quick reference
+
+| Old (086591c) | New (`ntsc-rearch`) |
+|---|---|
+| `snes_ntsc_blit_hires_fast` (+ separate scalar `snes_ntsc_blit_hires`) | `snes_ntsc_blit_hires_vec` (one path, all platforms) |
+| `table[0x10000][128]`, colour-indexed, 32 MiB | `plane[3][8194][slot_words]`, slot-indexed, ~15.8 MiB (with ladder tables) |
+| `rgb_blargg[]` lookup per pixel per frame | removed; blitter reads the emulator's slot buffer directly |
+| Full table rebuilt on any palette/setting change | incremental per-dirty-slot regen at a lock-free frame-boundary point |
+| Per-ISA `SIMD_REGISTER_t`/`CHECK_ALL_EQUAL_*`/`CLAMP_AND_CONVERT_*` macro families | `snes_ntsc_simd.h`: one `v4u32` type, ~12 ops, 4 backends |
+| Output lanes filled by scalar gather + `INSERT_SIMD_REGISTER_VALUE` | Output lanes filled by unaligned vector loads straight from the table |
+| One repeat-shortcut: 24-pixel uniform check, broadcast previous iteration | Three-tier ladder (flat run / uniform chunk / pair) on precomputed derived tables, 6-pixel granularity |
+| Bottom-half render thread: same phase as top half (race + wrong value) | Bottom-half phase computed and synchronized correctly (`0bdb9ff`) |
+
+## 15. Notable bugs found via this harness
+
+Three real, independent bugs were caught during this re-architecture by the bench's
+checksum gate against real captured game content or a stress pattern - none of them
+were caught by the synthetic `random`/`mixed` patterns alone. Kept here as technique
+examples: the common thread is that real or adversarial content is what exposed each
+one, and a precise diff/state-comparison method (not just "checksum mismatch") is what
+localised the cause each time.
+
+### 15.1 `ROTATE_OUT_SSE4` lane-order bug (pre-existing code, fixed at `137ad66`)
+
+- **Symptom.** The host/SSE4 build of `snes_ntsc_blit_hires_fast` diverged from the
+  Pi/NEON build's output on the 24 captured real game frames only (1671 of 23,740,416
+  compared pixels differed, columns 0-735) - small, mostly 1-a-few-LSB errors confined
+  to 23 scanlines out of 448 across 11 of the 24 frames, clustered in runs of 11-15
+  columns. The existing synthetic `random`/`mixed` benchmarks had always agreed
+  bit-for-bit between the SSE and NEON builds; this was the first input that exposed a
+  real SSE4-vs-NEON divergence.
+- **Root cause.** `CHECK_ALL_EQUAL_SSE4` (the repeat-block shortcut's uniformity test)
+  needs the two input pixels straddling a 4-pixel load boundary gathered into one
+  vector via `ROTATE_OUT(A, B, 2)`. `ROTATE_OUT_NEON` (`vext_u16(A, B, 2)`) gets this
+  right (`[A[2], A[3], B[0], B[1]]`); `ROTATE_OUT_SSE4(A, B, N)` had its two byte-shifts
+  swapped (`slli(A, N*2) | srli(B, 8-N*2)` instead of `srli(A, N*2) | slli(B, 8-N*2)`),
+  so for `N=2` it produced `[B[2], B[3], A[0], A[1]]` - the wrong two pixels from *each*
+  side of the boundary - meaning the SSE4 build's "is this 24-pixel block flat" check
+  silently tested four pixels that were not even part of the current block, on every
+  invocation.
+- **Why synthetic patterns missed it.** Random/mixed patterns have essentially no
+  chance of an accidental 4-pixel coincidence spanning a block boundary being uniform
+  when the wrong-but-adjacent 4 pixels are sampled instead of the right ones. Real
+  content is the opposite case: 65% flat 6-pixel chunks and 91% identical even/odd
+  pairs mean the *wrong* 4-pixel sample is very often just as uniform as the *right*
+  one would have been, except right at the edges of a run - exactly where the two
+  samples can disagree, producing the small, sparse, edge-clustered error pattern seen.
+- **How found.** `diff_output.py A.bin B.bin --cols 736` (excluding the trailing
+  columns where the two blitters' edge handling legitimately differs) on
+  `--dump-output` dumps: host `_fast` vs host scalar (ground truth) showed the 1671-pixel
+  diff; Pi `_fast` vs Pi scalar showed zero diffs; host `_fast` vs Pi `_fast` (all 752
+  columns) reproduced the *same* 1671-pixel set byte-for-byte. That three-way match
+  pinned the bug on the host/SSE4 build specifically, with the Pi/NEON build already
+  correct.
+- **Fix.** Swap which operand gets `slli` vs `srli` in `ROTATE_OUT_SSE4` so it matches
+  `vext_u16`'s semantics for any `N`, not just the `N=2` this code happens to call it
+  with.
+
+### 15.2 Stage 3 double-clamp/convert cost bug
+
+- **Symptom.** The first implementation of the run-length ladder (Part C) was *slower*
+  on real captured frames (12.10 ms) than the Stage 2 baseline it was meant to improve
+  on (9.65 ms) and than the retired `_fast` (8.55 ms) - despite being fully bit-exact
+  and despite per-path statistics confirming the ladder was correctly routing 77% of
+  chunks onto the free/cheap skip-or-uniform paths.
+- **Root cause.** `snes_ntsc_simd_clamp_convert` (a clamp plus a ~20-op
+  ABGR-build-then-`bswap32` convert) is roughly half of the general kernel's
+  per-output cost. The first-attempt ladder made every flat/steady chunk pay it
+  *twice*: once when the group's normal path clamped/converted/stored all 7
+  accumulators, and again when the FLAT overwrite pass clamped/converted 2 more
+  vectors on top of that - so a steady-run chunk, the ladder's whole reason to exist,
+  cost at least as much as the general path it was meant to avoid.
+- **How found.** Not a checksum failure - a cost bug, found on review of the
+  disappointing Pi timings by inspecting where cycles were actually spent in the emit
+  path, given that the per-path classification statistics were already confirmed
+  correct.
+- **Fix (three changes, see `README.md`'s "Stage 3 review" section for the full
+  detail).** (1) Store `FLAT` pre-clamped and pre-converted, with `Alevel` folded in
+  afterward as a plain OR against a precomputed splat, so a flat chunk's overwrite is
+  2 loads + 2 ORs + 2 stores with no clamp or convert at all. (2) A group-level fast
+  path: when all 4 chunks of a 24-pixel group are covered by `FLAT`, skip accumulation
+  and clamp/convert/store entirely - just 4 FLAT emits. (3) Replace the ~20-op
+  ABGR-build-then-`bswap32` convert everywhere with a direct 3-shift/3-and/3-or
+  construction of the final little-endian RGBA word (verified bit-for-bit equivalent
+  by tracing each output byte through the old route). Closed the gap: 12.10 -> 9.26 ms
+  on `--input` (6.77 ms filter-only), ahead of the Stage 2 baseline and at the
+  architecture's "at or under 6 ms" filter-only gate (section 11).
+
+### 15.3 Stage 4 retro-add double-counting bug
+
+- **Symptom.** `--pattern runs` failed its checksum
+  (`0x3df0769d80b04648` instead of the reference `0x0f9860292b10dd73`) under any
+  `SNES_NTSC_LADDER_MASK` with bit0 (flat/skip) set. `--pattern random` never
+  triggered multi-chunk runs and passed throughout, giving no warning.
+- **Root cause.** Stage 4's fused, lookahead-free classifier (replacing Stage 3's
+  row-wide pre-pass, see the "Lookahead-free classifier" bullet in section 13) carries
+  "was chunk C-1/C-2 skipped" state forward across chunks and, when a run ends,
+  retroactively adds the skipped chunks' contribution back in. The first
+  implementation shifted that carried state forward every chunk regardless of whether
+  a retro-add round had already consumed it, so a chunk already retro-added at one
+  run's end could be retro-added *again* at a later run's end (reached via "C-2" from
+  a chunk further along) - silently double-summing its contribution.
+- **How found.** By comparing raw accumulator state (`A[0..2]`, via a temporary debug
+  trace) at the first group boundary after a skip, between a known-correct mask=0 run
+  and the failing mask=1 run: the two matched exactly through the retro-add itself but
+  diverged immediately after the *next* chunk's retro check re-fired on
+  already-resolved state.
+- **Fix.** Reset (not shift) the carried skip state whenever a retro-add round
+  consumes it this chunk.
+
+## 16. Memory-system experiments (general Cortex-A53 findings)
+
+Two measurements from this project's benchmarking are general findings about the
+Cortex-A53 memory system, useful beyond this one filter, not just evidence for this
+filter's specific design choices.
+
+### 16.1 Working-set sweep
+
+sl-d303, 640x448, 1 thread, performance governor, core 3, 2 s runs. ms per frame
+versus number of distinct colours N (table working set = N x 512 B):
+
+| N | 1 | 16 | 64 | 256 | 1024 | 4096 | 65536 |
+|---|---|---|---|---|---|---|---|
+| scalar `snes_ntsc_blit_hires` (086591c) | 10.98 | 13.01 | 19.03 | 22.20 | 47.79 | 83.95 | 93.53 |
+| `snes_ntsc_blit_hires_fast` (086591c) | 1.95 (repeat-block path) | 11.89 | 15.41 | 19.60 | 48.23 | 82.97 | 95.08 |
+
+Reading: N=1 is the pure compute floor (about 33 cycles per output for scalar at
+1 GHz). The step 16 -> 64 is the table outgrowing L1 (32 KB); 256 -> 1024 is it
+outgrowing L2 (512 KB). Page size on the target is 4 KB. Transparent huge pages are
+NOT available on its kernel (`6.18.39+rpt-rpi-v8` has no
+`/sys/kernel/mm/transparent_hugepage` and no `HugePages` in `/proc/meminfo`);
+`madvise(MADV_HUGEPAGE)` fails there. Produced with `tools/ntsc_bench/sweep_pi.sh`
+(runs on the Pi against a prebuilt binary).
+
+### 16.2 Page-spread vs cache-line experiment
+
+sl-d303, scalar `snes_ntsc_blit_hires` @ 086591c, 3 s runs, core 3, performance
+governor. `--palette contiguous` keeps exactly the same N table rows touched, with
+exactly the same RNG-driven pixel placement, as `--palette random` - only *where in
+the 32 MiB table* those N rows live changes: `random` scatters them pseudo-randomly
+across all 65536 rows (up to N distinct 4 KB pages), `contiguous` packs them into the
+first N rows (N/8 4 KB pages). So any timing difference between the two isolates
+page/TLB locality from cache-line traffic, which is identical in both modes (same
+N x 512 B fetched per frame).
+
+This kernel (`6.18.39+rpt-rpi-v8`) has no `/sys/kernel/mm/transparent_hugepage` at all
+- `CONFIG_TRANSPARENT_HUGEPAGE` is not built in, not just disabled.
+`madvise(MADV_HUGEPAGE)` therefore failed (`EINVAL`) on every `--hugepages` run below,
+and `/proc/self/smaps_rollup` read back `AnonHugePages: 0 kB` every time - THP was
+never actually granted on this box. The "on" column differs from "off" only in that
+the table was allocated with `posix_memalign(2 MiB)` instead of `malloc()`.
+
+ms per frame:
+
+| N | random, THP off | random, THP on | contiguous, THP off | contiguous, THP on |
+|---|---|---|---|---|
+| 64   | 18.59 | 18.56 | 13.27 | 13.11 |
+| 256  | 22.10 | 22.01 | 20.29 | 19.90 |
+| 1024 | 48.46 | 45.02 | 37.86 | 34.21 |
+
+Repeat of N=256/random/THP off, run last: 22.26 ms (vs 22.10 ms first; +0.7%, well
+inside the ~4% min/max jitter seen within a single run) - the sweep is run-to-run
+stable. `vcgencmd get_throttled` read `0x0` before and after the whole sequence (no
+thermal throttling).
+
+Interpretation: since `hugepages` never actually took effect here (THP unsupported by
+the kernel), those two columns are noise around the same allocation strategy and
+should be read as such, not as a THP effect. The real signal is `random` vs
+`contiguous`: at identical cache-line traffic, packing the same N touched rows into
+N/8 pages instead of scattering them over up to N pages is 9-29% faster (largest
+relative gain at N=64, where the touched set - one page's worth of TLB reach at 8
+rows/page - fits the Cortex-A53's small L1 dTLB reach when contiguous but not when
+scattered across 64 separate pages). That the *same bytes moved* run measurably faster
+purely from being packed into fewer pages says a real share of the scalar filter's
+stall time at these working sizes is page/TLB-spread overhead (TLB misses, page-table
+walks) rather than pure cache-line-fetch traffic - cache-line volume alone cannot
+explain the gap, since both modes fetch identical volume.
