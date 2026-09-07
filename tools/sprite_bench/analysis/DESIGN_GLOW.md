@@ -1,7 +1,7 @@
 # The System 16 "glowy edge" quirk: minimal reproduction in a span renderer
 
 Status: 2026-09-04, branch `ntsc-rearch`. Settles the `PIXEL_ACCURACY` question
-raised in `PROBLEM_STATEMENT.md` section 11. Reference is the upstream
+raised in `../README.md` (formerly `PROBLEM_STATEMENT.md` section 11). Reference is the upstream
 `PIXEL_ACCURACY` macro (`scratchpad/upstream/hwsprites.cpp` lines 155-170); the
 shipped fork carries the same macro at `hwsprites.cpp:182-209` but its unguarded
 `#define PIXEL_ACCURACY 0` at line 58 means it has never executed in any build.
@@ -47,7 +47,7 @@ Conditions under which it holds, each load-bearing:
   non-sequential order would have to re-derive the argument.
 * Values never reach `0x2000`, so the reference's `&= 0xFFF; += 0x1000` shadow
   form equals `|= 0x1000` and the algebra `(v | 0x1000) & 0xFFF == v & 0xFFF`
-  holds. Background layers store values below `0x1000` (`PIPELINE.md` line 191;
+  holds. Background layers store values below `0x1000` (see `../README.md`, threading model, formerly `PIPELINE.md`;
   the harness asserts it).
 * `lo` is the first pixel actually drawn, after clipping. If the run starts left
   of `x1` the first drawn pixel is `x1` itself and the reference's `x > x1`

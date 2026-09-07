@@ -1,7 +1,7 @@
 # Proposed re-architecture of the hires NTSC filter
 
 Status: proposal, nothing implemented. Date: 2026-09-03.
-Inputs: ALGORITHM.md, REVIEW.md, SHORTLIST.md (incl. section 8), GRAPHICS_SETUP.md,
+Inputs: ALGORITHM.md, GRAPHICS_SETUP.md, the (since-retired) idea-shortlist and review notes,
 the sl-d303 measurements in README.md, and the captured frames in `frames/`.
 
 ## 1. Design goals
@@ -197,7 +197,7 @@ tables.
 | 4 | Row interleave, prefetch, RVV backend, retire old paths | 2 d | no regression; two-thread half frame at or under 4 ms |
 
 Each stage is shippable on its own and each gate reuses the kill experiments from
-SHORTLIST.md. The uncommitted `_fast2` should be discarded rather than carried forward.
+the retired idea shortlist. The uncommitted `_fast2` should be discarded rather than carried forward.
 
 ## 12. Risks
 

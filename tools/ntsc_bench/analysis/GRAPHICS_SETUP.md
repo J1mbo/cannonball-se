@@ -51,7 +51,7 @@ optionally `merge_kernel_fields()` + `correct_errors()` to fill the 128
 `uint32_t` (512-byte) row `ntsc->table[entry]`
 (`snes_ntsc.h:258-263`: `enum { snes_ntsc_entry_size = 128 };`
 `enum { snes_ntsc_palette_size = 0x10000 };` `struct snes_ntsc_t { snes_ntsc_rgb_t table[snes_ntsc_palette_size][snes_ntsc_entry_size]; };`)
-— 0x10000 × 128 × 4 bytes = 32 MiB exactly, matching `analysis/BRIEF.md`.
+— 0x10000 × 128 × 4 bytes = 32 MiB exactly, matching the original brief.
 `ntsc` is heap-allocated with plain `malloc` (`rendersurface.cpp:56`) and
 freed with `free(ntsc)` in `disable()` (line 143) — its lifetime spans one
 `init()`/`disable()` cycle of `RenderSurface`, effectively the whole run
@@ -317,7 +317,7 @@ to level/stage load, hi-score entry, music-test screens, or service mode —
 one-off/rare, not per-frame. **How many palette entries are typically
 "live" at once cannot be determined from static code** — the code only
 bounds the *address space* (4096 entries, 8192 with shadow), not the
-runtime working set. (This is consistent with BRIEF.md/SHORTLIST.md's
+runtime working set. (This is consistent with the original brief and idea shortlist's
 empirically-measured "a few hundred distinct input values" per frame, but
 that number comes from runtime measurement, not this audit.)
 
@@ -339,7 +339,7 @@ palette-index+0x1000 for shadow" *is* the CT slot number, already
 computed by the emulation layers and already sitting in `pixels[]`. The
 one remaining conversion step is `rgb_blargg[pixels[i]]` in
 `blargg_filter()` (`rendersurface.cpp:989-992`) — exactly the "remap load"
-`analysis/SHORTLIST.md:64,94` proposes to remove. To make the filter
+the idea shortlist proposed removing. To make the filter
 consume slot indices directly: change the kernel-table addressing from
 `SNES_NTSC_S16` treating `n` as a packed-RGB+flag code
 (`snes_ntsc.h:280-283`) to a CT variant treating `n` as a direct row index
@@ -435,7 +435,7 @@ call and the geometry (`src_width`, `block_height`, `output_pitch`,
   packed-RGB+shadow format the filter consumes) plus the single `int
   phase` — sufficient to reproduce a `snes_ntsc_blit_hires_fast()` call
   byte-for-byte with no palette/engine state, matching the call contract
-  `tools/ntsc_bench`'s `analysis/BRIEF.md` §1 already assumes. Capturing
+  the original brief already assumed. Capturing
   the earlier `pixels` (raw S16 slot buffer, pre-`rgb_blargg`) instead
   would additionally validate a CT implementation end to end, since under
   CT that buffer *is* the filter's input.

@@ -1,6 +1,6 @@
 # Implementation specification: road and tile renderer optimisations (S0-S7)
 
-Branch `sprite-a53`. Companion to `STRATEGY.md` (ranked plan) and `OPTIMISATION_PLAN.md`
+Branch `sprite-a53`. Companion to `ROAD_TILE_RENDERER.md` (which absorbed the ranked plan and the data study)
 (data study). Line numbers below refer to the files as they stand on this branch at the time of
 writing (`hwroad.cpp` 790 lines, `hwtiles.cpp` 548 lines, `video.cpp` 646 lines); an implementer
 whose file has drifted must re-anchor on the quoted code, not the number.
@@ -440,8 +440,7 @@ captured frame, all four modes, and both `road_control & 3` sets seen; whole-all
 ### S2.5 Measure
 
 `prof_ns_road_bg`, A/B with and without `-nozva`, plus the standalone microbenchmark from
-`OPTIMISATION_PLAN.md` section 5 (this result is supplied separately). Kill rule (from
-`STRATEGY.md`): `DCZID_EL0` DZP set, loaded fill improves by less than 1.5x, or in-game
+`ROAD_TILE_RENDERER.md` section 1 (this result is supplied separately). Kill rule: `DCZID_EL0` DZP set, loaded fill improves by less than 1.5x, or in-game
 `road_bg` stays above 0.40 ms. If killed, S2 ships as dead code with `dczva_on` forced false
 (keep the helper: S4 is then also off), or is reverted.
 

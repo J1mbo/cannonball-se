@@ -135,7 +135,9 @@ static inline void cb_prefetch_w(const void* p)
 // because R1's decode_row_k/replay_k kernels must not become out-of-line
 // calls from the per-sprite row loop -- both -O2 (the standalone driver) and
 // -O3 -Ofast (the game) decline to inline them on their own (measured, see
-// MEASURED_R0_ATTRIBUTION.md). CB_UNROLL(n) keeps the driver's -O2 build
+// PERFORMANCE_MEASUREMENTS.md campaign 6.1, R0a static analysis: objdump on
+// the pre-R1 S4 binary showed decode_row/replay called via real bl, not
+// inlined). CB_UNROLL(n) keeps the driver's -O2 build
 // structurally aligned with the game's -O3 build for the fixed 8-nibble
 // decode loop; GCC 14 does not unroll it at -O2 without the pragma.
 // ---------------------------------------------------------------------------

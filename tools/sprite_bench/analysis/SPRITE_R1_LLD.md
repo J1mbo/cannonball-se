@@ -2,7 +2,7 @@
 
 Status: 2026-09-05, branch `sprite-rework`. Design deliverable only; no renderer code changed.
 Implements section 3 of `SPRITE_REPLAN_FABLE.md` against the findings of
-`MEASURED_R0_ATTRIBUTION.md`, in the vocabulary of `SPRITE_IMPLEMENTATION_SPEC.md`.
+`PERFORMANCE_MEASUREMENTS.md` campaign 6, in the vocabulary of `SPRITE_IMPLEMENTATION_SPEC.md`.
 Line numbers refer to `src/main/hwvideo/hwsprites.cpp` (1711 lines) and `hwsprites.hpp` (373 lines)
 at HEAD; re-anchor on the quoted code if the file has drifted. Every code block below is the
 text the implementer writes, modulo comments.
@@ -13,7 +13,7 @@ text the implementer writes, modulo comments.
 
 ### 0.1 What R0 measured and what R1 does about it
 
-R0 (`MEASURED_R0_ATTRIBUTION.md`) split `draw_sprite_fast`'s time as DECODE 55-60%, OTHER
+R0 (`PERFORMANCE_MEASUREMENTS.md` campaign 6) split `draw_sprite_fast`'s time as DECODE 55-60%, OTHER
 (glue) 24-29%, COPY 12-16%, and showed the S4-vs-shipped deficit is constant per *source row*
 (CoV 0.09) not per pixel (CoV 0.25). Its objdump named five mechanisms:
 
@@ -809,7 +809,7 @@ HEAD `ld1`/`st1` pair pattern.
 ### 4.4 D vs D'
 
 **Compiled default: D (`replay_mode = 0`).** Measured: D won on `sl-d303`, D' edged D by 2.1% on
-`pi2-local` (`MEASURED_S4_INSITU.md`, 1.231 vs 1.205 overall) -- inside SKU variance, and both
+`pi2-local` (`PERFORMANCE_MEASUREMENTS.md` campaign 5, 1.231 vs 1.205 overall) -- inside SKU variance, and both
 measurements were taken with the `n < 8` path calling `memcpy` per row, which is where D' had
 its edge (its scalar path had no libc call). The R1b ladder removes that asymmetry for `n < 8`
 (the two modes are the same code there), leaving the `n >= 8` NEON loops as the only
@@ -1121,7 +1121,7 @@ GCC may fuse), confirm **no** `ldr*` (R1a: kills the `[x19, #52]` reload), **no*
 (A64 has the registers; a spill means the hoist failed). The driver build (`-O2`) is not
 subject to these checks.
 
-### 7.4 In-situ (the `MEASURED_R0_ATTRIBUTION.md` / `MEASURED_S4_INSITU.md` procedure)
+### 7.4 In-situ (the campaign 5 / campaign 6 procedure of `PERFORMANCE_MEASUREMENTS.md`)
 
 Deciding box `pi2-local` (Pi 2 v1.2, A53, 900 MHz fixed, heatsinked); cross-check `sl-d303`
 (Zero 2 W, 1 GHz, `-j1` builds, stop `autostream autostream_monitor owntone vibra-mini` first).
@@ -1145,7 +1145,7 @@ Deciding box `pi2-local` (Pi 2 v1.2, A53, 900 MHz fixed, heatsinked); cross-chec
    are scene-matched by frame index; tercile bands by *shipped* ns/frame; per band
    `ratio = sum(stage ns) / sum(shipped ns)`.
 5. Gate: **R1a `<= 1.00` in every band; R1b `<= 0.90` in every band.** Report the three-band
-   table and the overall ratio, as `MEASURED_R0_ATTRIBUTION.md` does. Optionally re-apply R0's
+   table and the overall ratio, as `PERFORMANCE_MEASUREMENTS.md` campaign 6 does. Optionally re-apply R0's
    `CB_R0_PROF` cntvct timers to the stage tree in a separate build to confirm the
    DECODE/OTHER/COPY split moved as predicted (not part of the gate).
 

@@ -1,7 +1,7 @@
 # Implementation specification: sprite renderer rewrite (S0-S6)
 
 Branch `ntsc-rearch` (harness pattern from `sprite-a53`). Companion to `DESIGN_FABLE.md`
-(structure), `DESIGN_REVIEW_BANDWIDTH.md` section 7 (design of record), `MEASURED_INSITU_SPRITE.md`
+(structure), the in-situ bandwidth review (design of record; its conclusions are now inlined at their use sites), `PERFORMANCE_MEASUREMENTS.md` campaign 3
 (the measurements that fix stage 1's content), `DESIGN_GLOW.md` (glow rule) and
 `SCHEDULE_VERIFICATION.md` (scaling law). Structural template: `tools/road_tiles/analysis/IMPLEMENTATION_SPEC.md`.
 Line numbers refer to `src/main/hwvideo/hwsprites.cpp` (1003 lines), `hwsprites.hpp` (46),
@@ -28,10 +28,10 @@ Facts that are fixed and must not be re-derived:
   `src(d) = (d*zoom) >> 9`. `xacc` resets per row so `r(i)` depends only on `(zoom, i)`. Zoom regimes:
   hi-res shipping (`ZOOM_LOOKUP >> 1`) `0x80..0x1F8`, runs 1-4; lo-res `0x100..0x3F0` and
   `hiresprites` up to `0x7E0`, runs 0-2, run 0 legal.
-- Structure: LINEBUF (`MEASURED_A53_PI3.md`: 5.81 cyc/px vs FANOUT 7.36, REF 11.70). In-situ the
+- Structure: LINEBUF (`PERFORMANCE_MEASUREMENTS.md` campaign 1: 5.81 cyc/px vs FANOUT 7.36, REF 11.70). In-situ the
   shipped pass is 11.6 cyc/px, 0.93-0.95 ms typical (82K px), destination-store-bound 60-80% of L2
-  traffic, exposed memory term 0.10 ms typical / 0.37 ms extreme (`MEASURED_INSITU_SPRITE.md`).
-  Target 7.3-8.8 cyc/px in-game (`DESIGN_REVIEW_BANDWIDTH.md` section 3).
+  traffic, exposed memory term 0.10 ms typical / 0.37 ms extreme (`PERFORMANCE_MEASUREMENTS.md` campaign 3, M-A).
+  Target 7.3-8.8 cyc/px in-game (from the in-situ bandwidth review).
 
 Structural facts that are easy to get wrong:
 
@@ -74,7 +74,7 @@ Structural facts that are easy to get wrong:
    bound (`osprites.cpp:770-800`), which is computed from `calc_width` (a floor,
    `osprites.cpp:747`) and `2*offset`, while the renderer draws `ceil(512*W/zoom)` pixels (hi-res
    `ceil(1024*W/z)`) and adds `offset` only when `hiresprites` is on (`601-602`). The bound is loose
-   by up to about 4 hi-res pixels at either edge (`FABLE_ASSESSMENT.md` section 6), so for a frame
+   by up to about 4 hi-res pixels at either edge (independent hazard audit of the pre-rewrite kernel), so for a frame
    or two while a sprite crosses an edge the shipped renderer stores its edge pixels into the
    previous row's right end, the next row's left end, or the pad. Requirement 8's exact clipping
    cannot reproduce this. Resolution as for F1: the classifier in S0.7 must attribute every such
@@ -299,10 +299,10 @@ non-zero, or the run fails. `-t 1 -perftest` is the deterministic condition (`ma
 In-game: the 2-second report (`main.cpp:692-720`) `SPRITES` column from `prof_ns_sprites`
 (`video.cpp:257`). Add, under `CB_SPRITE_STATS`, `Video::prof_spr_px` (output pixels visited: for
 each replayed destination row the clipped row extent `min(row_end, cx1) - max(0, cx0)`; the shipped
-counter of `MEASURED_INSITU_SPRITE.md` counted DDA iterations, close but not identical - re-baseline
+counter of `PERFORMANCE_MEASUREMENTS.md` campaign 3 counted DDA iterations, close but not identical - re-baseline
 once with `SPRITE_REF_PX` instrumented the same way) and print px/frame and cyc/px in the report so
 windows can be banded as typical (60-100K), moderate (150-300K), extreme (>300K). Optional
-`CB_SPRITE_PMU` (Linux only) opens the `perf_event_open` group of `MEASURED_INSITU_SPRITE.md`
+`CB_SPRITE_PMU` (Linux only) opens the `perf_event_open` group of `PERFORMANCE_MEASUREMENTS.md` campaign 3
 (cycles, 0x03, 0x17, 0xE8) around the render call. Procedure per stage: `sl-d303`, governor
 `performance`, `vcgencmd get_throttled` 0x0, shipping config (hi-res, Blargg on, `-60 -t 4`),
 two 300-s attract captures, medians per band, before and after.
@@ -339,7 +339,7 @@ record: `parse_record`; if `ydelta == -1 || zoom < SPR_FAST_ZOOM_MIN || pend > S
 `draw_sprite_px` (fallback; `stat_fallback++`, expected 0 in-game: `set_hrender` forces bit 15
 (`osprites.cpp:1020`), no table zoom is below 0x100 raw), else `draw_sprite_fast`. `pend <= 0` skips.
 `init` calls `set_x_clip(false)` after conversion so `x1`/`x2` are never uninitialised
-(`FABLE_ASSESSMENT.md` 6). `reset` clears only `ram`/`ramBuff`.
+(independent hazard audit of the pre-rewrite kernel). `reset` clears only `ram`/`ramBuff`.
 
 **Schedule table.** `const uint8_t* sched(uint32_t zoom)` returns `run[SPR_SCHED_LEN]` for the
 effective (post-halving) zoom, built on first use by the reference accumulator exactly as `221-232`
@@ -439,7 +439,7 @@ overruns into the pad).
 at typical load means the model is wrong; stop and re-measure. Expected 1.6-1.9x in-game (bench
 2.0x minus the common memory term). D/D' decision: two 300-s runs per mode, compare the extreme
 band ms/frame and 0xE8; ship the lower extreme-band figure as the default `replay_mode`, keep the
-other behind the flag. Colour-span `cb_prefetch_w` of the next destination row (`DESIGN_REVIEW_BANDWIDTH.md`
+other behind the flag. Colour-span `cb_prefetch_w` of the next destination row (in-situ bandwidth review,
 section 7 item 6) is a third switch measured the same way; keep it only if 0xE8 and ms both fall.
 
 ### S1.6 Dependencies
@@ -536,7 +536,7 @@ Prefetch: at the top of `replay(j, da, db)`, for every SHADOW record with non-em
 `[lo, hi)`, for `d` in `[db, min(db + SPR_SHADOW_PF_ROWS*(db - da), d_hi))`, `cb_prefetch_w` on every
 64-byte line of `row(d) + lo .. row(d) + hi` (`PRFM PSTL1KEEP`; `__builtin_prefetch(p, 1, 3)`; no-op on
 MSVC). This covers the next two source rows' shadow spans, which lie at nearly the same `x`, with
-roughly two rows of decode time (`DESIGN_REVIEW_BANDWIDTH.md` section 4, amendment 2).
+roughly two rows of decode time (in-situ bandwidth review, amendment 2).
 
 ### S3.3 Must not change
 
@@ -692,9 +692,9 @@ S1 (S4b's word classes apply to the magnify path only; S5 has its own loop).
    does not read except `offset`.
 4. Finalise flags: `-noglow`/`-glow`, `-spritereplay`, and drop `SPRITE_REF_PX` from the release
    binary (keep the option). Restore the `PIXEL_ACCURACY` CMake help text to the truth.
-5. `sched_tab` static vs per-sprite generation: a tie (`DESIGN_REVIEW_BANDWIDTH.md` section 5); revisit
+5. `sched_tab` static vs per-sprite generation: a tie (in-situ bandwidth review); revisit
    only if 0x17 shows schedule-table misses in `bench`.
-6. Update `PROBLEM_STATEMENT.md` section 11a and `COMPARISON.md` section 4 with F1 and the resolved
+6. Update `../README.md` (which absorbed `PROBLEM_STATEMENT.md` and `COMPARISON.md`) with F1 and the resolved
    `PIXEL_ACCURACY` state.
 
 ### S6.2 Test and measure

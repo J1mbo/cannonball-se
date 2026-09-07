@@ -112,12 +112,16 @@ void hwsprites::init(const uint8_t* src_sprites)
                          ((uint32_t)d3 <<  0);
         }
     }
-    // SPRITE_IMPLEMENTATION_SPEC.md S1.2 (FABLE_ASSESSMENT.md 6): x1/x2 had
-    // no in-class initialiser and no caller was guaranteed to set them
-    // before the first render(); the real game calls Video::set_video_mode
-    // (which sets config.s16_width) before sprite_layer->init() (video.cpp),
-    // so config.s16_width is already valid here -- default to the full-width
-    // clip window so x1/x2 are never read uninitialised.
+    // SPRITE_IMPLEMENTATION_SPEC.md S1.2: x1/x2 had no in-class initialiser
+    // and no caller was guaranteed to set them before the first render() --
+    // an independent hazard audit of the pre-rewrite kernel flagged exactly
+    // this gap (alongside the 3-row-group redraw and the unsupported
+    // ydelta==-1 case) since nothing in the constructor or any caller
+    // enforced set_x_clip() running first. The real game calls
+    // Video::set_video_mode (which sets config.s16_width) before
+    // sprite_layer->init() (video.cpp), so config.s16_width is already
+    // valid here -- default to the full-width clip window so x1/x2 are
+    // never read uninitialised.
     set_x_clip(false);
 }
 
@@ -635,9 +639,12 @@ void hwsprites::replay_k(const SpriteCtx& c, int32_t nrec, int32_t da, int32_t d
     // SPRITE_IMPLEMENTATION_SPEC.md S3.2: shadow-destination prefetch, up to
     // SPR_SHADOW_PF_ROWS destination-row-groups' worth ahead of this one, at
     // this row's own SHADOW spans' x-range -- consecutive source rows lie at
-    // nearly the same x (DESIGN_REVIEW_BANDWIDTH.md section 4, amendment 2:
-    // a plain one-row-ahead prefetch undersizes a 200-250 cycle miss under
-    // bus contention; two rows' worth of decode time covers it). Issued
+    // nearly the same x. A plain one-row-ahead prefetch undersizes a 200-250
+    // cycle miss under bus contention (an in-situ bandwidth review found a
+    // cold line under load costs ~200-250 cycles, against ~200-300 cycles of
+    // cover from one row of a typical shadow span at this kernel's per-pixel
+    // rate -- borderline); two rows' worth of decode time reliably covers
+    // it instead. Issued
     // before any of this row's own RMW work below, for the longest possible
     // head start; touches nothing (cb_prefetch_w only, PRFM PSTL1KEEP /
     // __builtin_prefetch(p,1,3), a no-op on MSVC), and is bounds-checked
