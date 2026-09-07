@@ -20,6 +20,7 @@
 #include <iostream>
 #include <mutex>
 #include "rendersurface.hpp"
+#include "shadow_mask_bake.hpp"
 #include "frontend/config.hpp"
 #include "main.hpp"   // frame-dump command-line option (cannonball::dump_*)
 // Aligned Memory Allocation (standard C++17)
@@ -105,6 +106,7 @@ bool RenderSurface::init(int source_width, int source_height,
 
     // call other initialisation routines
     init_overlay();       // CRT curved edge mask (applied as a mask by GPU rendering)
+    init_shadow_mask();   // CRT shadow-mask weight pattern (sampled by the shader on unit 2)
     create_buffers();     // used for working space processing image from [game output]->[blargg-filtered]->[renderer input]
     FrameCounter = 0;
     last_config  = 0;
@@ -897,6 +899,26 @@ void RenderSurface::init_overlay()
 }
 
 
+void RenderSurface::init_shadow_mask()
+{
+    // Bakes w = condA * (1 - extraMask) - the {0,1} shadow-mask weight the shaders' fastmask()
+    // used to compute per fragment - for every output pixel into the 8-bit texture on sampler
+    // unit 2 (see tools/SHADOW_MASK_BAKE_LLD.md). The pattern depends only on dst_rect (fixed
+    // until the next video restart, which re-runs init()) and on the effective pitch
+    // max(3, config.video.mask_size). It does NOT depend on shadow_mask, maskDim or maskBoost -
+    // those stay in the baseOff/baseOn uniforms - so toggling the mask or changing its intensity
+    // never re-bakes. Called from init() and, on a mask_size change, once from finalize_frame().
+    // Caller holds gpuMutex. Transient cost: one W*H byte buffer (1.25 MiB at 1280x1024,
+    // 1.98 MiB at 1920x1080) and one glTexSubImage2D of the same size.
+    const int W = dst_rect.w;
+    const int H = dst_rect.h;
+    const int P = shadow_mask::effective_pitch(config.video.mask_size);  // read the CURRENT value each bake
+    std::vector<uint8_t> a8((size_t)W * (size_t)H);
+    shadow_mask::bake(a8.data(), W, H, P);
+    glb::update_mask_texture(a8.data(), /*pitchBytes*/ W, W, H);
+    last_mask_size_config = P;   // one-shot guard for finalize_frame()
+}
+
 
 long RenderSurface::get_video_config() {
     return                ( config.video.hires          +
@@ -1026,6 +1048,15 @@ bool RenderSurface::finalize_frame()
         // 2. The CRT shape setting has been changed, or
         // 3. The warp settings have been changed.
         init_overlay();
+    }
+
+    // Re-bake the shadow-mask weight pattern only when its one input changes: mask_size, which
+    // the menu cycles 3->4->5->6->3 live (menu.cpp:849-859) with NO video restart. A dedicated
+    // compare, not get_video_config(): that hash also moves on brightboost/maskDim/maskBoost/...
+    // which must not trigger a full-screen re-bake (dim/boost/on-off are uniform-only).
+    // One-shot per change: init_shadow_mask() updates last_mask_size_config.
+    if (shadow_mask::effective_pitch(config.video.mask_size) != last_mask_size_config) {
+        init_shadow_mask();
     }
 
     /* == blit the game image. This processes it with the shader into the configured target buffer == */

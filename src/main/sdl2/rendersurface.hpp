@@ -73,6 +73,7 @@ private:
     void set_scaling();
     bool init_sdl(int video_mode);
     void init_overlay();
+    void init_shadow_mask();   // bakes the CRT shadow-mask weight pattern (unit 2)
     long get_video_config();
     int  get_blargg_config();
     void blargg_filter(uint16_t* pixels, uint32_t* outputPixels, int section);
@@ -122,6 +123,7 @@ private:
     long last_config           = 0;
     int  last_vignette         = 0;
     int  last_crt_shape_config = 0;
+    int  last_mask_size_config = 0;   // effective pitch max(3, mask_size) of the pattern currently uploaded
 
     // and module status
     bool initialised        = false;

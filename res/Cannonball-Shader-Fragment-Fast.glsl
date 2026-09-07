@@ -3,7 +3,7 @@ precision mediump float;
 /* ---------------------------------------------------------------------------- */
 /*                                                                              */
 /* Super-Lightweight Pixel shader for Cannonball, by James Pearce,              */
-/* Copyright (c) 2025.                                                          */
+/* Copyright (c) 2025, 2026.                                                    */
 /*                                                                              */
 /* Provides processing to provide a game image that looks broadly like it's on  */
 /* on real CRT, when combined with Blargg filtering, which is done CPU side.    */
@@ -24,8 +24,8 @@ precision mediump float;
 /* Inputs from Vertex Shader */
 uniform sampler2D Texture;
 uniform sampler2D Overlay;
+uniform sampler2D ShadowMask;   // baked {0,1} mask weight, one texel per output pixel (unit 2)
 varying vec2 v_texCoord;
-varying vec2 maskpos;
 
 
 /* Inputs from Application */
@@ -83,26 +83,16 @@ vec2 Warp(vec2 pos)
 
 
 // ------------------------------------------------------------------------
-// CRT ShadowMask function. Creates an effect similar to an arcade monitor.
+// CRT ShadowMask. The {0,1} pattern weight is pre-baked per output pixel into the
+// ShadowMask texture (NEAREST, one texel per pixel, sampled at the unwarped screen UV -
+// see tools/SHADOW_MASK_BAKE_LLD.md). Dim/boost stay here as uniforms; the luminance
+// wash-out is applied by the caller.
 // ------------------------------------------------------------------------
 
 mediump vec3 fastmask()
 {
-    mediump vec2 mpos = floor(maskpos);
-
-    // Compute both x fracts together to limit temporaries
-    mediump vec2 mx = fract(mpos.xx * vec2(invMaskPitch, inv2MaskPitch));
-    mediump float my = fract(mpos.y * inv2Height);
-
-    mediump float condA = step(0.02, mx.x);
-    mediump float condB = step(0.5,  mx.y);
-
-    // Vertical windows matching the original
-    mediump float v0    = 1.0 - step(0.02, my);                 // near 0
-    mediump float vhalf = 1.0 - step(0.02, abs(my - 0.5));      // near 0.5
-    mediump float extraMask = mix(v0, vhalf, condB);
-
-    mediump float base = mix(baseOff, baseOn, condA * (1.0 - extraMask));
+    mediump float w    = texture2D(ShadowMask, v_texCoord).r;   // exactly 0.0 or 1.0
+    mediump float base = mix(baseOff, baseOn, w);
     return vec3(base);
 }
 

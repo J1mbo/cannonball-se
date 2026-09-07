@@ -2,7 +2,7 @@
 // Minimal OpenGL ES 2.0 backend for CannonBall-SE.
 // Header-only. Uses SDL2 to create the context and <SDL_opengles2.h> for GL.
 // Link with -lSDL2 -lGLESv2 on Linux/Raspberry Pi.
-// Copyright (c) 2025, James Pearce.
+// Copyright (c) 2025, 2026, James Pearce.
 //
 // Overlay textures are applied as 8-bit (1 byte/pixel) alpha masks.
 // 0xFF = transparent and 0x0 = fully black.
@@ -215,6 +215,8 @@ struct State {
     GLuint texOverlay = 0;       // overlay (sampler unit 1)
     GLuint texWhite  = 0;        // 1x1 white (neutral overlay)
     bool   overlayReady = false;
+    GLuint texMask = 0;          // baked shadow-mask weight, GL_LUMINANCE 8-bit at dst_rect size (sampler unit 2)
+    int    maskW = 0, maskH = 0; // allocated storage of texMask
 
     // Optional offscreen
     GLuint fbo = 0;
@@ -324,6 +326,10 @@ inline void loadShaders(const char* vertexSrc, const char* fragmentSrc)
     if (GLint s1 = glGetUniformLocation(G.program, "uTex1");    s1 >= 0) glUniform1i(s1, 1);
     if (GLint o  = glGetUniformLocation(G.program, "Overlay");  o  >= 0) glUniform1i(o,  1);
 
+    // Bind the baked shadow-mask sampler to unit 2 (absent from the default pass-through program)
+    if (GLint s2 = glGetUniformLocation(G.program, "uTex2");      s2 >= 0) glUniform1i(s2, 2);
+    if (GLint m  = glGetUniformLocation(G.program, "ShadowMask"); m  >= 0) glUniform1i(m,  2);
+
     // Only discover locations here; set pointers later in draw(), guarded by >= 0
     resolveAttribs(G.program, G.locPos, G.locUV);
 }
@@ -397,6 +403,21 @@ inline bool init(SDL_Window* window,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     const GLubyte kWhitePixel[4] = {255,255,255,255};
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, kWhitePixel);
+
+    // Shadow-mask weight texture (sampler unit 2). Same geometry and filtering as the overlay:
+    // one texel per output pixel, NEAREST, CLAMP_TO_EDGE, GL_LUMINANCE (replicated to RGB, A=1).
+    // Contents are undefined until update_mask_texture(); RenderSurface::init() bakes before
+    // the first draw (see tools/SHADOW_MASK_BAKE_LLD.md section 5).
+    glGenTextures(1, &G.texMask);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, G.texMask);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, overlayW, overlayH, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, nullptr);
+    G.maskW = overlayW; G.maskH = overlayH;
+    glActiveTexture(GL_TEXTURE0);
 
     // Optional off-screen
     if (createOffscreen) {
@@ -608,6 +629,23 @@ inline void clear_overlay_texture(){
 }
 
 
+// Upload the full-size shadow-mask weight pattern (one byte per output pixel: 0 or 255, row 0 =
+// top). Uses the same GL_LUMINANCE / UNPACK_ALIGNMENT=1 path as A8 overlays (upload_alpha8 binds
+// the texture on the *active* unit, hence the glActiveTexture first - as update_overlay_texture).
+inline void update_mask_texture(const void* pixels, int pitchBytes, int w, int h) {
+    glActiveTexture(GL_TEXTURE2);
+    if (w != G.maskW || h != G.maskH) {
+        // Defensive: storage must match (glTexSubImage2D cannot grow it). Not expected to trigger:
+        // dst_rect only changes through init(), which re-allocates.
+        glBindTexture(GL_TEXTURE_2D, G.texMask);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, w, h, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, nullptr);
+        G.maskW = w; G.maskH = h;
+    }
+    upload_alpha8(G.texMask, GL_LUMINANCE, pixels, pitchBytes, w, h);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+
 // Uniform helpers (main program)
 inline GLint uget(const char* name){
     if (G.ucache_program != G.program) { G.ucache.clear(); G.ucache_program = G.program; }
@@ -648,6 +686,8 @@ inline void draw(bool useOffscreen, bool drawOverlay) {
         // Neutralize overlay during offscreen subpass
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, G.texWhite);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, G.texMask);   // always the baked pattern; texWhite is NOT a neutral mask
         glActiveTexture(GL_TEXTURE0);
         glBindBuffer(GL_ARRAY_BUFFER, G.vbo);
         if (G.locPos >= 0) {
@@ -673,6 +713,8 @@ inline void draw(bool useOffscreen, bool drawOverlay) {
         // Bind overlay (or white) for single-pass multiply
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, (drawOverlay && G.overlayReady) ? G.texOverlay : G.texWhite);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, G.texMask);   // always the baked pattern; texWhite is NOT a neutral mask
         glActiveTexture(GL_TEXTURE0);
         glBindBuffer(GL_ARRAY_BUFFER, G.vbo);
         if (G.locPos >= 0) {
@@ -698,6 +740,8 @@ inline void draw(bool useOffscreen, bool drawOverlay) {
         // Bind overlay (or white) for single-pass multiply
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, (drawOverlay && G.overlayReady) ? G.texOverlay : G.texWhite);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, G.texMask);   // always the baked pattern; texWhite is NOT a neutral mask
         glActiveTexture(GL_TEXTURE0);
         glBindBuffer(GL_ARRAY_BUFFER, G.vbo);
         if (G.locPos >= 0) {
@@ -723,6 +767,7 @@ inline void shutdown() {
     if (G.texWhite)   { glDeleteTextures(1, &G.texWhite);   G.texWhite = 0; }
     if (G.texGame)    { glDeleteTextures(1, &G.texGame); G.texGame = 0; }
     if (G.texOverlay) { glDeleteTextures(1, &G.texOverlay); G.texOverlay = 0; }
+    if (G.texMask)    { glDeleteTextures(1, &G.texMask); G.texMask = 0; G.maskW = G.maskH = 0; }
     if (G.texPass)    { glDeleteTextures(1, &G.texPass); G.texPass = 0; }
     if (G.program)    { glDeleteProgram(G.program); G.program = 0; }
 }

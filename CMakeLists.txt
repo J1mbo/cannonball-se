@@ -157,6 +157,7 @@ set(src_sdl
 
 set(src_render
     "${main_cpp_base}/sdl2/rendersurface.hpp"
+    "${main_cpp_base}/sdl2/shadow_mask_bake.hpp"
     "${main_cpp_base}/sdl2/rendersurface.cpp"
     )
 
