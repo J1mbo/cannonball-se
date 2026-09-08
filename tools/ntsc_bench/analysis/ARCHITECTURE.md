@@ -2,7 +2,7 @@
 
 Status: proposal, nothing implemented. Date: 2026-09-03.
 Inputs: ALGORITHM.md, GRAPHICS_SETUP.md, the (since-retired) idea-shortlist and review notes,
-the sl-d303 measurements in README.md, and the captured frames in `frames/`.
+the test mule measurements in README.md, and the captured frames in `frames/`.
 
 ## 1. Design goals
 
@@ -182,7 +182,7 @@ tables.
 - Bit-exactness: every stage is compared to `_fast` at 086591c with the bench checksums on
   random 256 and 65536 colours, the mixed pattern, and all 150 captured frames at all three
   phases. The scalar fallback of Part D must match too.
-- Performance: sl-d303, performance governor, pinned core, median of three, on random 256
+- Performance: test mule, performance governor, pinned core, median of three, on random 256
   colours (Part B) and on captured frames (Part C), one and two threads.
 - In game: the fps counter with `-perftest` on the Pi with hires and the composite filter.
 
@@ -262,7 +262,7 @@ numbers and rationale.
   (`snes_ntsc_simd.h`) and reused by every FLAT/general/tail emit path.
 - **Measured results vs. the estimates above.** Section 5's "15-20 issue cycles per output"
   and section 6's "10-15 cycles per output, 3.5-5 ms per frame" were pre-implementation
-  estimates. Measured (sl-d303, see README): Part B alone (random 256, no ladder shortcut
+  estimates. Measured (test mule, see README): Part B alone (random 256, no ladder shortcut
   available) is 40.4 cycles/output, not 15-20 - the general kernel is more expensive in
   practice than estimated, though still faster than scalar (56.3) and `_fast` (49.4). With
   the full ladder on real content (`--input`), `vec` lands at 9.26 ms/frame total (6.77 ms
@@ -578,7 +578,7 @@ filter's specific design choices.
 
 ### 16.1 Working-set sweep
 
-sl-d303, 640x448, 1 thread, performance governor, core 3, 2 s runs. ms per frame
+test mule, 640x448, 1 thread, performance governor, core 3, 2 s runs. ms per frame
 versus number of distinct colours N (table working set = N x 512 B):
 
 | N | 1 | 16 | 64 | 256 | 1024 | 4096 | 65536 |
@@ -596,7 +596,7 @@ NOT available on its kernel (`6.18.39+rpt-rpi-v8` has no
 
 ### 16.2 Page-spread vs cache-line experiment
 
-sl-d303, scalar `snes_ntsc_blit_hires` @ 086591c, 3 s runs, core 3, performance
+test mule, scalar `snes_ntsc_blit_hires` @ 086591c, 3 s runs, core 3, performance
 governor. `--palette contiguous` keeps exactly the same N table rows touched, with
 exactly the same RNG-driven pixel placement, as `--palette random` - only *where in
 the 32 MiB table* those N rows live changes: `random` scatters them pseudo-randomly

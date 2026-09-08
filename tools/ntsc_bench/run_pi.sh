@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage, ship, build and run ntsc_bench on the ARM test box (sl-d303).
+# Stage, ship, build and run ntsc_bench on the ARM test mule.
 #
 # Usage (run from WSL, from the repo root):
 #   tools/ntsc_bench/run_pi.sh <rev|WT> <function> [bench args...]
@@ -15,7 +15,7 @@
 #   tools/ntsc_bench/run_pi.sh WT snes_ntsc_blit_hires_vec --colours 65536 --threads 2
 #
 # --input handling: when the bench args include --input, the captured frames
-# in tools/ntsc_bench/frames/ are rsync'd once to sl-d303:~/ntsc_bench/frames/
+# in tools/ntsc_bench/frames/ are rsync'd once to $PI_HOST:~/ntsc_bench/frames/
 # (shared across revisions, not copied into every per-REV build dir), and a
 # --input value naming a local path under tools/ntsc_bench/frames (relative
 # to the repo root, or absolute) is rewritten to the equivalent path on the
@@ -33,7 +33,9 @@ REV="$1"; FN="$2"; shift 2
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STAGE_DIR="$REPO_ROOT/tools/ntsc_bench/stage/$REV"
 SRC_DIR="$REPO_ROOT/src/main/sdl2"
-PI_HOST="sl-d303"
+# ARM test mule to build and run on. Override without editing this file:
+#   PI_HOST=myhost tools/ntsc_bench/run_pi.sh ...
+PI_HOST="${PI_HOST:-test-mule}"
 PI_DIR="ntsc_bench/$REV"
 BIN="bench_$FN"
 FILES="snes_ntsc.cpp snes_ntsc.h snes_ntsc_config.h snes_ntsc_impl.h snes_ntsc_simd.h"

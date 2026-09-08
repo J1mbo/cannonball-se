@@ -13,7 +13,7 @@ dependency order (S0.10).
 
 Facts that are fixed and must not be re-derived:
 
-- Target Cortex-A53 AArch64 (Pi Zero 2 W `sl-d303`, Pi 3 `pi3`, Pi 2 v1.2 `pi2-local`). The tree
+- Target Cortex-A53 AArch64 (Pi Zero 2 W `test mule`, Pi 3 `pi3`, Pi 2 v1.2 `pi2-local`). The tree
   must also build on x86-64 GCC/Clang/MSVC and ARM without NEON. NEON is guarded by `CB_HAVE_NEON`
   from `hwarch.hpp:66-71` with a scalar fallback; `CB_FORCE_SCALAR` selects the fallback everywhere.
 - Frame buffer: 16-bit palette slots, `pixels` 64-aligned with a 64-halfword front pad and two spare
@@ -303,7 +303,7 @@ counter of `PERFORMANCE_MEASUREMENTS.md` campaign 3 counted DDA iterations, clos
 once with `SPRITE_REF_PX` instrumented the same way) and print px/frame and cyc/px in the report so
 windows can be banded as typical (60-100K), moderate (150-300K), extreme (>300K). Optional
 `CB_SPRITE_PMU` (Linux only) opens the `perf_event_open` group of `PERFORMANCE_MEASUREMENTS.md` campaign 3
-(cycles, 0x03, 0x17, 0xE8) around the render call. Procedure per stage: `sl-d303`, governor
+(cycles, 0x03, 0x17, 0xE8) around the render call. Procedure per stage: `test mule`, governor
 `performance`, `vcgencmd get_throttled` 0x0, shipping config (hi-res, Blargg on, `-60 -t 4`),
 two 300-s attract captures, medians per band, before and after.
 

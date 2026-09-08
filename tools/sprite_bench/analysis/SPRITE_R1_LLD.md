@@ -388,7 +388,7 @@ builds at `-O2` where the heuristics are stricter still.
 MIXED 8x12, head/classify ~40) = ~0.7 KB; replay ~215 instructions (prefetch scan, record loop,
 NEON copy + ladder, glow, shadow) = ~0.9 KB; loop ~0.2 KB; total ~1.8 KB. R1a: one copy, ~1.8 KB.
 R1b: five copies, ~9 KB, of which a hi-res frame touches four (~7 KB). L1I is 32 KB on the A53
-(`MICROARCH_A7_A53.md`, `sl-d303` notes); the tile/road renderers and NTSC filter run in other
+(`MICROARCH_A7_A53.md`, `test mule` notes); the tile/road renderers and NTSC filter run in other
 phases of the frame, so the sprite hot set has the cache to itself but the A53's simple front-end
 is sensitive to footprint. R1a is measured on its own precisely so R1b's growth is attributable;
 the fallback if R1b's light band does not beat R1a's is to drop `always_inline` from `replay_k`
@@ -625,7 +625,7 @@ void hwsprites::draw_sprite_fast(const SpriteRec& r, uint16_t* pixels, int32_t p
 
 Harness (sec. 7.1) green on both driver targets, WSL x86-64 and an ARM box; S0.8 (sec. 7.2);
 codegen checks of 3.1-3.6 (sec. 7.3); in-situ (sec. 7.4) **<= 1.00x shipped in every band** on
-`pi2-local`, `sl-d303` as cross-check. If R1a lands above parity, do not re-plan: R1b's fill
+`pi2-local`, `test mule` as cross-check. If R1a lands above parity, do not re-plan: R1b's fill
 change is the next lever and its gate is the binding one.
 
 ---
@@ -808,7 +808,7 @@ HEAD `ld1`/`st1` pair pattern.
 
 ### 4.4 D vs D'
 
-**Compiled default: D (`replay_mode = 0`).** Measured: D won on `sl-d303`, D' edged D by 2.1% on
+**Compiled default: D (`replay_mode = 0`).** Measured: D won on `test mule`, D' edged D by 2.1% on
 `pi2-local` (`PERFORMANCE_MEASUREMENTS.md` campaign 5, 1.231 vs 1.205 overall) -- inside SKU variance, and both
 measurements were taken with the `n < 8` path calling `memcpy` per row, which is where D' had
 its edge (its scalar path had no libc call). The R1b ladder removes that asymmetry for `n < 8`
@@ -1123,7 +1123,7 @@ subject to these checks.
 
 ### 7.4 In-situ (the campaign 5 / campaign 6 procedure of `PERFORMANCE_MEASUREMENTS.md`)
 
-Deciding box `pi2-local` (Pi 2 v1.2, A53, 900 MHz fixed, heatsinked); cross-check `sl-d303`
+Deciding box `pi2-local` (Pi 2 v1.2, A53, 900 MHz fixed, heatsinked); cross-check `test mule`
 (Zero 2 W, 1 GHz, `-j1` builds, stop `autostream autostream_monitor owntone vibra-mini` first).
 
 1. `echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`; log

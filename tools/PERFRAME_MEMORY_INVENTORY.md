@@ -21,7 +21,8 @@ buys general 60fps headroom. The two efforts stack.
 contention (output-identical)") implements all five items below. They are retained here as
 the record of what was changed and why, not as outstanding work.
 
-Tiers 2 and 3 remain open. Treat this file as a backlog for that work.
+Tiers 2 and 3 remain open. Treat this file as a backlog for that work; it is indexed
+from `tools/BACKLOG.md` alongside the other open items.
 
 ## Tier 1 - SHIPPED in c94f086
 

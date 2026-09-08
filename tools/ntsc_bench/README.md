@@ -70,7 +70,7 @@ tools/ntsc_bench/run_host.sh WT      snes_ntsc_blit_hires_vec  --pattern random 
 
 All four must (and do) reproduce the checksums above for the inputs they share.
 
-**Pi timings** (sl-d303, `--seconds 5`, median of 3, performance governor, pinned core 3) -
+**Pi timings** (test mule, `--seconds 5`, median of 3, performance governor, pinned core 3) -
 `vec` (Stage 4, default mask) vs. the retired `_fast` and scalar, on the four inputs that
 matter (random 256 = raw kernel cost floor, mixed/runs = synthetic ladder exercise, `--input`
 = real game content, the corpus the whole ladder is designed around):
@@ -221,7 +221,7 @@ every frame - unless `--input` is given (see below).
 Driver scripts (run from WSL, from the repo root):
 
 ```sh
-tools/ntsc_bench/run_pi.sh   <rev|WT> <function> [bench args...]  # sl-d303 (ARM)
+tools/ntsc_bench/run_pi.sh   <rev|WT> <function> [bench args...]  # test mule (ARM)
 tools/ntsc_bench/run_host.sh <rev|WT> <function> [bench args...]  # WSL host (x86)
 ```
 
@@ -307,7 +307,7 @@ identical per-pixel math produces a different byte stream.
 above (different blitter, different geometry) - it exists to regress the
 lores path in later stages once it's touched by the re-architecture.
 
-## Ladder-level experiment (`SNES_NTSC_LADDER_MASK`, sl-d303, `--seconds 5`, median of 3)
+## Ladder-level experiment (`SNES_NTSC_LADDER_MASK`, test mule, `--seconds 5`, median of 3)
 
 `run_pi.sh` now passes `BENCH_CXXFLAGS` through exactly like `run_host.sh`
 (e.g. `BENCH_CXXFLAGS=-DSNES_NTSC_LADDER_MASK=1 tools/ntsc_bench/run_pi.sh WT

@@ -144,7 +144,8 @@ bit-identical and that claim has to be checkable.
 
 ## 4. Outstanding: free CPU wins, bit-identical
 
-Two of the three are **not implemented**; the third has since landed. They are
+Two of the three are **not implemented** (tracked in `tools/BACKLOG.md`); the third has
+since landed. They are
 worthwhile regardless of scheduling, help the A53 identically, and cannot change output.
 
 **F1.1 — inline `read_buffer`/`write_buffer`** (`soundchip.cpp:57-66`). Move them to the header as

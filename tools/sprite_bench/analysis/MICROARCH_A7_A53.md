@@ -8,7 +8,7 @@ where the destination usually misses in cache.
 
 Targets: Cortex-A7 (Raspberry Pi 2 v1.1, ARMv7-A, 32-bit `armhf`) and Cortex-A53
 (Raspberry Pi 3 / Pi Zero 2 W). Per this repo's test mules, the A7 box builds 32-bit
-ARMv7 code and the A53 box (`sl-d303`) builds **AArch64** (`-march=native` →
+ARMv7 code and the A53 box (`test mule`) builds **AArch64** (`-march=native` →
 `-mcpu=cortex-a53+crc`). So this is a two-ISA comparison, not one ISA at two speeds: A7
 only ever runs AArch32/ARMv7-A NEON, A53 here runs AArch64/ARMv8-A NEON.
 

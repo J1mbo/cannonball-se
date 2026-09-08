@@ -98,14 +98,14 @@ than 1400MHz during actual gameplay, so all wall-clock figures taken under load 
 whole-game frame rates) on this board are unreliable by roughly 2x. The idle-bench
 cycle counts themselves are frequency-independent and are not affected. All later
 in-game measurements in this document were retaken on properly-powered boards
-(`sl-d303`, `pi2-local`) for exactly this reason.
+(`test mule`, `pi2-local`) for exactly this reason.
 
-### Part B: in-situ measurement under real concurrent load (same date, `sl-d303`)
+### Part B: in-situ measurement under real concurrent load (same date, `test mule`)
 
 The synthetic thrasher above is one thread doing strided read-modify-write over 16MB;
 real gameplay is heavier and differently shaped (game logic, two NTSC/RGB conversion
 threads, audio, and GPU compositing, all sharing one 512KB L2 and one memory bus), so
-the sprite pass was timed inside the running game. Machine: `sl-d303`, Pi Zero 2 W,
+the sprite pass was timed inside the running game. Machine: `test mule`, Pi Zero 2 W,
 4x Cortex-A53 at 1.0GHz, governor `performance`, `throttled=0x0` throughout (properly
 powered, unlike the Pi 3 A+ above). Hi-res 640x448, Blargg NTSC filter on, widescreen
 off, attract mode, headless KMSDRM. Instrumentation: three clock reads per frame around
@@ -155,9 +155,9 @@ road/tiles optimisation effort recorded in `ROAD_TILE_RENDERER.md`.
 
 ---
 
-## Campaign 2: prepare-thread phase profile (2026-09-04, `sl-d303`)
+## Campaign 2: prepare-thread phase profile (2026-09-04, `test mule`)
 
-**Machine/method:** `sl-d303`, Pi Zero 2 W, 4x Cortex-A53 @ 1.0GHz, governor
+**Machine/method:** `test mule`, Pi Zero 2 W, 4x Cortex-A53 @ 1.0GHz, governor
 `performance`, `throttled=0x0` before/after every run. Hi-res 640x448, widescreen off,
 Blargg NTSC + full CRT shader, audio on, attract mode, headless KMSDRM. Eight clock
 reads per frame around the individual calls in `Video::prepare_frame()`, splitting the
@@ -226,9 +226,9 @@ built from it.
 
 ---
 
-## Campaign 3: pre-rewrite memory-behaviour study, M-A/M-B/M-C (2026-09-05, `sl-d303`)
+## Campaign 3: pre-rewrite memory-behaviour study, M-A/M-B/M-C (2026-09-05, `test mule`)
 
-**Machine/method:** `sl-d303`, Pi Zero 2 W, 4x Cortex-A53 @ 1.0GHz, governor
+**Machine/method:** `test mule`, Pi Zero 2 W, 4x Cortex-A53 @ 1.0GHz, governor
 `performance`, `throttled=0x0` verified before every run. Hi-res, widescreen off,
 Blargg filter, full CRT shader, audio on, attract mode, `-60 -t 4`. Run **before any
 rewritten renderer code was written**, against the shipped (pre-LINEBUF) kernel, to fix
@@ -317,9 +317,9 @@ these windows (0% elsewhere), confirming real load rather than noise.
 
 ---
 
-## Campaign 4: S1 (LINEBUF) in-situ regression (2026-09-05, `sl-d303`)
+## Campaign 4: S1 (LINEBUF) in-situ regression (2026-09-05, `test mule`)
 
-**Machine/method:** `sl-d303`, Pi Zero 2 W, 4x Cortex-A53 @ 1.0GHz, governor
+**Machine/method:** `test mule`, Pi Zero 2 W, 4x Cortex-A53 @ 1.0GHz, governor
 `performance`, `throttled=0x0` verified before/after every run. Clean `git archive`
 exports of commit `bdf7e9b` (shipped) and `24b8aac` (S1/LINEBUF), each instrumented
 with a per-pixel counter and cyc/px reporting, run as three independent 240s `-60 -t 4`
@@ -363,7 +363,7 @@ scenes get busier (the regime that matters most for frame budget).
 aarch64, NEON active), ARM clock fixed 900MHz, governor `performance`,
 `throttled=0x0` before/after every run, peak 66.1°C (chosen specifically to test
 whether campaign 4's regression was a thermal artifact of the heatsink-less
-`sl-d303`). `prof_ns_sprites` already exists per-frame in `video.cpp`, so only a
+`test mule`). `prof_ns_sprites` already exists per-frame in `video.cpp`, so only a
 throwaway windowed-cumulative-time harness was added, identical across three clean
 `git archive` trees (shipped `bdf7e9b`; S1 scalar `24b8aac`; S4 NEON span-replay
 `73dc0c1`), four 9000-frame `-60 -t 4` attract captures.
@@ -388,7 +388,7 @@ Load-resolved (terciles by shipped per-frame sprite cost):
 
 **Verdict A — thermal test: the S1 regression is real, not a thermal artifact.**
 S1/shipped is 1.29-1.39x on `pi2-local` at 64-66°C with `throttled=0x0` throughout,
-reproducing (slightly exceeding) the `sl-d303` finding — not caused by a missing
+reproducing (slightly exceeding) the `test mule` finding — not caused by a missing
 heatsink; inherent to the LINEBUF rewrite.
 
 **Verdict B — S4-NEON does not clear the shipped renderer.** S4-D is a +21-28%
@@ -401,15 +401,15 @@ load and narrows (but never closes) as scenes get busier — the signature of a 
 per-frame/per-sprite overhead that per-pixel copy work only amortises when there are
 many pixels. This pointed at the per-frame decode/classify recompute the rewrite does
 in place of the shipped renderer's cached side tables, and directly predicted
-campaign 6's finding. (Note: D' edges D here (1.205 vs 1.231), opposite to `sl-d303`
+campaign 6's finding. (Note: D' edges D here (1.205 vs 1.231), opposite to `test mule`
 where D won — immaterial to the decision since both regress, but shows the D/D' choice
 is not robust across A53 SKUs.)
 
 ---
 
-## Campaign 6: R0 attribution — where the S4 deficit actually goes (2026-09-05, `sl-d303`)
+## Campaign 6: R0 attribution — where the S4 deficit actually goes (2026-09-05, `test mule`)
 
-**Machine/method:** `sl-d303`, Pi Zero 2 W, 4x Cortex-A53, governor `performance`
+**Machine/method:** `test mule`, Pi Zero 2 W, 4x Cortex-A53, governor `performance`
 verified pinned immediately before the run set (all four cores fixed at 1,000,000kHz).
 GCC 14.2.0, `-j1` sequential builds (512MB RAM). Two throwaway instrumentation layers:
 a windowed harness (`src/main/main.cpp`) logging cumulative `prof_ns_sprites` every 300
