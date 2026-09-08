@@ -51,10 +51,18 @@ and at every `SNES_NTSC_LADDER_MASK` value (0/1/2/3/7):
 | `--pattern random --colours 65536` | `0x50df72f5a78f9e6d` **(no longer reproducible - see note)** |
 | `--pattern mixed --colours 256` | `0x2921e1e8ab232056` |
 | `--pattern runs --colours 256` | `0x0f9860292b10dd73` |
-| `--input tools/ntsc_bench/frames` (24 captured frames, all 3 phases) | `0xe3557fa06310379d` |
+| `--input tools/ntsc_bench/frames` (24 captured frames, all 3 phases) | `0xe12371d9049c3d61` |
 | `--width 808 --pattern random --colours 256` | `0xea6c5d4426a031f3` |
 | `--threads 2` (any of the above) | same as `--threads 1` |
 | `--lores` (unaffected by every stage; regression-only) | `0x18b1960769cc63dd` |
+
+The captured-frame corpus is **not distributed** - the frames are rendered OutRun graphics
+and so are SEGA's copyright, exactly like the ROMs. Regenerate it from your own revision B set
+with `tools/ntsc_bench/capture_frames.sh`, which verifies the result against the committed
+per-frame reference list `frames/frames.sha256`. That list and the checksum above were produced
+at commit `180c093` and confirmed byte-identical on x86-64 and 32-bit ARMv7 (Cortex-A7).
+Deliberate changes to engine output re-baseline them - `0xe3557fa06310379d` was the value before
+`7100ec0` restored exact ROM sprite sizes.
 
 Two caveats on this table, both verified 2026-09-08:
 
@@ -292,6 +300,13 @@ modes, always present (0/off by default, like `hugepages`):
 The bench clears `merge_fields` exactly as `RenderSurface::init_blargg_filter()` does.
 Earlier runs (before 2026-09-02 evening) used the raw preset, whose literal has
 `merge_fields = 1`, so their checksums differ from the ones below. Timings are unaffected.
+
+**This table is a historical record of the Stage 3/4 rework (2026-09-03) and is not
+reproducible at HEAD.** "working tree" means the tree as it stood then, and its captured-frame
+column is the pre-`7100ec0` corpus (`0xe3557fa06310379d`); today's corpus checksums
+`0xe12371d9049c3d61`. The table is kept because it is the evidence for the `ROTATE_OUT_SSE4`
+diagnosis below, not as a gate to run. The runnable references are the ones at the top of this
+file.
 
 | Function (rev) | random, 256 colours | random, 65536 colours | mixed | 24 captured frames, host/SSE4 (`--input`) | 24 captured frames, Pi/NEON (`--input`) |
 |---|---|---|---|---|---|
