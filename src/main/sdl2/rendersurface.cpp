@@ -109,7 +109,13 @@ bool RenderSurface::init(int source_width, int source_height,
     init_shadow_mask();   // CRT shadow-mask weight pattern (sampled by the shader on unit 2)
     create_buffers();     // used for working space processing image from [game output]->[blargg-filtered]->[renderer input]
     FrameCounter = 0;
-    last_config  = 0;
+    // Force a full uniform re-push on the first finalize_frame after (re)init. A video restart
+    // rebuilds the GL context/program with all uniforms defaulted to 0 (and the shader does
+    // pCol *= brightboost), so we must never skip that first send. -1 can never equal a real
+    // get_video_config() sum (which is >= 0), guaranteeing the push regardless of whether the
+    // config actually changed across the restart.
+    last_config  = -1;
+    ticks        = 3;
 
     // signal to workers we're running (e.g. after a video restart)
     shutting_down.store(false, std::memory_order_release);
@@ -985,8 +991,11 @@ bool RenderSurface::finalize_frame()
 
     /* == Configure shader options ('uniforms') == */
 
-    static long last_config = 0;
-    static int  ticks = 3;
+    // last_config / ticks are RenderSurface members reset in init() - NOT function-statics.
+    // Function-statics survive a GL-context teardown/rebuild (disable()->init()) and would keep
+    // the pre-restart config value, so a restart that leaves get_video_config() unchanged would
+    // skip the mandatory uniform re-push against a freshly-linked (zero-uniform) program and
+    // render a permanently black frame.
     // check for any settings changes
     if (1)
     {

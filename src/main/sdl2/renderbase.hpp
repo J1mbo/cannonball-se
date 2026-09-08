@@ -20,6 +20,7 @@ class RenderBase
 {
 public:
     RenderBase();
+    virtual ~RenderBase() = default;   // deleted through RenderBase* in Video's dtor
 
     virtual bool init(int src_width, int src_height,
                       int scale,

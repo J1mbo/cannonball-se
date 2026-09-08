@@ -121,6 +121,7 @@ private:
     // keep track of UI settings changes
     int  last_blargg_config    = 0;
     long last_config           = 0;
+    int  ticks                 = 3;   // uniform re-push counter (member, not a function-static, so init() can reset it)
     int  last_vignette         = 0;
     int  last_crt_shape_config = 0;
     int  last_mask_size_config = 0;   // effective pitch max(3, mask_size) of the pattern currently uploaded
