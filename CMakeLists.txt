@@ -423,17 +423,26 @@ if(MSVC)
 else()
     target_compile_options(cannonball-se PRIVATE -Wall -Wextra -Wpedantic)
 
-    # Optimize Release builds aggressively (-Ofast) on GCC/Clang
+    # Optimize Release builds (-O3) on GCC/Clang. Deliberately NOT -Ofast: -Ofast implies
+    # -ffast-math, which changes floating-point results and would alter the NTSC filter's
+    # table generation (snes_ntsc_init) and the YM2151/SegaPCM float init tables. The
+    # NTSC/audio benches validated their output at -O3, not -Ofast, so -O3 is what keeps
+    # the shipped binary's float results matching what was actually checked.
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(cannonball-se PRIVATE $<$<CONFIG:Release>:-Ofast>)
+        target_compile_options(cannonball-se PRIVATE $<$<CONFIG:Release>:-O3>)
     endif()
 endif()
 
 # Debug builds
 # --- Debug hardening & sanitizers (GCC/Clang only) ------------------------------
-# No explicit -msse4.1 here: the SIMD code detects SSE4.1 at compile time via
-# __SSE4_1__ and falls back to an SSE2 path automatically.  Release builds with
-# WITH_MARCH_NATIVE=ON enable SSE4.1 on capable hosts through -march=native.
+# No explicit -msse4.1 here: the current hires blitter (snes_ntsc_blit_hires_vec(), see
+# src/main/sdl2/snes_ntsc_simd.h) uses a portable SIMD layer that never distinguishes an
+# SSE4.1-capable x86-64 host from a plain SSE2 one - it only needs baseline-SSE2 operations
+# (unaligned load, add/sub/and/or, shift-by-immediate), so it reports "SSE2" on every x86-64
+# host regardless of -march. (This differs from the retired snes_ntsc_blit_hires_fast()
+# per-ISA dispatch removed in NTSC Stage 4, which is what this comment used to describe.)
+# -march=native / WITH_MARCH_NATIVE=ON still matters for general -O3 autovectorization and
+# instruction scheduling/tuning on the build host - just not for SSE4.1-vs-SSE2 selection.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # Compile-time flags (Debug only)
   target_compile_options(cannonball-se PRIVATE
