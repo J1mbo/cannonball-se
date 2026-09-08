@@ -161,7 +161,7 @@ Developer-facing engineering notes live under [tools/](tools/).
 
 - **Upstream CannonBall licence** — non-commercial use; modified redistributions must include
   full source; warranty disclaimer. See [docs/license.txt](docs/license.txt).
-- **CannonBall-SE additional terms** — this fork's enhancements © 2020-2025 James Pearce;
+- **CannonBall-SE additional terms** — this fork's enhancements © 2020-2026 James Pearce;
   provided "as is"; not for sale or monetisation; preserve notices. See
   [docs/CannonBall-SE-license.txt](docs/CannonBall-SE-license.txt).
 - **Third-party components** — Blargg's `snes_ntsc` (LGPL-2.1), MAME's YM2151 core and
