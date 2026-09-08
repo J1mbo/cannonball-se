@@ -266,7 +266,7 @@ void RenderSurface::flush_ntsc_palette()
     // Small, fixed-size batches: gather up to this many dirty slots at a time and hand them
     // to snes_ntsc_update_slots() (which parallelises internally via OpenMP once a batch is
     // large enough). Sized comfortably above the worst per-frame case seen in the game
-    // (~128 slots during the sky-cycling Easter egg; see GRAPHICS_SETUP.md section 5).
+    // (~128 slots during the sky-cycling Easter egg; see tools/GRAPHICS_SETUP.md section 5).
     constexpr int kBatchSize = 512;
     int slots[kBatchSize];
     unsigned short colours[kBatchSize];

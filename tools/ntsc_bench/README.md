@@ -453,6 +453,6 @@ bench (see "Comparing against the pre-Stage-4 code" above).
   working-set/page-spread memory experiments (section 16).
 - `analysis/ALGORITHM.md` - the formal spec of the scalar filter's table layout, packed
   word format and closed-form output formula that every rewrite is checked against.
-- `analysis/GRAPHICS_SETUP.md` - the surrounding renderer/palette pipeline (slot
+- `../GRAPHICS_SETUP.md` - the surrounding renderer/palette pipeline (slot
   buffers, `convert_palette()`, palette-write frequency) that the slot-indexed table
   design depends on.

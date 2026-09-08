@@ -1,7 +1,7 @@
 # Proposed re-architecture of the hires NTSC filter
 
 Status: proposal, nothing implemented. Date: 2026-09-03.
-Inputs: ALGORITHM.md, GRAPHICS_SETUP.md, the (since-retired) idea-shortlist and review notes,
+Inputs: ALGORITHM.md, ../../GRAPHICS_SETUP.md, the (since-retired) idea-shortlist and review notes,
 the test mule measurements in README.md, and the captured frames in `frames/`.
 
 ## 1. Design goals
@@ -23,10 +23,10 @@ the test mule measurements in README.md, and the captured frames in `frames/`.
 | Wrap-around 32-bit adds, no saturating arithmetic | ALGORITHM.md 6.5 | partial sums can be precomputed and stay exact |
 | Scalar cost at 256 colours: 33 issue + 16 micro-TLB + 16 L2 cycles per output | README sweep, REVIEW addendum | need a cheaper kernel and page compaction and line reuse |
 | No transparent huge pages on the target | README | page compaction must be done by the table layout |
-| The emulator's frame buffer already holds slot indices 0..8191 | GRAPHICS_SETUP.md 6(a) | index the kernel table by slot; delete the per-frame colour conversion |
-| Palette writes go through `convert_palette()` for exactly two rows each | GRAPHICS_SETUP.md 6(b) | regenerate kernels per slot on palette write |
+| The emulator's frame buffer already holds slot indices 0..8191 | ../../GRAPHICS_SETUP.md 6(a) | index the kernel table by slot; delete the per-frame colour conversion |
+| Palette writes go through `convert_palette()` for exactly two rows each | ../../GRAPHICS_SETUP.md 6(b) | regenerate kernels per slot on palette write |
 | Real frames: ~100 colours, 65% uniform 6-pixel chunks, 91% identical even/odd pairs, 81% vertical repeats | frames/ statistics | specialise for pairs and runs; working set fits L1 |
-| Tiles, text, road background are 2x2 doubled; only road foreground and sprites are true hires | GRAPHICS_SETUP.md 4 | the pair kernel is the common path, not a special case |
+| Tiles, text, road background are 2x2 doubled; only road foreground and sprites are true hires | ../../GRAPHICS_SETUP.md 4 | the pair kernel is the common path, not a special case |
 
 ## 3. Architecture overview
 
