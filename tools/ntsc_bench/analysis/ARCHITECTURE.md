@@ -637,3 +637,52 @@ purely from being packed into fewer pages says a real share of the scalar filter
 stall time at these working sizes is page/TLB-spread overhead (TLB misses, page-table
 walks) rather than pure cache-line-fetch traffic - cache-line volume alone cannot
 explain the gap, since both modes fetch identical volume.
+
+---
+
+## 17. Reproducibility of the reference checksums
+
+The bench's `checksum` is bit-exact across machines and SIMD ISAs **for captured frame
+input**, which is what matters: it is the gate that proves the blitter's integer work is
+portable. It is *not* bit-exact for the synthetic patterns across builds, and the reason
+is worth recording because it looks alarming and is not a bug in the filter.
+
+### 17.1 Floating-point contraction changes the synthetic-pattern checksums
+
+Reproduced 2026-09-08 on x86-64 (GCC 13.3, current working tree, `snes_ntsc_blit_hires_vec`):
+
+| Build | random/256 | mixed/256 | runs/256 | captured frames |
+|---|---|---|---|---|
+| `-march=native` (reference) | `0x95f5c92e642a686f` | `0x2921e1e8ab232056` | `0x0f9860292b10dd73` | `0xe3557fa06310379d` |
+| `-march=x86-64` | `0xc928ffe2395b1fa7` | `0x0616580b4a8a3d6e` | `0xfead91f93878fb60` | `0xe3557fa06310379d` |
+| `-march=native -ffp-contract=off` | `0xc928ffe2395b1fa7` | — | — | `0xe3557fa06310379d` |
+
+Two things follow. First, **the captured-frame checksum is unaffected by any of it** — the
+blitter itself is bit-portable, which is the property the gate exists to prove. Second, the
+divergence is not SSE2-vs-SSE4 (every run above reports `simd=SSE2`): turning FP contraction
+off on the *native* build reproduces the baseline value exactly. So the cause is
+**FMA contraction in the floating-point table generation** (`snes_ntsc_init` /
+`snes_ntsc_impl.h`), which `-march=native` enables and a baseline target does not. Slightly
+different table entries survive quantisation on high-entropy synthetic content and are
+absorbed on real game content, which is flat and low-entropy by comparison.
+
+Consequence for anyone re-running the gate: **the synthetic-pattern reference checksums in
+`README.md` are specific to an FMA-capable build.** Compare captured-frame checksums when
+comparing across platforms or `-march` levels; treat a synthetic-pattern mismatch as a
+question about the build's FP contraction before treating it as a filter defect.
+
+### 17.2 Ladder routing by content type
+
+Per-path routing measured with the same builds, showing how differently real and synthetic
+content exercise the run-length ladder. This is the evidence behind the claim that real
+frames are dominated by the cheap paths:
+
+| Input | chunks | skip (steady) | uniform (CK) | pair (PK) | general (K) |
+|---|---:|---:|---:|---:|---:|
+| 24 captured frames | 211,434,496 | 59.2% | 17.8% | 69.5% | 30.5% |
+| `--pattern runs`, 256 colours | 167,824,384 | 5.5% | 22.3% | 40.4% | 59.6% |
+
+`skip` and `uniform` are percentages of all chunks; `pair`/`general` are the split of the
+remaining pair decisions (172,429,932 and 517,834,326 respectively). Real content takes the
+steady-state skip on nearly 60% of chunks and reaches the general per-pixel kernel on under
+a third of its pair decisions; the `runs` pattern was designed to invert that, and does.

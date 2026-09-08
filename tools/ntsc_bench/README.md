@@ -48,13 +48,28 @@ and at every `SNES_NTSC_LADDER_MASK` value (0/1/2/3/7):
 | Input | Checksum |
 |---|---|
 | `--pattern random --colours 256` (default) | `0x95f5c92e642a686f` |
-| `--pattern random --colours 65536` | `0x50df72f5a78f9e6d` |
+| `--pattern random --colours 65536` | `0x50df72f5a78f9e6d` **(no longer reproducible - see note)** |
 | `--pattern mixed --colours 256` | `0x2921e1e8ab232056` |
 | `--pattern runs --colours 256` | `0x0f9860292b10dd73` |
 | `--input tools/ntsc_bench/frames` (24 captured frames, all 3 phases) | `0xe3557fa06310379d` |
 | `--width 808 --pattern random --colours 256` | `0xea6c5d4426a031f3` |
 | `--threads 2` (any of the above) | same as `--threads 1` |
 | `--lores` (unaffected by every stage; regression-only) | `0x18b1960769cc63dd` |
+
+Two caveats on this table, both verified 2026-09-08:
+
+- **The synthetic-pattern rows are specific to an FMA-capable build.** They were produced
+  with `-march=native`. A baseline build (`-march=x86-64`), or `-ffp-contract=off` on a
+  native build, produces different values for `random`, `mixed` and `runs` - because the
+  floating-point *table* generation contracts differently, not because the blitter differs.
+  The captured-frames row is unaffected by any of this and is the row to compare when
+  checking portability across platforms or ISA levels. Full detail and figures:
+  `analysis/ARCHITECTURE.md` section 17.1.
+- **`--colours 65536` can no longer be requested.** The slot-indexed table introduced in
+  Stage 1 caps capacity at `snes_ntsc_slot_count` (8192 in the current tree); the bench
+  clamps the value and prints a warning, so this row's checksum cannot be reproduced as
+  written. It is retained as a record of the pre-Stage-1 table. Use `--colours 8192` for a
+  full-table run today.
 
 **Comparing against the pre-Stage-4 code (a6dfa98, "Stage 3" in this file's history):**
 `run_host.sh`/`run_pi.sh` stage whichever revision's own `snes_ntsc.{cpp,h}` alongside the
