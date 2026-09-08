@@ -97,7 +97,7 @@ run_step "Grant audio group rtprio access" bash -c '
 
 # 7. Install dependencies
 run_step "Install dependencies" sudo apt install -y \
-  build-essential git cmake libsdl2-dev libglu1-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev
+  build-essential git cmake libsdl2-dev libglu1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev
 
 # 8. Prepare and build CannonBall
 run_step "Prepare build directories" mkdir -p build roms
