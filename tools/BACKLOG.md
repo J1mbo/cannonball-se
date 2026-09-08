@@ -121,9 +121,55 @@ reference table is a historical record, not a runnable check.
 
 ---
 
-## Documentation
+## Build
 
-- `ntsc_bench/analysis/GRAPHICS_SETUP.md` covers palette mechanics and hi-res-vs-doubled rendering,
-  which outlive the NTSC filter work it currently sits under. It is a candidate for relocation to
-  general engine documentation. It is cited by section number from
-  `src/main/sdl2/rendersurface.cpp`, so any move must update that comment in the same commit.
+### Replace `-Ofast` with `-O3` for Release builds
+
+**Status: decided 2026-09-08, not yet implemented.** `CMakeLists.txt:426-428` applies `-Ofast`
+to the whole `cannonball-se` target on GCC/Clang Release, and `install.sh` builds Release by
+default, so every shipped Linux binary gets it. `-Ofast` = `-O3` + `-ffast-math`, applied with no
+per-file exemption, so it covers the float-based NTSC table generation (`snes_ntsc.cpp`) and the
+YM2151 / SegaPCM init tables — code whose bench validated at `-O3`, so the shipped binary's float
+results are not the ones that were checked. **Decision: use `-O3` in place of `-Ofast` for all
+targets** (drop `-ffast-math` wholesale rather than carve out individual translation units). The
+shadow-mask bake is integer-only and unaffected either way. This is separate from the NTSC
+synthetic-checksum item below: `-O3` still permits FMA contraction, so it does not by itself make
+the NTSC table build-portable.
+
+### `install.sh` omits the EGL / GLESv2 dev packages
+
+`CMakeLists.txt` runs `pkg_check_modules(EGL/GLESv2 REQUIRED ...)` on non-Windows, but the
+`install.sh:99-100` apt line installs only `libglu1-mesa-dev` — not `libegl1-mesa-dev` /
+`libegl-dev` or `libgles2-mesa-dev` / `libgles-dev`. On a clean Ubuntu box without the VC4 GL
+stack already present, configure should fail, contradicting the automated-install claim. Verify on
+a clean 24.04 image, then add the packages.
+
+### Minor
+
+- Stale comment in `CMakeLists.txt` (the SIMD-flags block) still describes the SSE4.1/SSE2
+  `_fast()` dispatch retired in NTSC Stage 4; update it to the current portable-SIMD layer.
+- `-march=native` binaries are not portable within an architecture tier (a Pi 5 / A76 build can
+  `SIGILL` on a Pi 3 / A53). Fine for the build-on-device workflow; a blocker to note if prebuilt
+  Linux binaries are ever distributed (would need per-tier `-mcpu`/`-march`).
+- Line endings: a few tracked docs carry CRLF in the working tree while stored as LF, so WSL git
+  (`autocrlf` unset) reports them modified while Windows git (`autocrlf=input`) shows them clean. A
+  repo `.gitattributes` (`* text=auto`, or `*.md text eol=lf`) would make this consistent across
+  environments.
+
+---
+
+## Logging / release hygiene
+
+### Quiet the default console output
+
+- The periodic `NN FPS (dropped: X%)` line prints every ~2 s unconditionally
+  (`src/main/main.cpp:779`, the `else` of `if (config.video.fps_count)`), so `fps_counter=0` does
+  not silence it. Scope the whole block under `fps_count`, or make the heartbeat opt-in.
+- ~15 startup diagnostics are ungated (banner, VSync, thread count, "Audio started", sample rate,
+  window pixel format, image anchor, custom-music help, watchdog note); there is no `-quiet` /
+  verbose flag anywhere. Add one gate.
+- Bug: the patched-ROM fallback re-probes the missing file with `verbose=true`
+  (`src/main/roms.cpp:126-132`), so the "Unable to locate rom / WARNING: fix_samples" pair prints
+  on every default start. Make the retry `verbose=false`.
+
+Genuine errors (SDL/GL/audio/config-save failures, the SIGSEGV backtrace) should stay.
