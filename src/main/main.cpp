@@ -181,6 +181,7 @@ bool    cannonball::singlecore_mode     = false;
 long    cannonball::fps_eval_period     = 4;
 int     cannonball::game_threads        = omp_get_max_threads();
 bool    cannonball::perftest            = false;
+bool    cannonball::verbose             = false;
 
 // Frame-dump facility (see main.hpp for details)
 bool              cannonball::dump_enabled  = false;
@@ -369,16 +370,16 @@ static void play_stats_and_watchdog_updater() {
     // Open the watchdog device. Note - device name is defined in globals.hpp
     g_watchdog_fd = open(SYSTEM_WATCHDOG, O_WRONLY);
     if (g_watchdog_fd < 0) {
-        std::cerr << "Note: Could not open " << SYSTEM_WATCHDOG << " - proceeding without system watchdog." << std::endl;
+        if (verbose) std::cerr << "Note: Could not open " << SYSTEM_WATCHDOG << " - proceeding without system watchdog." << std::endl;
     } else {
         // Set the watchdog timeout (in seconds)
         int timeout = 15; // 15 seconds is the maximum supported on Raspberry Pi
         if (ioctl(g_watchdog_fd, WDIOC_SETTIMEOUT, &timeout) < 0) {
-            std::cerr << "Note: Unable to set watchdog timeout - proceeding without system watchdog." << std::endl;
+            if (verbose) std::cerr << "Note: Unable to set watchdog timeout - proceeding without system watchdog." << std::endl;
             close(g_watchdog_fd);
             g_watchdog_fd = -1;
         } else {
-            std::cout << "Watchdog timeout set to " << timeout << " seconds" << std::endl;
+            if (verbose) std::cout << "Watchdog timeout set to " << timeout << " seconds" << std::endl;
         }
     }
 #endif
@@ -481,14 +482,16 @@ static void main_loop() {
     if (SDL_GetCurrentDisplayMode(0, &displayMode) == 0) {
         // Can retrieve monitor refresh rate
         vsync = (displayMode.refresh_rate == configured_fps) && SDL_GL_GetSwapInterval() && (config.video.vsync == 1);
-        std::cout << "INFO: ";
-        if (config.video.vsync != 1)
-            std::cout << "VSync is disabled by setting in config.xml. ";
-        std::cout << "Display reports refresh rate is " << displayMode.refresh_rate << "Hz.";
-        if ((config.video.vsync == 1) && (displayMode.refresh_rate == 60) && (cannonball::fps_lock != 30))
-            std::cout << " VSync will be used for 60fps mode.\n";
-        else
-            std::cout << "\n";
+        if (verbose) {
+            std::cout << "INFO: ";
+            if (config.video.vsync != 1)
+                std::cout << "VSync is disabled by setting in config.xml. ";
+            std::cout << "Display reports refresh rate is " << displayMode.refresh_rate << "Hz.";
+            if ((config.video.vsync == 1) && (displayMode.refresh_rate == 60) && (cannonball::fps_lock != 30))
+                std::cout << " VSync will be used for 60fps mode.\n";
+            else
+                std::cout << "\n";
+        }
     }
 
     // Determine if we'll be using threaded or sequential rendering
@@ -512,7 +515,7 @@ static void main_loop() {
     std::thread t2;
     if (using_threading) {
         // Create worker threads.
-        std::cout << "Using " << threads << " threads (" << render_threads << " renderer threads)" << std::endl;
+        if (verbose) std::cout << "Using " << threads << " threads (" << render_threads << " renderer threads)" << std::endl;
         if (prepare_threads) {
             // prepare_thread produces the S16 output - road, sky, sprites etc
             // Note - this thread also launches the sound callback, so don't pin this thread to one core.
@@ -774,10 +777,6 @@ static void main_loop() {
                 l_sp = sp; l_tx = tx; l_fr = fr;
                 l_rn = rn; l_pr = pr; l_sw = sw; l_ww = ww;
             }
-            else
-            {
-                printf("\r%i FPS (dropped: %i%%)    ", fps, droppedPercent);
-            }
             fflush(stdout);
             fps_counter = fps;
             renderedFrames = 0;
@@ -905,6 +904,9 @@ static bool parse_command_line(int argc, char* argv[]) {
             cannonball::perftest = true;
             std::cout << "Running in performance test mode.\n";
         }
+        else if (strcmp(argv[i], "-verbose") == 0) {
+            cannonball::verbose = true;
+        }
         else if (strcmp(argv[i], "-dump") == 0 && i+1 < argc) {
             // -dump <dir> [interval] [count]
             // Writes the NTSC filter's input frame every 'interval' rendered frames
@@ -1002,6 +1004,7 @@ static bool parse_command_line(int argc, char* argv[]) {
                          "-x                   : Disable single-core RaspberryPi board detection\n" <<
                          "-1                   : Use single-core mode\n" <<
                          "-perftest            : Assess max frame rate possible on this platform\n" <<
+                         "-verbose             : Print informational startup diagnostics (default: quiet)\n" <<
                          "-dump <dir> [interval] [count]\n" <<
                          "                     : Write NTSC filter input frames to <dir> every 'interval'\n" <<
                          "                       rendered frames (default 30) until 'count' frames have\n" <<
@@ -1021,7 +1024,7 @@ static bool parse_command_line(int argc, char* argv[]) {
             _Exit(0);
         }
     }
-    if (!fps_set)
+    if (!fps_set && verbose)
         std::cout << "Automatic frame-rate selection enabled.\n";
 
     return true;
@@ -1074,7 +1077,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Display help text around custom music if none was found
-    if (config.sound.custom_tracks_loaded == 0) {
+    if (config.sound.custom_tracks_loaded == 0 && verbose) {
         std::cout << "Custom Music: Put .WAV, .MP3, or .YM files in res/ folder named as:" << std::endl;
         std::cout << "[01-99]_Track_Display_Name.[wav|mp3|ym] - e.g. 04_AHA_Take_On_Me.mp3" << std::endl;
         std::cout << "Indexes 01-03 will replace the built-in tracks (01=Magical Sound Shower), higher indexes add tracks." \

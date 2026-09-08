@@ -33,6 +33,7 @@
 #endif
 
 #include "sdl2/audio.hpp"
+#include "main.hpp"          // cannonball::verbose (-verbose command line option)
 
 //#include "frontend/config.hpp" // fps
 #include "engine/audio/osoundint.hpp"
@@ -252,8 +253,10 @@ void Audio::start_audio(bool list_devices_only)
             }
 
             // JJP info line
-            std::cout << "Requested Sample Rate: " << desired.freq << ", ";
-            std::cout << "SDL Returned Configured Sample Rate: " << obtained.freq << std::endl;
+            if (cannonball::verbose) {
+                std::cout << "Requested Sample Rate: " << desired.freq << ", ";
+                std::cout << "SDL Returned Configured Sample Rate: " << obtained.freq << std::endl;
+            }
             FREQ = obtained.freq;
 
             if (desired.samples != obtained.samples) {
@@ -361,7 +364,7 @@ void Audio::tick()
         // and unpause the device
         SDL_PauseAudioDevice(dev, 0);
         audio_paused = 0;
-        std::cout << "Audio started" << std::endl;
+        if (cannonball::verbose) std::cout << "Audio started" << std::endl;
     }
 }
 

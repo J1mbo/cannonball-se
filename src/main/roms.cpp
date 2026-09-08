@@ -125,7 +125,12 @@ int Roms::load_pcm_rom(bool fixed_rom)
     {
         status = LOAD(pcm, ("opr-10188.71f", 0x50000, 0x08000, 0x37598616, RomLoader::NORMAL, false));
         if (status == 1)
-            status = LOAD(pcm, ("opr-10188.71f", 0x50000, 0x08000, 0xC2DE09B2, RomLoader::NORMAL, VERBOSE));
+            // Retry probing the same (optional, likely absent) patched ROM under its
+            // alternate CRC. Kept silent (verbose=false) like the first probe above:
+            // logging here as well would print a misleading "Unable to locate rom"
+            // pair on every normal start where the patched ROM simply isn't present.
+            // The single WARNING below already reports the fallback concisely.
+            status = LOAD(pcm, ("opr-10188.71f", 0x50000, 0x08000, 0xC2DE09B2, RomLoader::NORMAL, false));
 
         // JJP - soft fail if we don't have the ROM with the fixed samples
         if (status == 1) {

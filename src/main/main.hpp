@@ -46,6 +46,14 @@ namespace cannonball
     extern int  game_threads;
     extern bool perftest;
 
+    // Verbose startup diagnostics (-verbose command line option). Default OFF
+    // (quiet): only the one-line version/copyright banner and genuine
+    // errors/warnings print by default. When true, informational startup
+    // status lines (VSync/refresh-rate detection, thread count, watchdog
+    // setup notes, audio device negotiation, window/image geometry, etc.)
+    // are also printed. See main.cpp (parse_command_line).
+    extern bool verbose;
+
     // -------------------------------------------------------------------
     // Frame-dump facility (-dump <dir> [interval] [count] command line option).
     // When dump_enabled is true, RenderSurface::draw_frame() writes the NTSC
