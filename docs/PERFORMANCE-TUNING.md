@@ -30,17 +30,16 @@ GPU work scales with output pixels, so 1920x1080 is roughly 1.6x the shader cost
 | Tier | Boards | 30fps | 60fps |
 |---|---|---|---|
 | **Single-core** | Pi 1, Pi Zero (W), 2014 Pi B+ | Yes, with the clock bump below. The game applies reduced settings automatically. | Not supported |
-| **Quad-core, 32-bit** | Pi 2 v1.1 (ARMv7 Cortex-A7) | Yes, stock clocks | Yes, with the fast shader and GPU at 450MHz. The full shader needs roughly 1.1GHz CPU / 500MHz GPU. |
+| **Quad-core, 32-bit** | Pi 2 v1.1 (ARMv7 Cortex-A7) | Yes, stock clocks | Yes, with the fast shader and GPU at 450MHz. The full shader needs roughly 1GHz CPU / 500MHz GPU. |
 | **Quad-core, 64-bit** | Pi 2 v1.2, Pi 3 (all models), Pi Zero 2 W | Yes, stock clocks | Yes, with the fast shader. The full shader needs the GPU at 400MHz. A Pi 2 v1.2 may also want its CPU at 1GHz. |
 | **Quad-core, fast** | Pi 4, Pi 5 | Yes, stock clocks | Yes, stock clocks, either shader |
 | **PC** | Any x86/x64 machine capable of running Windows 11, or Ubuntu | Yes | Yes |
 
 On any multi-core Pi, fit a CPU heatsink. A board that thermally throttles will miss frames
-regardless of settings.
+regardless of settings. Sufficient power is also a problem - USB chargers are generally not sufficient to sustain overclocked boards and the official Raspberry Pi PSUs should be used instead.
 
 > These figures are reported from the maintainer's own boards. Version 1.42 cut GPU shader
-> cost by 13–18% (see section 5), so they are, if anything, now conservative — some boards
-> that previously needed an overclock for the full shader may no longer need one. Use
+> cost by 13–18% (see section 5) and the CPU cost of the game engine and NTSC filter. Use
 > `-perftest` on your own hardware rather than treating the table as a promise.
 
 ### Single-core boards
@@ -122,10 +121,10 @@ gpu_freq=400
 gpu_freq=450
 ```
 
-**Pi 2 v1.1 — full shader at close to 60fps:**
+**Pi 2 v1.1 — full shader at 60fps (v1.42 and later):**
 
 ```ini
-arm_freq=1100
+arm_freq=1000
 gpu_freq=500
 ```
 
@@ -185,7 +184,7 @@ Measured per-effect cost on a Pi 2 (VideoCore IV at 500MHz, 1280x1024):
 The last row is the important one. Roughly 46% of the frame is not shader arithmetic at all —
 it is writing the finished image to memory, which is limited by the shared memory bus. **No
 shader setting can reduce that floor.** It is why turning effects off gives diminishing
-returns, and why a board either comfortably clears 60fps or does not.
+returns.
 
 Version 1.42 bakes the shadow-mask pattern into a texture at startup instead of computing it
 per pixel, cutting 1.97ms from the full shader (−17.9%) and 1.06ms from the fast shader
