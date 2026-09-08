@@ -1,0 +1,16 @@
+# Line-ending policy for the whole repository.
+#
+# Store every text file with LF in git and normalise on commit, so the tree is
+# identical whether checked out by Windows git (core.autocrlf=input), WSL git
+# (autocrlf unset) or native Linux. This stops the same file showing as
+# "modified" in one environment and clean in another.
+* text=auto
+
+# Shell scripts must be LF even on Windows checkouts, or they break under bash.
+*.sh text eol=lf
+
+# Binary assets: never apply text or line-ending conversion.
+*.bin binary
+*.ico binary
+*.jpg binary
+*.png binary
