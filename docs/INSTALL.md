@@ -274,7 +274,7 @@ These are CMake options a user might reasonably want to set, e.g.
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `WITH_MARCH_NATIVE` | `ON` | Builds with `-march=native`, tuned to the exact CPU doing the build. Turn this **off** if you intend to copy the resulting binary to a different machine/board — a `-march=native` binary built on one Pi model is not guaranteed to run on another. |
+| `WITH_MARCH_NATIVE` | `ON` | Builds with `-march=native`, tuned to the exact CPU doing the build. Turn this **off** if you intend to copy the resulting binary to a different machine/board — a `-march=native` binary built on one Pi model is not guaranteed to run on another (e.g. a Pi 5 / Cortex-A76 build can `SIGILL` on a Pi 3 / Cortex-A53). This is why the install workflow above builds on each target board rather than copying a binary between them; it would become a blocker if prebuilt Linux binaries were ever distributed, since that would need separate per-tier `-mcpu`/`-march` builds. |
 | `PIXEL_ACCURACY` | `ON` | Enables pixel-accurate sprite rendering (reproduces a System 16 hardware sprite-glow quirk). Can also be toggled at runtime with `-glow`/`-noglow`. |
 | `WITH_MP3` | `ON` | Enables MP3 playback via `mpg123`, for custom music. Falls back to a warning (not a hard failure) if `mpg123` isn't found. |
 | `QUIET_BUILD` | `ON` | Reduces build log noise (suppresses per-file "Building CXX object..." messages and a handful of common warnings). |
