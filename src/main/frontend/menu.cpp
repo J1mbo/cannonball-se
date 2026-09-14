@@ -1465,7 +1465,7 @@ void Menu::refresh_menu()
         else if (menu_selected == &menu_controls_gp)
         {
             if (SELECTED(ENTRY_ANALOG))             set_menu_text(ENTRY_ANALOG, ANALOG_LABELS[config.controls.analog]);
-            else if (SELECTED(ENTRY_RUMBLE))        set_menu_text(ENTRY_RUMBLE, RUMBLE_LABELS[(int)(config.controls.rumble / 0.25f)]);
+            else if (SELECTED(ENTRY_RUMBLE))        set_menu_text(ENTRY_RUMBLE, RUMBLE_LABELS[std::min(4, (int)(config.controls.rumble / 0.25f))]);
         }
         else if (menu_selected == &menu_engine || menu_selected == &menu_s_dips)
         {

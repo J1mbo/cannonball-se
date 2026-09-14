@@ -225,6 +225,46 @@
 		</haptic>
 	</analog>
 	<rumble>1.25</rumble>
+
+	<!-- ==================================================================
+	     INPUT BINDING MATRIX (documentation only - not used by this build)
+	     Data model and config load/save exist, but nothing below is read at
+	     runtime yet. Leave this whole block
+	     commented out to keep using pad_id/keyconfig/padconfig/analog above
+	     exactly as configured.
+
+	<input_mode>0</input_mode>
+	     0 = GAMEPAD, 1 = WHEEL. If absent, GAMEPAD is assumed once a
+	     <bindings> block below is present; otherwise unused.
+
+	<bindings>
+	     If this element is absent (as shipped), the legacy pad_id/keyconfig/
+	     padconfig/analog settings above remain authoritative. One binding
+	     per (group, target) cell; a target with no entry is simply unbound.
+	     type is axis|button|hat; value is only used for hat (SDL_HAT_* mask).
+	     device is a reconnect-safe signature (GUID + axis/button/hat counts),
+	     not a raw SDL joystick index, so it survives being re-plugged into a
+	     different USB port or enumerated in a different order.
+	    <gamepad>
+	        <steer type="axis"   index="0" device="030000005e0400008e02000014010000|A6|B11|H1"
+	               vid="045e" pid="028e" name="Xbox 360 Controller"/>
+	        <accel type="axis"   index="5" device="030000005e0400008e02000014010000|A6|B11|H1"
+	               vid="045e" pid="028e" name="Xbox 360 Controller"/>
+	        <brake type="axis"   index="4" device="030000005e0400008e02000014010000|A6|B11|H1"
+	               vid="045e" pid="028e" name="Xbox 360 Controller"/>
+	        <gear1 type="button" index="0" device="030000005e0400008e02000014010000|A6|B11|H1"
+	               vid="045e" pid="028e" name="Xbox 360 Controller"/>
+	    </gamepad>
+	    <wheel>
+	        <steer type="axis" index="0" device="0300000066f00000b6660000101f0000|A5|B13|H1"
+	               vid="044f" pid="b66d" name="T150 Racing Wheel"/>
+	        <accel type="axis" index="2" device="03000000d90200000001000000000000|A3|B0|H0"
+	               vid="1dd2" pid="0001" name="Sim Pedals"/>
+	        <start type="hat"  index="0" value="1" device="0300000066f00000b6660000101f0000|A5|B13|H1"
+	               vid="044f" pid="b66d" name="T150 Racing Wheel"/>
+	    </wheel>
+	</bindings>
+	-->
 </controls>
 <!-- 
     Game Engine Settings

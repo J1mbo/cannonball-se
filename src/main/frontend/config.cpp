@@ -13,6 +13,7 @@
     - Automatic custom music loader
     - CRT effect handling settings
     - Play stats load/save
+    - Input binding matrix load/save (controls.input_mode, controls.bindings.*)
 ***************************************************************************/
 
 #include <iostream>
@@ -288,6 +289,10 @@ void Config::load()
     controls.steer_speed   = cfg.get_int("controls.steerspeed",         3);
     controls.pedal_speed   = cfg.get_int("controls.pedalspeed",         4);
     controls.rumble        = cfg.get_float("controls.rumble",           1.25f);
+    // Bug fix: clamp master rumble strength to 0..1 - a shipped/edited value outside this range
+    // (e.g. the previous 1.25f default) reads RUMBLE_LABELS[] out of bounds in menu.cpp.
+    if (controls.rumble < 0.0f) controls.rumble = 0.0f;
+    if (controls.rumble > 1.0f) controls.rumble = 1.0f;
     controls.keyconfig[0]  = cfg.get_int("controls.keyconfig.up",       1073741906);
     controls.keyconfig[1]  = cfg.get_int("controls.keyconfig.down",     1073741905);
     controls.keyconfig[2]  = cfg.get_int("controls.keyconfig.left",     1073741904);
@@ -323,13 +328,103 @@ void Config::load()
     controls.axis[3]       = cfg.get_int("controls.analog.axis.motor",  -1);
     controls.invert[1]     = cfg.get_int("controls.analog.axis.accel.<xmlattr>.invert", 0);
     controls.invert[2]     = cfg.get_int("controls.analog.axis.brake.<xmlattr>.invert", 0);
-    controls.asettings[0]  = cfg.get_int("controls.analog.wheel.zone",  75);
+    // Bug fix: default changed 75->0. The zone maths in input.cpp currently divides instead of
+    // multiplying (Stage 2 fix); a default of 75 collapsed the steering range for any user whose
+    // config.xml was missing this key. Shipped config.xml already sets zone=0 explicitly.
+    controls.asettings[0]  = cfg.get_int("controls.analog.wheel.zone",  0);
     controls.asettings[1]  = cfg.get_int("controls.analog.wheel.dead",  0);
 
     controls.haptic        = cfg.get_int("controls.analog.haptic.<xmlattr>.enabled",    1);
     controls.max_force     = cfg.get_int("controls.analog.haptic.max_force",            9000);
     controls.min_force     = cfg.get_int("controls.analog.haptic.min_force",            8500);
     controls.force_duration= cfg.get_int("controls.analog.haptic.force_duration",       20);
+
+    // ------------------------------------------------------------------------
+    // Input binding matrix (Stage 1: data model + config only, see
+    // tools/INPUT_BINDING_DESIGN.md A.2.1). Nothing here is evaluated at runtime yet;
+    // legacy padconfig/keyconfig/axis[] above remain the only source of truth
+    // while bindings_active is false.
+    // ------------------------------------------------------------------------
+    controls.input_mode      = cfg.get_int("controls.input_mode", -1);
+    controls.bindings_active = cfg.find_node("controls.bindings") != nullptr;
+    controls.device_bindings.clear();
+    if (controls.bindings_active)
+    {
+        struct GroupInfo  { int group;  const char* name; };
+        struct TargetInfo { int target; const char* name; };
+
+        static const GroupInfo kGroups[device_binding_t::GROUP_COUNT] = {
+            { device_binding_t::GROUP_GAMEPAD, "gamepad" },
+            { device_binding_t::GROUP_WHEEL,   "wheel"   },
+        };
+        static const TargetInfo kTargets[device_binding_t::TARGET_COUNT] = {
+            { device_binding_t::TARGET_STEER, "steer" },
+            { device_binding_t::TARGET_ACCEL, "accel" },
+            { device_binding_t::TARGET_BRAKE, "brake" },
+            { device_binding_t::TARGET_GEAR1, "gear1" },
+            { device_binding_t::TARGET_GEAR2, "gear2" },
+            { device_binding_t::TARGET_START, "start" },
+            { device_binding_t::TARGET_COIN,  "coin"  },
+            { device_binding_t::TARGET_MENU,  "menu"  },
+            { device_binding_t::TARGET_VIEW,  "view"  },
+            { device_binding_t::TARGET_UP,    "up"    },
+            { device_binding_t::TARGET_DOWN,  "down"  },
+            { device_binding_t::TARGET_LEFT,  "left"  },
+            { device_binding_t::TARGET_RIGHT, "right" },
+        };
+
+        for (const auto& g : kGroups)
+        {
+            for (const auto& t : kTargets)
+            {
+                std::string path = std::string("controls.bindings.") + g.name + "." + t.name;
+                if (!cfg.find_node(path))
+                    continue; // unbound cell - simply absent
+
+                std::string type_str = cfg.get_attribute<std::string>(path + ".<xmlattr>.type", "");
+                int type;
+                if      (type_str == "axis")   type = device_binding_t::TYPE_AXIS;
+                else if (type_str == "button") type = device_binding_t::TYPE_BUTTON;
+                else if (type_str == "hat")    type = device_binding_t::TYPE_HAT;
+                else
+                {
+                    std::cerr << "Warning: malformed binding at " << path
+                              << " (bad/missing type attribute); skipped." << std::endl;
+                    continue;
+                }
+
+                int index          = cfg.get_attribute<int>(path + ".<xmlattr>.index", -1);
+                int value          = cfg.get_attribute<int>(path + ".<xmlattr>.value", 0);
+                std::string device = cfg.get_attribute<std::string>(path + ".<xmlattr>.device", "");
+                std::string vid_str= cfg.get_attribute<std::string>(path + ".<xmlattr>.vid", "");
+                std::string pid_str= cfg.get_attribute<std::string>(path + ".<xmlattr>.pid", "");
+                std::string name   = cfg.get_attribute<std::string>(path + ".<xmlattr>.name", "");
+
+                if (index < 0 || device.empty() ||
+                    (t.target == device_binding_t::TARGET_STEER && type != device_binding_t::TYPE_AXIS))
+                {
+                    std::cerr << "Warning: malformed binding at " << path
+                              << " (index/device invalid, or STEER not bound to an axis); skipped." << std::endl;
+                    continue;
+                }
+
+                device_binding_t binding;
+                binding.group  = g.group;
+                binding.target = t.target;
+                binding.type   = type;
+                binding.index  = index;
+                binding.value  = value;
+                binding.device = device;
+                binding.name   = name;
+                try { if (!vid_str.empty()) binding.vid = static_cast<uint16_t>(std::stoul(vid_str, nullptr, 16)); }
+                catch (...) { binding.vid = 0; }
+                try { if (!pid_str.empty()) binding.pid = static_cast<uint16_t>(std::stoul(pid_str, nullptr, 16)); }
+                catch (...) { binding.pid = 0; }
+
+                controls.device_bindings.push_back(binding);
+            }
+        }
+    }
 
     // ------------------------------------------------------------------------
     // Engine Settings
@@ -481,6 +576,65 @@ bool Config::save()
     cfg.put_int("controls.analog.haptic.max_force", controls.max_force);
     cfg.put_int("controls.analog.haptic.min_force", controls.min_force);
     cfg.put_int("controls.analog.haptic.force_duration", controls.force_duration);
+
+    // Input binding matrix (Stage 1: persist input_mode always; write <bindings> only when
+    // bindings_active, so an untouched legacy config.xml round-trips unchanged apart from
+    // input_mode - see tools/INPUT_BINDING_DESIGN.md A.2.1).
+    cfg.put_int("controls.input_mode", controls.input_mode);
+    if (controls.bindings_active)
+    {
+        struct GroupInfo  { int group;  const char* name; };
+        struct TargetInfo { int target; const char* name; };
+
+        static const GroupInfo kGroups[device_binding_t::GROUP_COUNT] = {
+            { device_binding_t::GROUP_GAMEPAD, "gamepad" },
+            { device_binding_t::GROUP_WHEEL,   "wheel"   },
+        };
+        static const TargetInfo kTargets[device_binding_t::TARGET_COUNT] = {
+            { device_binding_t::TARGET_STEER, "steer" },
+            { device_binding_t::TARGET_ACCEL, "accel" },
+            { device_binding_t::TARGET_BRAKE, "brake" },
+            { device_binding_t::TARGET_GEAR1, "gear1" },
+            { device_binding_t::TARGET_GEAR2, "gear2" },
+            { device_binding_t::TARGET_START, "start" },
+            { device_binding_t::TARGET_COIN,  "coin"  },
+            { device_binding_t::TARGET_MENU,  "menu"  },
+            { device_binding_t::TARGET_VIEW,  "view"  },
+            { device_binding_t::TARGET_UP,    "up"    },
+            { device_binding_t::TARGET_DOWN,  "down"  },
+            { device_binding_t::TARGET_LEFT,  "left"  },
+            { device_binding_t::TARGET_RIGHT, "right" },
+        };
+
+        char hexbuf[8];
+        for (const auto& g : kGroups)
+        {
+            for (const auto& t : kTargets)
+            {
+                std::string path = std::string("controls.bindings.") + g.name + "." + t.name;
+                const device_binding_t* binding = find_binding(g.group, t.target);
+                if (!binding)
+                {
+                    cfg.erase(path); // unbound - remove any stale cell left over from an edit
+                    continue;
+                }
+
+                const char* type_str =
+                    binding->type == device_binding_t::TYPE_AXIS ? "axis" :
+                    binding->type == device_binding_t::TYPE_HAT  ? "hat"  : "button";
+
+                cfg.put_attribute<std::string>(path + ".<xmlattr>.type",   type_str);
+                cfg.put_attribute<int>        (path + ".<xmlattr>.index", binding->index);
+                cfg.put_attribute<int>        (path + ".<xmlattr>.value", binding->value);
+                cfg.put_attribute<std::string>(path + ".<xmlattr>.device", binding->device);
+                std::snprintf(hexbuf, sizeof(hexbuf), "%04x", static_cast<unsigned int>(binding->vid));
+                cfg.put_attribute<std::string>(path + ".<xmlattr>.vid", hexbuf);
+                std::snprintf(hexbuf, sizeof(hexbuf), "%04x", static_cast<unsigned int>(binding->pid));
+                cfg.put_attribute<std::string>(path + ".<xmlattr>.pid", hexbuf);
+                cfg.put_attribute<std::string>(path + ".<xmlattr>.name", binding->name);
+            }
+        }
+    }
 
     cfg.put_int("engine.freeplay",        (int) engine.freeplay);
     cfg.put_int("engine.time",            engine.freeze_timer ? 4 : engine.dip_time);
@@ -725,4 +879,42 @@ void Config::inc_traffic()
     }
     else
         engine.dip_traffic++;
+}
+
+// ----------------------------------------------------------------------------
+// Input binding matrix helpers (Stage 1). One binding per (group, target) cell:
+// set_binding replaces an existing cell in place, clear_binding erases it.
+// See tools/INPUT_BINDING_DESIGN.md A.2.1.
+// ----------------------------------------------------------------------------
+
+const device_binding_t* Config::find_binding(int group, int target) const
+{
+    for (const auto& b : controls.device_bindings)
+    {
+        if (b.group == group && b.target == target)
+            return &b;
+    }
+    return nullptr;
+}
+
+void Config::set_binding(const device_binding_t& binding)
+{
+    for (auto& b : controls.device_bindings)
+    {
+        if (b.group == binding.group && b.target == binding.target)
+        {
+            b = binding;
+            return;
+        }
+    }
+    controls.device_bindings.push_back(binding);
+}
+
+void Config::clear_binding(int group, int target)
+{
+    auto& bindings = controls.device_bindings;
+    bindings.erase(
+        std::remove_if(bindings.begin(), bindings.end(),
+            [&](const device_binding_t& b) { return b.group == group && b.target == target; }),
+        bindings.end());
 }

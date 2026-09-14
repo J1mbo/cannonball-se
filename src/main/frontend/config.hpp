@@ -8,6 +8,7 @@
     See license.txt for more details.
 
     Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
+    - Input binding matrix data model (device_binding_t, controls.device_bindings)
 ***************************************************************************/
 
 #pragma once
@@ -152,6 +153,31 @@ struct sound_settings_t
     int custom_tracks_loaded = 0; // used to mask help text at startup if tracks are loaded
 };
 
+// Input binding matrix: one persisted (group, target) -> physical control assignment.
+// Reused from DX config_base.hpp:155-185, with `group` added (see tools/INPUT_BINDING_DESIGN.md A.1.1).
+struct device_binding_t
+{
+    enum Type   { TYPE_BUTTON = 0, TYPE_AXIS = 1, TYPE_HAT = 2 };
+    enum Group  { GROUP_GAMEPAD = 0, GROUP_WHEEL = 1, GROUP_COUNT = 2 };
+    enum Target
+    {
+        TARGET_STEER = 0,           // axis only
+        TARGET_ACCEL, TARGET_BRAKE, // axis OR button/hat
+        TARGET_GEAR1, TARGET_GEAR2, TARGET_START, TARGET_COIN, TARGET_MENU, TARGET_VIEW,
+        TARGET_UP, TARGET_DOWN, TARGET_LEFT, TARGET_RIGHT,   // menu nav + digital steering
+        TARGET_COUNT                // 13 == matrix rows
+    };
+
+    int         group  = GROUP_GAMEPAD;   // ADDED vs DX: explicit, not a "G:"/"W:" prefix in `device`
+    int         target = TARGET_STEER;
+    int         type   = TYPE_BUTTON;
+    int         index  = -1;              // GC axis/button enum (GAMEPAD) or raw index (WHEEL)
+    int         value  = 0;               // HAT direction mask; unused otherwise
+    std::string device;                   // signature, see A.1.2 ("" never stored; "*" not supported)
+    uint16_t    vid = 0, pid = 0;         // ADDED: fallback match + rumble-profile suggestion
+    std::string name;                     // ADDED: display only (never matched on)
+};
+
 struct controls_settings_t
 {
     const static int GEAR_BUTTON   = 0;
@@ -175,6 +201,12 @@ struct controls_settings_t
     int max_force;
     int min_force;
     int force_duration;
+
+    // Input binding matrix (see tools/INPUT_BINDING_DESIGN.md, Stage 1: data model + config only;
+    // not yet evaluated at runtime).
+    int input_mode;                          // device_binding_t::GROUP_GAMEPAD / GROUP_WHEEL
+    bool bindings_active;                    // true iff <controls><bindings> existed in config.xml
+    std::vector<device_binding_t> device_bindings;
 };
 
 struct smartypi_settings_t
@@ -260,6 +292,11 @@ public:
     void set_fps(int fps);
     void inc_time();
     void inc_traffic();
+
+    // Input binding matrix helpers (Stage 1: one binding per (group, target) cell).
+    const device_binding_t* find_binding(int group, int target) const;
+    void set_binding(const device_binding_t& binding);
+    void clear_binding(int group, int target);
 
     // To support multi-threaded SDL module:
     bool videoRestartRequired = false;
