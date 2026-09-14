@@ -28,6 +28,7 @@
 #include <condition_variable>
 #include <array>
 #include <string>
+#include <vector>
 #include <SDL.h>
 #include <semaphore>
 #include <chrono>
@@ -104,6 +105,18 @@ public:
     void tick();
     void fill_and_mix(uint8_t *stream, int len);
 
+    // Playback device enumeration/selection, shared by start_audio() and the
+    // SOUND menu's OUTPUT DEVICE entry. The list persists for the process
+    // lifetime; refresh_playback_devices() re-enumerates on request (e.g.
+    // start_audio(), or the menu when the list is still empty because sound
+    // was never enabled).
+    void refresh_playback_devices();
+    const std::vector<std::string>& playback_devices() const { return playback_devices_; }
+    // Name of the currently open device, resolved by start_audio(); empty when
+    // using the SDL default (or when no device is open).
+    const std::string& active_device_name() const { return active_device_name_; }
+    bool device_open() const { return dev != 0; }
+
 private:
     // Stereo. Could be changed, requires some recoding.
     static const uint32_t CHANNELS = 2;
@@ -116,6 +129,13 @@ private:
     uint32_t mix_buffer_bytes; // Each frame is 250 samples and 8ms at 31250kHz sample rate.
     int audio_paused;
     SDL_AudioDeviceID dev;
+
+    // Playback device list (capped at 32), filled by refresh_playback_devices();
+    // and which rule start_audio() used to pick the currently open device.
+    std::vector<std::string> playback_devices_;
+    std::string active_device_name_;
+    enum { RULE_DEFAULT = 0, RULE_BY_NAME, RULE_BY_INDEX };
+    int active_device_rule_ = RULE_DEFAULT;
 
     // R3: how long sdl_callback_trampoline() will wait on samplesReady before
     // giving up and filling the callback with silence. Set from the actual

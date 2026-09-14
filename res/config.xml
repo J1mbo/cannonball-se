@@ -130,6 +130,11 @@
          device, e.g. HDMI Audio and any USB sound device. Enter the number under playback_device corresponding to the device
          listed by the game. -->
 	<playback_device>0</playback_device>
+	<!-- Name of the SDL playback device, exactly as printed by -list-audio-devices. When set, this
+	     takes priority over playback_device above, matched exactly then as a substring, so a device
+	     keeps working even if its index changes between boots. Leave empty to use the index. Also
+	     selectable live from the in-game SOUND menu (OUTPUT DEVICE). -->
+	<playback_device_name></playback_device_name>
 	<!-- Callback Rate - either 0 (8ms) or 1 (16ms). 16ms will double the audio latency but may reduce dropouts on some systems. -->
 	<callback_rate>0</callback_rate>
 	<!-- Real-time audio scheduling - 0 (off, default) or 1. When 1, the audio threads request SCHED_FIFO (needs an rtprio grant, see res/50-cannonball-audio.conf). Off by default: on some boards RT audio preempts the render threads and costs frame rate. Use callback_rate=1 to avoid dropouts instead. -->

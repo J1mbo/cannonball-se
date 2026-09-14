@@ -296,6 +296,8 @@ void Config::load()
     sound.rt_priority     = cfg.get_int("sound.rt_priority",0);
     // Index of SDL playback device to request, -1 for default
     sound.playback_device = cfg.get_int("sound.playback_device", -1);
+    // Name of SDL playback device to request; takes priority over the index above when set
+    sound.playback_device_name = cfg.get_string("sound.playback_device_name", "");
 
     // Custom Music. Search for enabled custom tracks
     get_custom_music(data.res_path);
@@ -666,7 +668,8 @@ bool Config::save()
     cfg.put_int("sound.rate",               sound.rate);             // audio sampling rate e.g. 44100 (Hz)
     cfg.put_int("sound.callback_rate",      sound.callback_rate);    // JJP - 0=8ms callbacks, 1=16ms
     cfg.put_int("sound.rt_priority",        sound.rt_priority);      // JJP - 0=off (default), 1=SCHED_FIFO audio threads
-    cfg.put_int("sound.playback_device",    sound.playback_device);  // JJP - Index of SDL playback device to request, -1 for default  
+    cfg.put_int("sound.playback_device",    sound.playback_device);  // JJP - Index of SDL playback device to request, -1 for default
+    cfg.put_string("sound.playback_device_name", sound.playback_device_name); // JJP - Name of SDL playback device; takes priority over index when set
     cfg.put_int("sound.wave_volume",        sound.wave_volume);      // JJP - volume adjustment to .wav files
 
     if (config.smartypi.enabled)

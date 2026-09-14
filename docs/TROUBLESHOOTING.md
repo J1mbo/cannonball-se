@@ -13,16 +13,20 @@ Covers the problems people actually hit. For frame-rate problems see
 SDL enumerates audio devices in an order that can change between boots on some systems, so
 the device index in `sound.playback_device` may no longer point at the device you chose.
 
+The device can now be selected by name instead, from the in-game SOUND menu (OUTPUT DEVICE,
+which cycles DEFAULT and each detected device and applies the change immediately) or by
+setting `sound.playback_device_name` directly in `res/config.xml`. A configured name is
+matched exactly, then as a substring, so it keeps working even if the index changes.
+`sound.playback_device` is only used as a fallback when no name is set or the named device
+can't be found; a warning is printed to the console whenever that fallback happens.
+
 Run:
 
 ```bash
 build/cannonball-se -list-audio-devices
 ```
 
-which prints the devices and their indices, then set `sound.playback_device` in
-`res/config.xml` to the right number.
-
-There is currently no way to select a device by name. This is a known limitation.
+which prints the devices and their indices/names.
 
 ### Stuttering, crackling or dropouts
 
