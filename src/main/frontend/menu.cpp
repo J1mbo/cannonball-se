@@ -1180,7 +1180,7 @@ void Menu::tick_menu()
             else if (SELECTED(ENTRY_RUMBLE_TEST))
             {
                 bool started = rumble::test(rumble::TEST, 400);
-                display_message(started ? (std::string("TESTING: ") + rumble::active_backend_name())
+                display_message(started ? (std::string("TESTING - ") + rumble::active_backend_name())
                                          : "NO RUMBLE DEVICE");
             }
             else if (SELECTED(ENTRY_RUMBLE_EXTRAS))
@@ -1570,9 +1570,8 @@ void Menu::refresh_menu()
                 std::string label = RUMBLE_BACKEND_LABELS[idx];
                 if (idx == 0) // AUTO: also show what it actually resolved to (40-col budget - only
                 {             // shown for AUTO; an explicit choice already names itself)
-                    label += " (ACTIVE: ";
+                    label += " - ";
                     label += rumble::active_backend_name();
-                    label += ")";
                 }
                 set_menu_text(ENTRY_RUMBLE_BACKEND, label);
             }
@@ -1584,7 +1583,7 @@ void Menu::refresh_menu()
                 int idx = rumble::hid_selected_profile_index();
                 std::string label = (idx >= 0) ? rumble::hid_profile_name(idx) : "NONE";
                 if (idx >= 0 && rumble::configured_backend() == rumble::AUTO)
-                    label += " (SUGGESTED)";
+                    label += " - SUGGESTED";
                 set_menu_text(ENTRY_RUMBLE_PROFILE, label);
             }
             else if (SELECTED(ENTRY_RUMBLE_EXTRAS))
@@ -1920,7 +1919,7 @@ void Menu::redefine_joystick()
         return false;
     };
 
-    ohud.blit_text_new(12, 2, "CONTROL BINDINGS", ohud.GREEN);
+    ohud.blit_text_new(12, 2, "CONFIGURE INPUTS", ohud.GREEN);
 
     ohud.blit_text_new(1,  4, "CONTROL", ohud.GREEN);
     ohud.blit_text_new(14, 4, "KEYBOARD", (bind_row != BACK_ROW && bind_col == 0) ? ohud.PINK : ohud.GREEN);
@@ -1980,8 +1979,7 @@ void Menu::redefine_joystick()
     ohud.blit_text_new(18, 20, "BACK", (bind_row == BACK_ROW) ? ohud.PINK : ohud.GREEN);
 
     ohud.blit_text_new(1, 22, "ARROWS - SELECT   ENTER - CHANGE", ohud.GREY);
-    ohud.blit_text_new(1, 23, "DEL/BSP - CLEAR   MENU - EXIT", ohud.GREY);
-    ohud.blit_text_new(1, 24, "WHEEL = ALL RAW DEVICES, NO DB NEEDED", ohud.GREY);
+    ohud.blit_text_new(1, 23, "DEL/BSP - CLEAR   MENU  - EXIT", ohud.GREY);
 
     // Dynamic prompt / result line.
     std::string dyn;
@@ -2100,6 +2098,12 @@ void Menu::rumble_editor()
         ROW_KEEPALIVE, ROW_TEST, ROW_ACTIONS
     };
 
+    // 10 bytes at 3 columns each is the most that fits the 40-column row after the "TEMPLATE  " label.
+    constexpr int HID_UI_MAX_LEN = 10;
+    // Keepalive re-sends the last non-OFF report for devices whose rumble times out; periods
+    // beyond two seconds are not useful.
+    constexpr int HID_UI_MAX_KEEPALIVE_MS = 2000;
+
     // Row list depends on hid_edit.mode - PRESETS shows ON/OFF/PULSE, INTENSITY shows
     // TEMPLATE/LOW BYTE/HIGH BYTE/SCALE instead (B.6.2).
     std::vector<RowKind> rows;
@@ -2128,7 +2132,7 @@ void Menu::rumble_editor()
     if (hid_edit_row >= row_count) hid_edit_row = row_count - 1;
     if (hid_edit_row < 0) hid_edit_row = 0;
 
-    const int len = std::max(1, std::min<int>(rumble::HidProfileEdit::MAX_LEN, hid_edit.report_len));
+    const int len = std::max(1, std::min<int>(HID_UI_MAX_LEN, hid_edit.report_len));
 
     auto field_count = [&](RowKind k) -> int
     {
@@ -2230,8 +2234,13 @@ void Menu::rumble_editor()
             switch (cur)
             {
                 case ROW_LEN:
-                    hid_edit.report_len = std::max(1, std::min<int>(rumble::HidProfileEdit::MAX_LEN, hid_edit.report_len + delta));
+                {
+                    // Wraps 1..HID_UI_MAX_LEN instead of clamping (+1 past the top rolls to 1,
+                    // -1 below the bottom rolls to the top); modular so ACCEL's +16 step works.
+                    int v = ((hid_edit.report_len - 1 + delta) % HID_UI_MAX_LEN + HID_UI_MAX_LEN) % HID_UI_MAX_LEN;
+                    hid_edit.report_len = v + 1;
                     break;
+                }
                 case ROW_REPORTID:
                     hid_edit.report_id = std::max(-1, std::min(255, hid_edit.report_id + delta));
                     break;
@@ -2244,17 +2253,30 @@ void Menu::rumble_editor()
                 case ROW_PULSE:    hid_edit.pulse[hid_edit_field] = static_cast<uint8_t>(hid_edit.pulse[hid_edit_field] + delta); break;
                 case ROW_TEMPLATE: hid_edit.tmpl[hid_edit_field]  = static_cast<uint8_t>(hid_edit.tmpl[hid_edit_field]  + delta); break;
                 case ROW_LOWBYTE:
-                    hid_edit.pos_low = std::max(-1, std::min(len - 1, hid_edit.pos_low + delta));
+                {
+                    // Wraps -1..len-1 (len+1 values) instead of clamping, both directions;
+                    // modular so ACCEL's +16 step works.
+                    int span = len + 1;
+                    hid_edit.pos_low = ((hid_edit.pos_low + 1 + delta) % span + span) % span - 1;
                     break;
+                }
                 case ROW_HIGHBYTE:
-                    hid_edit.pos_high = std::max(-1, std::min(len - 1, hid_edit.pos_high + delta));
+                {
+                    int span = len + 1;
+                    hid_edit.pos_high = ((hid_edit.pos_high + 1 + delta) % span + span) % span - 1;
                     break;
+                }
                 case ROW_SCALE:
                     hid_edit.scale = (hid_edit.scale == rumble::HID_NIBBLE_HI) ? rumble::HID_BYTE : rumble::HID_NIBBLE_HI;
                     break;
                 case ROW_KEEPALIVE:
-                    hid_edit.keepalive_ms = std::max(0, std::min(60000, hid_edit.keepalive_ms + delta));
+                {
+                    // Wraps 0..HID_UI_MAX_KEEPALIVE_MS instead of clamping; modular so ACCEL's
+                    // +16 step works.
+                    int span = HID_UI_MAX_KEEPALIVE_MS + 1;
+                    hid_edit.keepalive_ms = ((hid_edit.keepalive_ms + delta) % span + span) % span;
                     break;
+                }
                 default: break;
             }
         }
@@ -2270,15 +2292,15 @@ void Menu::rumble_editor()
     {
         char buf[40];
         if (t.present)
-            std::snprintf(buf, sizeof(buf), "DEVICE  %.20s %04X:%04X", t.name.c_str(), t.vid, t.pid);
+            std::snprintf(buf, sizeof(buf), "DEVICE - %.20s %04X %04X", t.name.c_str(), t.vid, t.pid);
         else
-            std::snprintf(buf, sizeof(buf), "DEVICE  (NONE ATTACHED)");
+            std::snprintf(buf, sizeof(buf), "DEVICE - NONE ATTACHED");
         ohud.blit_text_new(1, 4, buf, ohud.GREY);
     }
 
     {
         char buf[40];
-        std::snprintf(buf, sizeof(buf), "VID/PID %04X:%04X   USE DEVICE", hid_edit.vid, hid_edit.pid);
+        std::snprintf(buf, sizeof(buf), "VID PID %04X %04X   USE DEVICE", hid_edit.vid, hid_edit.pid);
         ohud.blit_text_new(1, 6, buf, row_colour(ROW_DEVICE));
     }
     {
@@ -2306,9 +2328,9 @@ void Menu::rumble_editor()
             line += hex2(bytes[i]);
             if (i != len - 1) line += ' ';
         }
-        ohud.blit_text_new(1, y, line.c_str(), row_colour(kind));
-        if (rows[hid_edit_row] == kind) // overlay the selected byte in PINK
-        {
+        ohud.blit_text_new(1, y, line.c_str(), ohud.GREEN);
+        if (rows[hid_edit_row] == kind) // selected row: overlay ONLY the current byte in PINK
+        {                                // (label and other bytes stay GREEN so the field stands out)
             int x = 1 + static_cast<int>(std::strlen(label)) + hid_edit_field * 3;
             ohud.blit_text_new(x, y, hex2(bytes[hid_edit_field]).c_str(), ohud.PINK);
         }
@@ -2342,7 +2364,7 @@ void Menu::rumble_editor()
 
     {
         char buf[32];
-        std::snprintf(buf, sizeof(buf), "KEEPALIVE      %d MS", hid_edit.keepalive_ms);
+        std::snprintf(buf, sizeof(buf), "KEEPALIVE  %d MS", hid_edit.keepalive_ms);
         ohud.blit_text_new(1, 15, buf, row_colour(ROW_KEEPALIVE));
     }
 

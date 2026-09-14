@@ -512,7 +512,7 @@ namespace rumble
         {
             Backend cfg = static_cast<Backend>(config.controls.rumble_backend);
             if ((cfg == HID_REPORT || cfg == AUTO) && hid_permission_denied())
-                return "HID: PERMISSION DENIED";
+                return "HID - PERMISSION DENIED";
         }
         return active ? active->name() : "NONE";
     }
