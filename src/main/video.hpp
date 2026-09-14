@@ -61,7 +61,7 @@ public:
     uint64_t prof_ns_tile_fg    = 0;   // render_tile_layer(pixels, 0, 0)
     uint64_t prof_ns_road_fg    = 0;   // hwroad render_foreground
     uint64_t prof_ns_sprites    = 0;
-    uint64_t prof_ns_text       = 0;
+    uint64_t prof_ns_text       = 0;   // render_text_layer(); includes the menu dim pass (STATE_MENU) when active
     // Frame-pipeline phase timing (the rest of the frame outside prepare_frame).
     // prepare_frame's own cost is the sum of the eight prof_ns_* above; these
     // four cover the rest of the frame so the whole 16.6ms budget is accounted:

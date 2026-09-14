@@ -30,15 +30,24 @@
 #include "globals.hpp"
 #include "frontend/config.hpp"
 #include "engine/oroad.hpp"
+#include "main.hpp"            // cannonball::state / STATE_MENU (menu dim gate, below)
+#include "hwvideo/hwarch.hpp"  // CB_HAVE_NEON / CB_FORCE_SCALAR detection (menu dim pass)
 
 #include "sdl2/rendersurface.hpp"
 
 #ifdef CB_SPR_DUMP
-#include "main.hpp"   // -dumpspr command-line option (cannonball::dumpspr_*)
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
+#endif
+
+// Menu dim pass (dim_frame_shadow, below): SSE2 intrinsics when NEON isn't
+// available for this target and CB_FORCE_SCALAR isn't forcing the portable path.
+#if !defined(CB_FORCE_SCALAR) && !defined(CB_HAVE_NEON) && \
+    (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+#include <emmintrin.h>
+#define CB_MENU_DIM_SSE2 1
 #endif
 
 Video video;
@@ -182,6 +191,63 @@ void Video::set_shadow_intensity(float f)
 {
     renderer->set_shadow_intensity(f);
 }
+
+// Menu dim pass: ORs the shadow-palette bit (S16_PALETTE_ENTRIES = 0x1000,
+// globals.hpp) over the whole S16 frame, so every pixel resolves through the
+// pre-darkened palette row RenderBase::convert_palette already built
+// (renderbase.cpp) -- no new tables. Road/tile layers plain-store (< 0x1000)
+// and sprites OR bit 12 before this runs in prepare_frame; text plain-stores
+// after, so it always comes out undimmed (invariant: tools/sprite_bench/
+// analysis/SPRITE_IMPLEMENTATION_SPEC.md, "no value reaches 0x2000"). Mirrors
+// the fill_pairs idiom in hwroad.cpp: NEON unrolled 2x / SSE2 / scalar uint32
+// pairs, unaligned-capable loads/stores throughout.
+#if defined(CB_HAVE_NEON)
+static void dim_frame_shadow(uint16_t* p, std::size_t n)
+{
+    const uint16x8_t mask = vdupq_n_u16(S16_PALETTE_ENTRIES);
+    while (n >= 16) {
+        vst1q_u16(p,     vorrq_u16(vld1q_u16(p),     mask));
+        vst1q_u16(p + 8, vorrq_u16(vld1q_u16(p + 8), mask));
+        p += 16;
+        n -= 16;
+    }
+    while (n >= 8) {
+        vst1q_u16(p, vorrq_u16(vld1q_u16(p), mask));
+        p += 8;
+        n -= 8;
+    }
+    while (n-- > 0)
+        *p++ |= S16_PALETTE_ENTRIES;
+}
+#elif defined(CB_MENU_DIM_SSE2)
+static void dim_frame_shadow(uint16_t* p, std::size_t n)
+{
+    const __m128i mask = _mm_set1_epi16((short)S16_PALETTE_ENTRIES);
+    while (n >= 16) {
+        __m128i* d0 = reinterpret_cast<__m128i*>(p);
+        __m128i* d1 = reinterpret_cast<__m128i*>(p + 8);
+        _mm_storeu_si128(d0, _mm_or_si128(_mm_loadu_si128(d0), mask));
+        _mm_storeu_si128(d1, _mm_or_si128(_mm_loadu_si128(d1), mask));
+        p += 16;
+        n -= 16;
+    }
+    while (n-- > 0)
+        *p++ |= S16_PALETTE_ENTRIES;
+}
+#else
+static void dim_frame_shadow(uint16_t* p, std::size_t n)
+{
+    // No SIMD path available (or CB_FORCE_SCALAR): OR 32 bits at a time.
+    // pixels[] is allocated 64-byte aligned (Video::init, above), so p is
+    // always at least 4-byte aligned here.
+    const uint32_t mask32 = (uint32_t(S16_PALETTE_ENTRIES) << 16) | S16_PALETTE_ENTRIES;
+    uint32_t* p32 = reinterpret_cast<uint32_t*>(p);
+    for (std::size_t i = n / 2; i > 0; --i)
+        *p32++ |= mask32;
+    if (n & 1)
+        p[n - 1] |= S16_PALETTE_ENTRIES;
+}
+#endif
 
 #ifdef CB_SPR_DUMP
 // ---------------------------------------------------------------------------
@@ -367,6 +433,13 @@ void Video::prepare_frame()
             cb_sprdump_written++;
         }
 #endif
+
+        // dim_frame_shadow (above), gated on the menu state set by tick(),
+        // which runs immediately before prepare_frame() on this same thread
+        // (prepare_thread(), main.cpp) -- no cross-thread sync needed.
+        if (cannonball::state == cannonball::STATE_MENU)
+            dim_frame_shadow(pixels, (std::size_t)config.s16_width * config.s16_height);
+
         tile_layer->render_text_layer(pixels, 1);
         const clk::time_point t3 = clk::now();
 
