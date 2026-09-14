@@ -143,6 +143,8 @@ set(src_sdl
     "${main_cpp_base}/sdl2/wav123.hpp"
     "${main_cpp_base}/sdl2/timer.hpp"
     "${main_cpp_base}/sdl2/input.hpp"
+    "${main_cpp_base}/sdl2/rumble.hpp"
+    "${main_cpp_base}/sdl2/rumble_backend.hpp"
     "${main_cpp_base}/sdl2/renderbase.hpp"
     "${main_cpp_base}/sdl2/snes_ntsc.h"
     "${main_cpp_base}/sdl2/snes_ntsc_simd.h"
@@ -151,6 +153,9 @@ set(src_sdl
     "${main_cpp_base}/sdl2/wav123.cpp"
     "${main_cpp_base}/sdl2/timer.cpp"
     "${main_cpp_base}/sdl2/input.cpp"
+    "${main_cpp_base}/sdl2/rumble.cpp"
+    "${main_cpp_base}/sdl2/rumble_backend_sdl.cpp"
+    "${main_cpp_base}/sdl2/rumble_backend_ffb.cpp"
     "${main_cpp_base}/sdl2/renderbase.cpp"
     "${main_cpp_base}/sdl2/snes_ntsc.cpp"
     )

@@ -14,6 +14,7 @@
     - CRT effect handling settings
     - Play stats load/save
     - Input binding matrix load/save (controls.input_mode, controls.bindings.*)
+    - Rumble subsystem load/save (controls.rumble_backend/rumble_device/rumble_extras)
 ***************************************************************************/
 
 #include <iostream>
@@ -427,6 +428,23 @@ void Config::load()
     }
 
     // ------------------------------------------------------------------------
+    // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.4). HID_REPORT (profiles/custom editor)
+    // is Stage 4b; the string is still recognised here so a Stage-4b config.xml round-trips, but
+    // no backend implements it yet - rumble.cpp treats it like OFF.
+    // ------------------------------------------------------------------------
+    {
+        std::string backend_str = cfg.get_string("controls.rumble_backend", "auto");
+        if      (backend_str == "sdl")    controls.rumble_backend = 1; // rumble::SDL_CONTROLLER
+        else if (backend_str == "haptic") controls.rumble_backend = 2; // rumble::SDL_HAPTIC
+        else if (backend_str == "hid")    controls.rumble_backend = 3; // rumble::HID_REPORT
+        else if (backend_str == "ffb")    controls.rumble_backend = 4; // rumble::FFB
+        else if (backend_str == "off")    controls.rumble_backend = 5; // rumble::OFF
+        else                              controls.rumble_backend = 0; // rumble::AUTO (default; also catches unrecognised values)
+    }
+    controls.rumble_device = cfg.get_string("controls.rumble_device", "");
+    controls.rumble_extras = cfg.get_int("controls.rumble_extras", 0);
+
+    // ------------------------------------------------------------------------
     // Engine Settings
     // ------------------------------------------------------------------------
 
@@ -635,6 +653,16 @@ bool Config::save()
             }
         }
     }
+
+    // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.4).
+    {
+        static const char* kBackendStr[] = { "auto", "sdl", "haptic", "hid", "ffb", "off" };
+        int idx = controls.rumble_backend;
+        if (idx < 0 || idx > 5) idx = 0;
+        cfg.put_string("controls.rumble_backend", kBackendStr[idx]);
+    }
+    cfg.put_string("controls.rumble_device", controls.rumble_device);
+    cfg.put_int("controls.rumble_extras", controls.rumble_extras);
 
     cfg.put_int("engine.freeplay",        (int) engine.freeplay);
     cfg.put_int("engine.time",            engine.freeze_timer ? 4 : engine.dip_time);

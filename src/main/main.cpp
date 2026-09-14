@@ -23,6 +23,7 @@
 // SDL Specific Code
 #include "sdl2/timer.hpp"
 #include "sdl2/input.hpp"
+#include "sdl2/rumble.hpp"
 
 #include "video.hpp"
 
@@ -211,6 +212,9 @@ bool pause_engine;
 static void quit_func(int code)
 {
     audio.stop_audio();
+    // Rumble subsystem (Stage 4a): stop and release the active backend before Input closes the
+    // underlying SDL_Joystick/SDL_GameController handles it may still be referencing.
+    rumble::shutdown();
     input.close_joy();
     forcefeedback::close();
     if (menu) delete menu;
@@ -271,12 +275,16 @@ static void process_events(void)
                 // already-attached device on the first poll too; add_joystick de-dups on
                 // instance id). See tools/INPUT_BINDING_DESIGN.md Stage 2 A.3.1.
                 input.add_joystick(event.jdevice.which);
+                // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.2.1/B.7.10): re-resolve the
+                // target device and backend now that the device set has changed.
+                rumble::on_devices_changed();
                 break;
 
             case SDL_JOYDEVICEREMOVED:
                 // Here event.jdevice.which is the instance id; remove_joystick only tears down
                 // the specific device removed, not every open device.
                 input.remove_joystick(event.jdevice.which);
+                rumble::on_devices_changed();
                 break;
 
             case SDL_QUIT:
@@ -344,6 +352,9 @@ static void tick()
             oinputs.init();
             outrun.outputs->init();
             menu->init();
+            // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.7.5): force OFF on the
+            // game->menu transition rather than relying on D_MOTOR/skid both reading false.
+            rumble::stop_all();
             cannonball::state = STATE_MENU;
             break;
     }
@@ -352,12 +363,14 @@ static void tick()
     outrun.outputs->writeDigitalToConsole();
 
     if (tick_frame) {
-        // Controller Rumble. Only rumble in-game.
-        // JJP - Enhancement - high frequency rumble 'ticks' when skidding on road
-        if (outrun.SkiddingOnRoad() && outrun.game_state == GS_INGAME)
-            input.set_rumble(true, config.controls.rumble, 1);
-        else
-            input.set_rumble(outrun.outputs->is_set(OOutputs::D_MOTOR), config.controls.rumble, 0);
+        // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.2.1): MOTOR follows D_MOTOR in
+        // every state, exactly as before, so the SmartyPi MOTOR TEST (cabdiag.cpp) still drives
+        // it; SKID is the high-frequency skid-pulse enhancement. The mixer picks whichever is
+        // higher priority when both are set (CRASH > GEAR > START_REV > MOTOR > SKID) - the
+        // backend, safety and menu logic all live in sdl2/rumble.cpp.
+        rumble::set_level(rumble::MOTOR, outrun.outputs->is_set(OOutputs::D_MOTOR) ? 1.f : 0.f);
+        rumble::set_level(rumble::SKID,  (outrun.SkiddingOnRoad() && outrun.game_state == GS_INGAME) ? 1.f : 0.f);
+        rumble::tick();
     }
 }
 
@@ -1135,14 +1148,19 @@ int main(int argc, char* argv[]) {
 
     /* Initalize SDL Controls */
 
-    // If a controller has Rumble feature that is supported by SDL, it will be enabled here.
-    // If the controller has Rumble not supported by SDL, it can be used anyway via /dev/hidraw.
-    // In that case, Input::set_rumble() needs to be amended for the specific controller.
-    // Controller Rumble function is controlled in tick() above.
+    // Rumble backend selection, mixing and the B.7 safety limits live in sdl2/rumble.cpp
+    // (Stage 4a, tools/INPUT_BINDING_DESIGN.md Deliverable B) - SDL_GameControllerRumble/SDL_JoystickRumble,
+    // SDL_Haptic and the forcefeedback:: adapter are all tried there via rumble::on_devices_changed(),
+    // called below as devices attach. Controller Rumble function is controlled in tick() above.
 
     input.init(config.controls.pad_id,
                config.controls.keyconfig, config.controls.padconfig,
                config.controls.analog,    config.controls.axis, config.controls.invert, config.controls.asettings);
+
+    // No devices are attached yet at this point (SDL_JOYDEVICEADDED is delivered on the first
+    // event poll, once main_loop() starts) - rumble::init() just loads the master strength and
+    // lands on OFF until the SDL_JOYDEVICEADDED handling above resolves a real target + backend.
+    rumble::init();
 
     // Regardless to rumble, if haptic is enabled in config.xml, this is handled via ffeedback.cpp using either
     // DirectX (Windows) or /dev/input/event on Linux. This also includes control of real cabinet hardware via

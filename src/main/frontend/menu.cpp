@@ -24,6 +24,8 @@
 #include "frontend/cabdiag.hpp"
 #include "frontend/ttrial.hpp"
 
+#include "sdl2/rumble.hpp"
+
 #include <iostream>
 
 
@@ -256,6 +258,7 @@ void Menu::populate_controls()
     menu_controls.push_back(ENTRY_REDEFKEY);
     menu_controls.push_back(ENTRY_DSTEER);
     menu_controls.push_back(ENTRY_DPEDAL);
+    menu_controls.push_back(ENTRY_FEEDBACK);
     menu_controls.push_back(ENTRY_BACK);
 
     if (menu_controls_gp.size() > 0)
@@ -265,6 +268,16 @@ void Menu::populate_controls()
     if (input.rumble_supported) menu_controls_gp.push_back(ENTRY_RUMBLE);
     menu_controls_gp.push_back(ENTRY_REDEFJOY);
     menu_controls_gp.push_back(ENTRY_BACK);
+
+    // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.6.1): strength/backend/test only -
+    // HID PROFILE and ADVANCED HID SETUP are Stage 4b.
+    if (menu_feedback.size() > 0)
+        menu_feedback.clear();
+
+    menu_feedback.push_back(ENTRY_RUMBLE);
+    menu_feedback.push_back(ENTRY_RUMBLE_BACKEND);
+    menu_feedback.push_back(ENTRY_RUMBLE_TEST);
+    menu_feedback.push_back(ENTRY_BACK);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1079,6 +1092,10 @@ void Menu::tick_menu()
                 config.controls.input_mode ^= 1;
                 input.reset_keys();
                 input.rebuild_binding_cache();
+                // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.7.5): the target device
+                // depends on the active input_mode group, so re-resolve it now (this always
+                // stop_all()s first, forcing OFF before anything might change underneath it).
+                rumble::on_devices_changed();
             }
             else if (SELECTED(ENTRY_CONFIGUREGP))
                 set_menu(&menu_controls_gp);
@@ -1099,6 +1116,8 @@ void Menu::tick_menu()
                 if (++config.controls.pedal_speed > 9)
                     config.controls.pedal_speed = 1;
             }
+            else if (SELECTED(ENTRY_FEEDBACK))
+                set_menu(&menu_feedback);
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
         }
@@ -1114,6 +1133,7 @@ void Menu::tick_menu()
             {
                 config.controls.rumble += 0.25f;
                 if (config.controls.rumble > 1.0f) config.controls.rumble = 0;
+                rumble::set_master(config.controls.rumble);
             }
             else if (SELECTED(ENTRY_REDEFJOY))
             {
@@ -1122,6 +1142,29 @@ void Menu::tick_menu()
                 redef_state = 0;
                 input.joy_button = -1;
                 input.reset_axis_config();
+            }
+            else if (SELECTED(ENTRY_BACK))
+                menu_back();
+        }
+        else if (menu_selected == &menu_feedback)
+        {
+            // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.6.1): strength/backend/test only.
+            if (SELECTED(ENTRY_RUMBLE))
+            {
+                config.controls.rumble += 0.25f;
+                if (config.controls.rumble > 1.0f) config.controls.rumble = 0;
+                rumble::set_master(config.controls.rumble);
+            }
+            else if (SELECTED(ENTRY_RUMBLE_BACKEND))
+            {
+                int next = (static_cast<int>(rumble::configured_backend()) + 1) % 6; // AUTO..OFF wrap
+                rumble::set_backend(static_cast<rumble::Backend>(next));
+            }
+            else if (SELECTED(ENTRY_RUMBLE_TEST))
+            {
+                bool started = rumble::test(rumble::TEST, 400);
+                display_message(started ? (std::string("TESTING: ") + rumble::active_backend_name())
+                                         : "NO RUMBLE DEVICE");
             }
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
@@ -1477,6 +1520,24 @@ void Menu::refresh_menu()
         {
             if (SELECTED(ENTRY_ANALOG))             set_menu_text(ENTRY_ANALOG, ANALOG_LABELS[config.controls.analog]);
             else if (SELECTED(ENTRY_RUMBLE))        set_menu_text(ENTRY_RUMBLE, RUMBLE_LABELS[std::min(4, (int)(config.controls.rumble / 0.25f))]);
+        }
+        else if (menu_selected == &menu_feedback)
+        {
+            if (SELECTED(ENTRY_RUMBLE))
+                set_menu_text(ENTRY_RUMBLE, RUMBLE_LABELS[std::min(4, (int)(config.controls.rumble / 0.25f))]);
+            else if (SELECTED(ENTRY_RUMBLE_BACKEND))
+            {
+                int idx = config.controls.rumble_backend;
+                if (idx < 0 || idx > 5) idx = 0;
+                std::string label = RUMBLE_BACKEND_LABELS[idx];
+                if (idx == 0) // AUTO: also show what it actually resolved to (40-col budget - only
+                {             // shown for AUTO; an explicit choice already names itself)
+                    label += " (ACTIVE: ";
+                    label += rumble::active_backend_name();
+                    label += ")";
+                }
+                set_menu_text(ENTRY_RUMBLE_BACKEND, label);
+            }
         }
         else if (menu_selected == &menu_engine || menu_selected == &menu_s_dips)
         {

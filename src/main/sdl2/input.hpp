@@ -10,6 +10,9 @@
     Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
     - Input binding matrix: multi-device runtime (InputDevice, hot-plug,
       per-device resolved binding cache). See tools/INPUT_BINDING_DESIGN.md Stage 2.
+    - Rumble subsystem (Stage 4a): removed set_rumble()/haptic/hidraw_device -
+      moved to sdl2/rumble.* - and added get_devices() so the new rumble
+      module can pick a target device. See tools/INPUT_BINDING_DESIGN.md Deliverable B.
 ***************************************************************************/
 
 #pragma once
@@ -121,6 +124,10 @@ public:
     void rebuild_binding_cache();                  // rebuild resolved[]; derive gamepad/analog
     void reset_keys();                             // clear keys[] contributions from joystick groups
 
+    // Stage 4a (tools/INPUT_BINDING_DESIGN.md B.2.3): read-only enumeration for the rumble subsystem's
+    // target-device selection. Input owns the device list; rumble.cpp never mutates it.
+    const std::vector<InputDevice>& get_devices() const { return devices; }
+
     void handle_key_up(SDL_Keysym*);
     void handle_key_down(SDL_Keysym*);
     void handle_joy_axis(SDL_JoyAxisEvent*);
@@ -136,7 +143,6 @@ public:
     bool has_pressed(presses p);
     void reset_axis_config();
     int get_axis_config();
-    void set_rumble(bool, float strength = 1.0f, int mode = 0);
 
 private:
     static const int CENTRE = 0x80;
@@ -145,11 +151,6 @@ private:
     // (index == pad_id) is flagged legacy_device and drives the Stage 2 legacy fallback
     // path (A.3.3) when bindings_active == false.
     std::vector<InputDevice> devices;
-
-    // Force-feedback / rumble state that is not yet per-device (Stage 4 moves this into the
-    // rumble subsystem and removes it from Input). Kept exactly as before for now.
-    SDL_Haptic* haptic;
-    int hidraw_device = -1; // used for gamepad haptics where not supported by SDL
 
     // Configurations for keyboard and joypad
     int pad_id;

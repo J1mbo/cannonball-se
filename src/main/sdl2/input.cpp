@@ -12,12 +12,15 @@
       resolved binding cache, group gating, WHEEL-only zone/dead steering curve,
       derived analog, default GameController profile materialisation). The legacy
       single-device path (handle_axis/handle_joy/store_last_axis/get_axis_config/
-      scale_trigger, plus the hidraw/set_rumble code) is kept verbatim for the
-      device at controls.pad_id when controls.bindings_active == false; see
-      tools/INPUT_BINDING_DESIGN.md Stage 2 (A.3).
+      scale_trigger) is kept verbatim for the device at controls.pad_id when
+      controls.bindings_active == false; see tools/INPUT_BINDING_DESIGN.md Stage 2 (A.3).
     - Bug fix: wheel-zone maths corrected from divide to multiply-up (both in the
       new apply_axis() and in the legacy handle_axis() below) - see
       tools/INPUT_BINDING_DESIGN.md S0.4.
+    - Rumble subsystem (Stage 4a): set_rumble(), the udev/hidraw discovery and the
+      SDL_Haptic setup formerly here have moved to sdl2/rumble.cpp and
+      sdl2/rumble_backend_sdl.cpp; Input no longer contains any rumble/haptic
+      code. See tools/INPUT_BINDING_DESIGN.md Deliverable B.
 ***************************************************************************/
 
 #include <iostream>
@@ -34,17 +37,6 @@
 #  endif
 #else
   namespace forcefeedback { bool init(int,int,int); int set(int,int); void close(); bool is_supported(); }
-#endif
-
-#ifndef WIN32
-// JJP - Includes for udev, to find gamepad haptics where not supported by SDL
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <libudev.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
 #endif
 
 #include "frontend/config.hpp"
@@ -78,9 +70,11 @@ namespace
 
 Input::Input(void)
 {
-    haptic = NULL;
-
     gamepad = false;
+
+    // Rumble/haptic detection has moved to the rumble subsystem (Stage 4a); this field is no
+    // longer set by Input and always reads false. Kept only because menu.cpp's legacy
+    // menu_controls_gp still references it (that submenu is retired in Stage 3, not this one).
     rumble_supported = false;
 }
 
@@ -229,14 +223,10 @@ void Input::remove_joystick(SDL_JoystickID id)
 
         if (was_legacy)
         {
-            // The legacy device is gone: tear down the force-feedback/haptic state it owned,
-            // exactly as the original close_joy() did for the single device it used to track.
-            if (haptic != nullptr)
-            {
-                SDL_HapticClose(haptic);
-                haptic = nullptr;
-                rumble_supported = false;
-            }
+            // The legacy device is gone: tear down the wheel-haptic force-feedback state it
+            // owned, exactly as the original close_joy() did for the single device it used to
+            // track. (Rumble's own SDL_Haptic handle, if any, lives in the rumble subsystem now -
+            // Stage 4a - and is torn down via rumble::on_devices_changed(), called from main.cpp.)
             if (forcefeedback::is_supported())
                 forcefeedback::close();
         }
@@ -263,12 +253,6 @@ void Input::close_joy()
     }
     devices.clear();
 
-    if (haptic != nullptr)
-    {
-        SDL_HapticClose(haptic);
-        haptic = nullptr;
-        rumble_supported = false;
-    }
     // Close kernel/DI force feedback backend if active
     if (forcefeedback::is_supported())
         forcefeedback::close();
@@ -282,10 +266,14 @@ void Input::close_joy()
 // ------------------------------------------------------------------------------------------------
 void Input::open_legacy_device(InputDevice& dev)
 {
-    // If this is a recognized Game Controller, set up buttons and attempt to configure rumble support
+    // If this is a recognized Game Controller, set up the default digital/analog bindings for
+    // the legacy single-device wizard (A.3.3). Rumble/haptic support detection (SDL rumble probe,
+    // SDL_Haptic, hidraw) has moved to the rumble subsystem - see sdl2/rumble.cpp and
+    // sdl2/rumble_backend_sdl.cpp (Stage 4a, tools/INPUT_BINDING_DESIGN.md Deliverable B) - Input no longer
+    // probes for or opens any rumble/haptic handle itself.
     if (dev.controller != nullptr)
     {
-        std::cout << "Game controller detected";
+        std::cout << "Game controller detected" << std::endl;
 
         bind_axis(SDL_CONTROLLER_AXIS_LEFTX, 0);                // Analog: Default Steering Axis
         bind_axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1);         // Analog: Default Accelerate Axis
@@ -302,128 +290,7 @@ void Input::open_legacy_device(InputDevice& dev)
         bind_button(SDL_CONTROLLER_BUTTON_DPAD_DOWN, 9);
         bind_button(SDL_CONTROLLER_BUTTON_DPAD_LEFT, 10);
         bind_button(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 11);
-
-#ifdef WIN32
-        std::cout << " without SDL rumble support." << std::endl;
-#else
-        // Linux only - Check for rumble support
-        if (SDL_GameControllerHasRumble(dev.controller)) {
-            std::cout << " with SDL rumble support." << std::endl;
-        }
-        else {
-            std::cout << " without SDL rumble support." << std::endl;
-
-            // JJP - try and find if rumble is supported via /dev/hidraw
-            // First, get the vendor ID
-            SDL_Joystick* joy = SDL_GameControllerGetJoystick(dev.controller);
-            Uint16 vendor = 0;
-            Uint16 product = 0;
-            if (!joy) {
-                fprintf(stderr, "SDL_GameControllerGetJoystick Error: %s\n", SDL_GetError());
-            }
-            else {
-                // Get the vendor ID and product ID.
-                vendor = SDL_JoystickGetVendor(joy);
-                product = SDL_JoystickGetProduct(joy);
-            }
-
-            // Next, try and find the device via udev
-            // Create a new udev context.
-            struct udev* udev = udev_new();
-            if (!udev) {
-                fprintf(stderr, "Cannot create udev context\n");
-            }
-            else {
-                // Create an enumeration object and scan for hidraw devices.
-                struct udev_enumerate* enumerate = udev_enumerate_new(udev);
-                udev_enumerate_add_match_subsystem(enumerate, "hidraw");
-                udev_enumerate_scan_devices(enumerate);
-
-                // Get a list of all matching devices.
-                struct udev_list_entry* udev_devices = udev_enumerate_get_list_entry(enumerate);
-                struct udev_list_entry* entry;
-
-                // Iterate over each hidraw device.
-                udev_list_entry_foreach(entry, udev_devices) {
-                    // Note - exits on first succesful open
-                    const char* sysPath = udev_list_entry_get_name(entry);
-                    struct udev_device* udevdev = udev_device_new_from_syspath(udev, sysPath);
-
-                    // Get the device node (for example: /dev/hidraw0)
-                    const char* devNode = udev_device_get_devnode(udevdev);
-
-                    // Walk up the device tree to find the USB device.
-                    struct udev_device* usb_dev = udev_device_get_parent_with_subsystem_devtype(
-                        udevdev, "usb", "usb_device");
-
-                    if (usb_dev) {
-                        const char* vendor_str = udev_device_get_sysattr_value(usb_dev, "idVendor");
-                        const char* product_str = udev_device_get_sysattr_value(usb_dev, "idProduct");
-
-                        Uint16 vendor_udev = (Uint16)strtol(vendor_str, NULL, 16);
-                        Uint16 product_udev = (Uint16)strtol(product_str, NULL, 16);
-
-                        if (vendor_str && product_str) {
-                            // Check if these match joystick/wheel IDs.
-                            if ((vendor == vendor_udev) && (product == product_udev)) {
-                                // Device matches; devNode (e.g. /dev/hidrawX) can be used to control rumble
-                                hidraw_device = open(devNode, O_RDWR); // O_WRONLY);
-                                if (hidraw_device < 0)
-                                    fprintf(stderr, "Rumbler detected but could not open device\n");
-                                else {
-                                    printf("Successfully opened rumble device at %s\n", devNode);
-                                    rumble_supported = true;
-                                    udev_device_unref(udevdev);
-                                    break;
-                                }
-                            }
-                        }
-                    } // if (usb_dev)
-                    udev_device_unref(udevdev);
-                } // udev_list_entry_foreach
-                // Clean up.
-                udev_enumerate_unref(enumerate);
-                udev_unref(udev);
-            } // if (!udev)/else
-        } // if (SDL_GameControllerHasRumble(dev.controller))/else
-#endif
-    } // if (dev.controller != nullptr)
-
-    SDL_Joystick* __joy_for_haptic = dev.controller ? SDL_GameControllerGetJoystick(dev.controller) : dev.joystick;
-    haptic = __joy_for_haptic ? SDL_HapticOpenFromJoystick(__joy_for_haptic) : NULL;
-    if (haptic)
-    {
-        rumble_supported = false;
-
-        if (SDL_HapticRumbleSupported(haptic))
-            rumble_supported = SDL_HapticRumbleInit(haptic) != -1;
     }
-#ifdef _WIN32
-    // Try DirectInput backend first; if not available we already attempted SDL above.
-    if (!rumble_supported) {
-        // Pass VID:PID to DI via env var so helper can match SDL device (optional).
-        if (dev.joystick) {
-            Uint16 vid = SDL_JoystickGetVendor(dev.joystick);
-            Uint16 pid = SDL_JoystickGetProduct(dev.joystick);
-            char buf[32]; std::snprintf(buf, sizeof(buf), "0x%04x:0x%04x", (unsigned)vid, (unsigned)pid);
-            #ifdef _MSC_VER
-            _putenv_s("FF_TARGET_VIDPID", buf);
-            #else
-            setenv("FF_TARGET_VIDPID", buf, 1);
-            #endif
-        }
-        if (forcefeedback::init(0x7fff, 0x2fff, 50)) {
-            std::cout << "DirectInput force feedback enabled" << std::endl;
-        }
-    }
-#else
-    // Linux: if SDL rumble is not available, try evdev kernel FF
-    if (!rumble_supported) {
-        if (forcefeedback::init(0x7fff, 0x2fff, 50)) {
-            std::cout << "Kernel force feedback (evdev) enabled" << std::endl;
-        }
-    }
-#endif
 
     reset_axis_config();
     wheel = a_wheel = CENTRE;
@@ -1183,68 +1050,8 @@ void Input::handle_joy_hat(SDL_JoyHatEvent* evt)
     }
 }
 
-void Input::set_rumble(bool enable, float strength, int mode)
-{
-#ifndef WIN32
-    if (hidraw_device >= 0) {
-        // takes precidence over SDL native support
-
-        // Prepare a 3-byte report:
-        //   Byte 0: Command type (0x00 = both motors, 0x01 for high-frequency only)
-        //   Byte 1: Intensity motor 1 - 0x0* (off) to 0xF* (max)
-        //   Byte 2: Intensity motor 2 - 0x0* (off) to 0xF* (max)
-        // When command = 0x00, byte 1 = low frequency motor and byte 2 is high frequency motor.
-        // When command = 0x01, byte 1 = high frequency motor and byte 2 is ignored.
-
-        uint8_t report[3] = { 0 };
-
-        if (mode == 0) {
-            // original code controlled rumble effect e.g. crash sequence
-            if (enable) {
-                report[0] = 0x01;
-                report[1] = 0xF0; // on
-                report[2] = 0x00;
-            }
-            else {
-                report[0] = 0x00;
-                report[1] = 0x00; // off
-                report[2] = 0x00;
-            }
-        }
-        else {
-            // enhancement - pulsing effect when skidding on road
-            if (enable) {
-                report[0] = 0x00;
-                report[1] = 0xA0;
-                report[2] = 0xA0;
-            }
-            else {
-                report[0] = 0x00;
-                report[1] = 0x00; // off
-                report[2] = 0x00;
-            }
-        }
-
-        // Write the report to the hidraw device. Ignore any errors; will be updated next frame anyway
-        size_t bytesWritten = write(hidraw_device, report, sizeof(report));
-    }
-    else
-#endif
-    {
-        // If DI/evdev backend is available, prefer it
-        if (forcefeedback::is_supported())
-        {
-            int level = 1 + int((1.0f - std::max(0.0f, std::min(1.0f, strength))) * 4.0f); // 1 strong .. 5 soft
-            forcefeedback::set(mode, level);
-            return;
-        }
-
-        // SDL rumble fallback
-        if (haptic == NULL || !rumble_supported || strength == 0) return;
-
-        if (enable)
-            SDL_HapticRumblePlay(haptic, strength, 1000 / 30);
-        else
-            SDL_HapticRumbleStop(haptic);
-    }
-}
+// set_rumble() removed (Stage 4a, tools/INPUT_BINDING_DESIGN.md Deliverable B): its hard-coded hidraw
+// report bytes, the SDL_Haptic fallback and the forcefeedback:: adapter now live behind the
+// RumbleBackend interface in sdl2/rumble_backend_sdl.cpp / sdl2/rumble_backend_ffb.cpp, selected
+// and mixed by sdl2/rumble.cpp. Callers use the rumble:: API (rumble::set_level/event/tick) - see
+// main.cpp's tick() rumble call site.

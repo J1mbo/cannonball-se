@@ -207,6 +207,15 @@ struct controls_settings_t
     int input_mode;                          // device_binding_t::GROUP_GAMEPAD / GROUP_WHEEL
     bool bindings_active;                    // true iff <controls><bindings> existed in config.xml
     std::vector<device_binding_t> device_bindings;
+
+    // Rumble subsystem (Stage 4a, see tools/INPUT_BINDING_DESIGN.md Deliverable B, B.4). `rumble_backend`
+    // mirrors rumble::Backend (AUTO=0, SDL_CONTROLLER=1, SDL_HAPTIC=2, HID_REPORT=3, FFB=4,
+    // OFF=5) as a plain int so this header stays independent of sdl2/rumble.hpp; config.cpp maps
+    // the on-disk auto|sdl|haptic|hid|ffb|off string to/from it. HID_REPORT has no backend
+    // implementation yet (Stage 4b) and behaves like OFF if selected.
+    int rumble_backend;                      // rumble::Backend, as int
+    std::string rumble_device;               // optional device-signature override for the rumble target
+    int rumble_extras;                       // Stage 4c richer effects (crash/gear/start); unused in 4a
 };
 
 struct smartypi_settings_t

@@ -120,6 +120,12 @@ const static char* ENTRY_ANALOG             = "ANALOG ";
 const static char* ENTRY_RUMBLE             = "RUMBLE STRENGTH ";
 const static char* ENTRY_REDEFJOY           = "REDEFINE GAMEPAD";
 
+// Rumble and Feedback Menu (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.6.1). ENTRY_RUMBLE (above) is
+// reused for the strength row. HID PROFILE / ADVANCED HID SETUP are Stage 4b.
+const static char* ENTRY_FEEDBACK           = "RUMBLE AND FEEDBACK...";
+const static char* ENTRY_RUMBLE_BACKEND     = "BACKEND ";
+const static char* ENTRY_RUMBLE_TEST        = "TEST RUMBLE";
+
 // Game Engine Menu
 const static char* ENTRY_TRACKS             = "TRACKS ";
 const static char* ENTRY_TIME               = "TIME ";
@@ -156,4 +162,7 @@ const static char* ANALOG_LABELS[3] = { "OFF", "ON", "ON WHEEL ONLY" };
 const static char* INPUT_MODE_LABELS[2] = { "GAMEPAD", "WHEEL" }; // device_binding_t::GROUP_GAMEPAD/GROUP_WHEEL
 const static char* VIDEO_LABELS[3] = { "OFF", "ON", "STRETCH" };
 const static char* RUMBLE_LABELS[5] = { "OFF", "LOW", "MED", "HIGH", "FULL" };
+// Order must match rumble::Backend (AUTO=0, SDL_CONTROLLER=1, SDL_HAPTIC=2, HID_REPORT=3, FFB=4,
+// OFF=5) and controls.rumble_backend's on-disk auto|sdl|haptic|hid|ffb|off mapping (config.cpp).
+const static char* RUMBLE_BACKEND_LABELS[6] = { "AUTO", "SDL", "SDL HAPTIC", "HID REPORT", "FORCE FEEDBACK", "OFF" };
 const static char* CAB_LABELS[3] = { "MOVING", "UPRIGHT", "MINI" };

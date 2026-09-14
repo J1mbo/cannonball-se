@@ -96,6 +96,7 @@ private:
     std::vector<std::string> menu_sound;
     std::vector<std::string> menu_controls;
     std::vector<std::string> menu_controls_gp;
+    std::vector<std::string> menu_feedback;      // Stage 4a: RUMBLE AND FEEDBACK... submenu
     std::vector<std::string> menu_engine;
     std::vector<std::string> menu_enhancements;
     std::vector<std::string> menu_handling;
