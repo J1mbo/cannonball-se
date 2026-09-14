@@ -14,6 +14,8 @@
     Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 ***************************************************************************/
 
+#include <cstdlib> // std::abs (integer overloads)
+
 #include "../trackloader.hpp"
 
 #include "engine/oanimseq.hpp"
@@ -605,39 +607,15 @@ void OSprites::do_sprite(oentry* input)
     // Set real h/v zoom values
     uint32_t index = (input->zoom * 4); // x4 as table is 4-words per line
 
-    // determine sprite dimensions
-    uint32_t input_index = 0;
-    uint32_t multiplier = 512;
+    // Hi-res-only sub-pixel x offset (sprite-RAM word 15), the zoom written to
+    // the record, and the address of the frame the renderer will draw. The
+    // 5-anchor width/height estimate that used to live here, with its per-SIZE
+    // offset constants (+3/-1/+3/+4), is gone: both paths now use the arcade
+    // WH-table geometry computed below, and the hires offset is derived from the
+    // frame headers in the hires branch.
     int16_t  offset = 0;
     uint32_t zoom = 0;
-    switch (ZOOM_LOOKUP[index+2]) {
-        case SIZE1: input_index = 127; break;  //  1:1 zoom for largest size
-        case SIZE2: input_index =  62; multiplier = 516; offset =  3; break;  // 1.008:1 (closest we have)
-        case SIZE3: input_index =  30; multiplier = 524; offset = -1; break;  // 1.023:1
-        case SIZE4: input_index =  14; multiplier = 539; offset =  3; break;  // 1.053:1
-        case SIZE5: input_index =   6; multiplier = 579; offset =  4; break;  // 1.130:1
-    }
-    uint16_t lookup_mask = ZOOM_LOOKUP[(input_index*4)+1];
-    uint32_t src_offsets = input->addr + ZOOM_LOOKUP[(input_index*4)+2];
-    lookup_mask += 0x4000; // advance as using lower half of zoom table
-    uint16_t d0 = lookup_mask;
-    d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 1);
-    uint32_t sprite_width = (roms.rom0p->read8(WH_TABLE + d0) * multiplier) >> 9; // width * multiplier / 512
-    d0 = (d0 & 0xFF00) + roms.rom0p->read8(src_offsets + 3);
-    uint32_t sprite_height = (roms.rom0p->read8(WH_TABLE + d0) * multiplier) >> 9;
-
-    // now adjust for which type we actually have
-    if (input_index != 127) {
-        if (config.video.hiresprites == 1) {
-            // now adjust for difference in sprite type being used
-            uint32_t original_size = ZOOM_LOOKUP_HIRES[(index*4)+2];
-            sprite_height <<= 1;
-            sprite_width  <<= 1;
-        }
-    }
-
-    output->set_rawh(sprite_height);
-    output->set_offset(offset);
+    uint32_t src_offsets = 0;
 
     // determine output size (game logic)
     if (config.video.hiresprites == 0) {
@@ -650,14 +628,14 @@ void OSprites::do_sprite(oentry* input)
         // -------------------------------------------------------------------------
         // Set width & height values using lookup
         // -------------------------------------------------------------------------
-        lookup_mask = ZOOM_LOOKUP[index+1]; // Width/Height lookup helper
+        uint16_t lookup_mask = ZOOM_LOOKUP[index+1]; // Width/Height lookup helper
 
         // This is the address of the frame required for the level of zoom we're using
         // There are 5 unique frames that are typically used for zoomed sprites.
         // which correspond to different screen sizes
         src_offsets = input->addr + ZOOM_LOOKUP[index+2]; // sprite size e.g. SIZE1
 
-        d0 = input->draw_props | (input->zoom << 8);
+        uint16_t d0 = input->draw_props | (input->zoom << 8);
         uint16_t top_bit = d0 & 0x8000; // set if zoom >= 0x80
         d0 &= 0x7FFF; // Clear top bit
 
@@ -704,6 +682,12 @@ void OSprites::do_sprite(oentry* input)
         // index+3 was previously an unused field
         uint32_t size_offset = input->addr + ZOOM_LOOKUP_HIRES[index+3];
 
+        // Original frame's header bytes, kept for the substituted-frame guard
+        // and offset below: +1 is the row length in nibbles, +3 the row count
+        // minus one (the same convention as the hardware height field).
+        int32_t n_orig    = 0;
+        int32_t rows_orig = 0;
+
         uint16_t d0 = input->draw_props | (input->zoom << 8);
         uint16_t top_bit = d0 & 0x8000; // set if zoom >= 0x80
         d0 &= 0x7FFF; // Clear top bit
@@ -716,9 +700,11 @@ void OSprites::do_sprite(oentry* input)
                 d0 = lookup_mask;
             }
 
-            d0 = (d0 & 0xFF00) + roms.rom0p->read8(size_offset + 1);
+            n_orig = roms.rom0p->read8(size_offset + 1);
+            d0 = (d0 & 0xFF00) + n_orig;
             width = roms.rom0p->read8(WH_TABLE + d0);
-            d0 = (d0 & 0xFF00) + roms.rom0p->read8(size_offset + 3);
+            rows_orig = roms.rom0p->read8(size_offset + 3) + 1;
+            d0 = (d0 & 0xFF00) + (rows_orig - 1);
             height = roms.rom0p->read8(WH_TABLE + d0);
 
         } else {
@@ -726,41 +712,86 @@ void OSprites::do_sprite(oentry* input)
             d0 &= 0x7C00;
             uint16_t h = d0;
 
-            d0 = (d0 & 0xFF00) + roms.rom0p->read8(size_offset + 1);
+            n_orig = roms.rom0p->read8(size_offset + 1);
+            d0 = (d0 & 0xFF00) + n_orig;
             width = roms.rom0p->read8(WH_TABLE + d0);
             d0 &= 0xFF;
             width += d0;
 
-            h |= roms.rom0p->read8(size_offset + 3);
+            rows_orig = roms.rom0p->read8(size_offset + 3) + 1;
+            h |= (rows_orig - 1);
             height = roms.rom0p->read8(WH_TABLE + h);
             h &= 0xFF;
             height += h;
         }
+
+        // Rows 0-62 of ZOOM_LOOKUP_HIRES substitute the next frame size up at
+        // twice the zoom for extra detail. That is only valid when the slot
+        // really holds a ~2x rendition of the original: for the 52
+        // animation/strip tables it is a different sprite of similar size and
+        // the doubled zoom would sweep 20-150 rows past the frame (the garbage
+        // stripe under far strips); scenery types 564-576 keep a 248-nibble
+        // strip there that the row count alone would pass. Reject on either
+        // header byte and draw exactly what the default path draws.
+        //
+        // Otherwise the substituted frame is still not a pixel-exact 2x of the
+        // original (53 % are 8-16 nibbles narrower, and the art lead-in is the
+        // same 2-4 nibbles rather than doubled), so centre its row on the
+        // original's row. Measured over every table and zoom row this leaves the
+        // visible centre within 1 hi-res px in 99.4 % of cells, which is as good
+        // as the headers allow (art bounds are not in ROM). It replaces the
+        // per-SIZE +3/-1/+3/+4 constants, which were tuned before bd06b6e and
+        // overshoot since.
+        if (src_offsets != size_offset)
+        {
+            const int32_t n_big    = roms.rom0p->read8(src_offsets + 1);       // row length, nibbles
+            const int32_t rows_big = roms.rom0p->read8(src_offsets + 3) + 1;
+
+            if (std::abs(rows_big - 2 * rows_orig) > 2 || std::abs(n_big - 2 * n_orig) > 16)
+            {
+                zoom = ZOOM_LOOKUP[index];
+                output->set_vzoom(zoom); output->set_hzoom(zoom);
+                src_offsets = size_offset;
+                offset = 0;
+            }
+            else
+            {
+                // zoom is still ZOOM_LOOKUP_HIRES[index] here (exactly 2x the
+                // original zoom in rows 0-62). parse_record halves the record's
+                // zoom for the hi-res canvas, so the renderer steps the
+                // substituted frame's row at zoom>>1, and would step the
+                // original's at (ZOOM_LOOKUP[index])>>1 == zoom>>2. Use those
+                // divisors as integers: ZOOM_LOOKUP is odd in 34 of the 63
+                // substituted rows, and using a fractional zoom/4 divisor
+                // instead misplaces 39 table x zoom cells by 1 hi-res px.
+                const int32_t z_big  = (int32_t)(zoom >> 1);
+                const int32_t z_orig = (int32_t)(zoom >> 2);
+                const int32_t w_big  = (512 * n_big  + z_big  - 1) / z_big;
+                const int32_t w_orig = (512 * n_orig + z_orig - 1) / z_orig;
+                offset = (int16_t)((w_orig - w_big) / 2);   // truncation toward zero, as modelled
+            }
+        }
     }
 
-    //int32_t sprite_width = (roms.rom0p->read8(src_offsets + 5)) * 8; // pitch, 8 pixels per 32-bit word
-    int32_t calc_width   = ceil((0x200 * sprite_width)  / zoom);
-    int32_t calc_height  = ceil((0x200 * sprite_height) / zoom);
-
-    // Engine-side sizing fix (confirmed vs c51dc0e): the 5-anchor calc_width/
-    // calc_height approximation above was applied unconditionally, including
-    // for the default (hiresprites == 0) path, where it is a pure regression:
-    // the operands are uint32_t so the division truncates before ceil() (a
-    // no-op), leaving mid-to-far sprites (zoom bytes 0-62, SIZE5..SIZE2) up to
-    // 1px short. Traffic cars are oentry::BOTTOM-anchored, so that shed row is
-    // their bottom source row (wheels). For the original-size path, restore the
-    // exact ROM-derived width/height (already computed above in the
-    // hiresprites == 0 branch) and drop the hires-only x offset -- leaving all
-    // downstream consumers (input->width, set_width, set_sprite_xy, sprite_x2,
-    // sprite_y2, y_adj, set_height) exactly at their pre-c51dc0e values. The
-    // hiresprites == 1 path is unchanged. Renderer-side (hwsprites) is not
-    // touched by this fix.
+    // Exact arcade on-screen geometry for BOTH paths (extends bd06b6e, which
+    // restored it for the default path only). The renderer draws every row and
+    // nibble of the frame it is handed regardless of these values; width/height
+    // only anchor the record (set_sprite_xy), size the game-logic collision box
+    // (input->width) and place right-to-left records (set_width), and all three
+    // must be the arcade's WH-table values or the sprite moves relative to the
+    // default path. With hiresprites == 1 the former estimate made the height
+    // field 1-3 rows too tall in 44 % of table x zoom cells, exposing the
+    // frame's never-displayed last row (the black line under traffic tyres) or
+    // sweeping past the frame entirely, and moved record x by 2-24 hi-res px.
+    const int32_t calc_width  = width;
+    const int32_t calc_height = height;
     if (config.video.hiresprites == 0)
-    {
-        calc_width  = width;
-        calc_height = height;
-        offset      = 0;
-    }
+        offset = 0;
+    // Sprite-RAM word 15, read by the renderer only when hiresprites == 1, and
+    // written here so that it carries the final value. NB: offset must stay
+    // int16_t so this resolves to osprite::set_offset(int16_t) -> data[15], not
+    // the uint16_t overload -> data[1] (the sprite-bank offset written below).
+    output->set_offset(offset);
 
     // loc 9582:
 //    input->width = width;
@@ -777,6 +808,12 @@ void OSprites::do_sprite(oentry* input)
     set_sprite_xy(input, output, calc_width, calc_height);
 
     // Here we need the entire value set by above routine, not just top 0x1FF mask!
+    // NB: offset is in hi-res canvas pixels but x1/x2 are lo-res, and x2 picks it
+    // up twice. Pre-existing, and only the off-screen test below consumes these:
+    // it hides a sprite up to ~4 lo-res px early at the right edge (the derived
+    // offset reaches +8 where the old constants reached +4). Left as-is because
+    // the renderer clips independently (draw_sprite_fast's cx0/cx1), so this
+    // costs a few edge columns, never an over-draw. See XOFFSET doc section 4.
     int16_t sprite_x1 = output->get_x() + offset;
 //    int16_t sprite_x2 = sprite_x1 + width;
     int16_t sprite_x2 = sprite_x1 + calc_width + offset;
