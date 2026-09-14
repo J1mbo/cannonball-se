@@ -737,13 +737,13 @@ static void main_loop() {
             int fps = renderedFrames / 2;
             int totalFrames = renderedFrames + droppedFrames;
             int droppedPercent = (totalFrames > 0) ? (droppedFrames * 100 / totalFrames) : 0;
-            // Detailed per-frame phase timing, shown only when the FPS/debug
-            // display is enabled (config.video.fps_count); off by default, when
-            // the plain FPS line below is printed instead. Per prepare_frame()
+            // Detailed per-frame phase timing on the console, shown only when the
+            // FPS counter (config.video.fps_count) is on AND -verbose was given, so
+            // the on-screen counter alone keeps the console quiet. Per prepare_frame()
             // layer plus the frame-pipeline breakdown (gen/ntsc/present/swap/
             // wwait), measured in situ so it includes render/audio-thread and
             // GPU contention. Deltas since the last report.
-            if (config.video.fps_count)
+            if (config.video.fps_count && cannonball::verbose)
             {
                 static uint64_t l_tv = 0, l_rb = 0, l_tb = 0, l_tf = 0, l_rf = 0;
                 static uint64_t l_sp = 0, l_tx = 0, l_fr = 0;
