@@ -267,11 +267,16 @@ static void process_events(void)
                 break;
 
             case SDL_JOYDEVICEADDED:
-                input.open_joy();
+                // event.jdevice.which is a device *index* for this event (SDL delivers one per
+                // already-attached device on the first poll too; add_joystick de-dups on
+                // instance id). See tools/INPUT_BINDING_DESIGN.md Stage 2 A.3.1.
+                input.add_joystick(event.jdevice.which);
                 break;
 
             case SDL_JOYDEVICEREMOVED:
-                input.close_joy();
+                // Here event.jdevice.which is the instance id; remove_joystick only tears down
+                // the specific device removed, not every open device.
+                input.remove_joystick(event.jdevice.which);
                 break;
 
             case SDL_QUIT:
@@ -321,6 +326,10 @@ static void tick()
                 tick_frame = true;
                 pause_engine = false;
                 outrun.init();
+                // Input binding matrix (Stage 2, A.3.2): drop any held contribution from the
+                // group that is about to become inactive so a stuck key can't survive into the
+                // game (no-op for legacy configs, whose keys[] are already consistent here).
+                input.reset_keys();
                 cannonball::state = STATE_GAME;
             }
         }

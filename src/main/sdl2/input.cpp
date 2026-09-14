@@ -8,12 +8,23 @@
     See license.txt for more details.
 
     Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
+    - Input binding matrix: multi-device runtime (device scan/hot-plug, per-device
+      resolved binding cache, group gating, WHEEL-only zone/dead steering curve,
+      derived analog, default GameController profile materialisation). The legacy
+      single-device path (handle_axis/handle_joy/store_last_axis/get_axis_config/
+      scale_trigger, plus the hidraw/set_rumble code) is kept verbatim for the
+      device at controls.pad_id when controls.bindings_active == false; see
+      tools/INPUT_BINDING_DESIGN.md Stage 2 (A.3).
+    - Bug fix: wheel-zone maths corrected from divide to multiply-up (both in the
+      new apply_axis() and in the legacy handle_axis() below) - see
+      tools/INPUT_BINDING_DESIGN.md S0.4.
 ***************************************************************************/
 
 #include <iostream>
 #include <cstring>
 #include <cstdlib> // abs
 #include "sdl2/input.hpp"
+#include "main.hpp" // cannonball::state / STATE_GAME (group gating, A.3.2)
 
 #if defined(__has_include)
 #  if __has_include("directx/ffeedback.hpp")
@@ -40,11 +51,34 @@
 
 Input input;
 
+namespace
+{
+    // A.1.2: device signature = GUID + "|A<axes>|B<buttons>|H<hats>".
+    // The "|A...|B...|H..." suffix is used on its own for the VID/PID fallback match, so that a
+    // GUID that drifts across an SDL upgrade (CRC bytes on Linux) doesn't orphan a binding as long
+    // as the vendor/product and axis/button/hat counts still agree.
+    std::string abh_suffix(const std::string& signature)
+    {
+        auto pos = signature.find('|');
+        return pos == std::string::npos ? signature : signature.substr(pos);
+    }
+
+    bool device_matches_binding(const InputDevice& dev, const device_binding_t& b)
+    {
+        if (!b.device.empty() && b.device == dev.signature)
+            return true;
+
+        if (b.vid != 0 && b.vid == dev.vid && b.pid == dev.pid &&
+            abh_suffix(b.device) == abh_suffix(dev.signature))
+            return true;
+
+        return false;
+    }
+}
+
 Input::Input(void)
 {
-    stick      = NULL;
-    controller = NULL;
-    haptic     = NULL;
+    haptic = NULL;
 
     gamepad = false;
     rumble_supported = false;
@@ -65,159 +99,331 @@ void Input::init(int pad_id, int* key_config, int* pad_config, int analog, int* 
     this->wheel_zone  = analog_settings[0];
     this->wheel_dead  = analog_settings[1];
     motor_limits[0] = motor_limits[1] = motor_limits[2] = 0;
+
+    // Input binding matrix migration (tools/INPUT_BINDING_DESIGN.md A.2.2): an absent
+    // <input_mode> (config.cpp loads it as -1) is migrated once, here, at startup.
+    // Legacy configs (no <bindings>) default to GAMEPAD; configs that already carry
+    // <bindings> but no <input_mode> infer WHEEL if any wheel-group cell exists.
+    if (config.controls.input_mode < 0)
+    {
+        bool any_wheel = false;
+        for (const auto& b : config.controls.device_bindings)
+        {
+            if (b.group == device_binding_t::GROUP_WHEEL)
+            {
+                any_wheel = true;
+                break;
+            }
+        }
+        config.controls.input_mode = any_wheel ? device_binding_t::GROUP_WHEEL : device_binding_t::GROUP_GAMEPAD;
+    }
 }
+
+// ------------------------------------------------------------------------------------------------
+// Device scan / hot-plug (Stage 2, tools/INPUT_BINDING_DESIGN.md A.3.1)
+// ------------------------------------------------------------------------------------------------
 
 void Input::open_joy()
 {
-    gamepad = SDL_NumJoysticks() > pad_id;
-    if (gamepad)
+    // Full rescan: opens every joystick currently attached (add_joystick de-dups on instance id).
+    int count = SDL_NumJoysticks();
+    for (int i = 0; i < count; i++)
+        add_joystick(i);
+}
+
+const InputDevice* Input::find_device(SDL_JoystickID id) const
+{
+    for (const auto& d : devices)
     {
-        stick = SDL_JoystickOpen(pad_id);
+        if (d.instance_id == id)
+            return &d;
+    }
+    return nullptr;
+}
 
-        // If this is a recognized Game Controller, set up buttons and attempt to configure rumble support
-        if (SDL_IsGameController(pad_id))
+const InputDevice* Input::find_legacy_device() const
+{
+    for (const auto& d : devices)
+    {
+        if (d.legacy_device)
+            return &d;
+    }
+    return nullptr;
+}
+
+void Input::add_joystick(int device_index)
+{
+    SDL_JoystickID prospective_id = SDL_JoystickGetDeviceInstanceID(device_index);
+    if (prospective_id < 0)
+        return;
+
+    // SDL re-delivers SDL_JOYDEVICEADDED for already-attached devices on the first poll.
+    if (find_device(prospective_id) != nullptr)
+        return;
+
+    SDL_Joystick* joystick = SDL_JoystickOpen(device_index);
+    if (!joystick)
+    {
+        std::cerr << "Failed to open joystick " << device_index << ": " << SDL_GetError() << std::endl;
+        return;
+    }
+
+    InputDevice dev;
+    dev.joystick    = joystick;
+    dev.instance_id = SDL_JoystickInstanceID(joystick);
+
+    SDL_JoystickGUID guid = SDL_JoystickGetGUID(joystick);
+    char guid_buf[33] = {};
+    SDL_JoystickGetGUIDString(guid, guid_buf, sizeof(guid_buf));
+    dev.guid_string = guid_buf;
+
+    dev.axes    = SDL_JoystickNumAxes(joystick);
+    dev.buttons = SDL_JoystickNumButtons(joystick);
+    dev.hats    = SDL_JoystickNumHats(joystick);
+    dev.signature = dev.guid_string + "|A" + std::to_string(dev.axes)
+                                     + "|B" + std::to_string(dev.buttons)
+                                     + "|H" + std::to_string(dev.hats);
+
+    const char* name = SDL_JoystickName(joystick);
+    dev.name = name ? name : "Unknown Device";
+
+    dev.vid = SDL_JoystickGetVendor(joystick);
+    dev.pid = SDL_JoystickGetProduct(joystick);
+
+    dev.legacy_device = (device_index == pad_id);
+
+    if (SDL_IsGameController(device_index))
+        dev.controller = SDL_GameControllerOpen(device_index);
+
+    devices.push_back(dev);
+
+    // Legacy-path parity (A.3.3): only the device at controls.pad_id gets the original
+    // open_joy() default-binding/haptic/hidraw setup, exactly as it did before Stage 2.
+    if (devices.back().legacy_device)
+        open_legacy_device(devices.back());
+
+    rebuild_binding_cache();
+}
+
+void Input::remove_joystick(SDL_JoystickID id)
+{
+    for (auto it = devices.begin(); it != devices.end(); ++it)
+    {
+        if (it->instance_id != id)
+            continue;
+
+        bool was_legacy = it->legacy_device;
+
+        if (it->controller != nullptr)
         {
-            std::cout << "Game controller detected";
-            controller = SDL_GameControllerOpen(pad_id);
+            SDL_GameControllerClose(it->controller);
+            it->controller = nullptr;
+        }
+        if (it->joystick != nullptr)
+        {
+            SDL_JoystickClose(it->joystick);
+            it->joystick = nullptr;
+        }
 
-            bind_axis(SDL_CONTROLLER_AXIS_LEFTX, 0);                // Analog: Default Steering Axis
-            bind_axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1);         // Analog: Default Accelerate Axis
-            bind_axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, 2);          // Analog: Default Brake Axis
-            bind_button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 0);    // Digital Controls. Map 'Right Shoulder' to Accelerate
-            bind_button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, 1);     // Digital Controls. Map 'Left Shoulder' to Brake
-            bind_button(SDL_CONTROLLER_BUTTON_A, 2);                // Digital Controls. Map 'A' to Gear 1
-            bind_button(SDL_CONTROLLER_BUTTON_B, 3);                // Digital Controls. Map 'B' to Gear 2 (has to be enabled)
-            bind_button(SDL_CONTROLLER_BUTTON_START, 4);            // Digital Controls. Map 'START'
-            bind_button(SDL_CONTROLLER_BUTTON_Y, 5);                // Digital Controls. Map 'Y' to Coin
-            bind_button(SDL_CONTROLLER_BUTTON_BACK, 6);             // Digital Controls. Map 'Back' to Menu Button
-            bind_button(SDL_CONTROLLER_BUTTON_X, 7);                // Digital Controls. Map 'X' to Change View
-            bind_button(SDL_CONTROLLER_BUTTON_DPAD_UP, 8);          // Digital Controls. Map D-Pad
-            bind_button(SDL_CONTROLLER_BUTTON_DPAD_DOWN, 9);
-            bind_button(SDL_CONTROLLER_BUTTON_DPAD_LEFT, 10);
-            bind_button(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 11);
+        devices.erase(it);
+
+        if (was_legacy)
+        {
+            // The legacy device is gone: tear down the force-feedback/haptic state it owned,
+            // exactly as the original close_joy() did for the single device it used to track.
+            if (haptic != nullptr)
+            {
+                SDL_HapticClose(haptic);
+                haptic = nullptr;
+                rumble_supported = false;
+            }
+            if (forcefeedback::is_supported())
+                forcefeedback::close();
+        }
+        break;
+    }
+
+    rebuild_binding_cache();
+}
+
+void Input::close_joy()
+{
+    for (auto& dev : devices)
+    {
+        if (dev.controller != nullptr)
+        {
+            SDL_GameControllerClose(dev.controller);
+            dev.controller = nullptr;
+        }
+        if (dev.joystick != nullptr)
+        {
+            SDL_JoystickClose(dev.joystick);
+            dev.joystick = nullptr;
+        }
+    }
+    devices.clear();
+
+    if (haptic != nullptr)
+    {
+        SDL_HapticClose(haptic);
+        haptic = nullptr;
+        rumble_supported = false;
+    }
+    // Close kernel/DI force feedback backend if active
+    if (forcefeedback::is_supported())
+        forcefeedback::close();
+
+    gamepad = false;
+}
+
+// ------------------------------------------------------------------------------------------------
+// Legacy single-device setup (A.3.3) - verbatim body of the pre-Stage-2 Input::open_joy(),
+// scoped to whichever device is flagged legacy_device (index == pad_id).
+// ------------------------------------------------------------------------------------------------
+void Input::open_legacy_device(InputDevice& dev)
+{
+    // If this is a recognized Game Controller, set up buttons and attempt to configure rumble support
+    if (dev.controller != nullptr)
+    {
+        std::cout << "Game controller detected";
+
+        bind_axis(SDL_CONTROLLER_AXIS_LEFTX, 0);                // Analog: Default Steering Axis
+        bind_axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1);         // Analog: Default Accelerate Axis
+        bind_axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, 2);          // Analog: Default Brake Axis
+        bind_button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 0);    // Digital Controls. Map 'Right Shoulder' to Accelerate
+        bind_button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, 1);     // Digital Controls. Map 'Left Shoulder' to Brake
+        bind_button(SDL_CONTROLLER_BUTTON_A, 2);                // Digital Controls. Map 'A' to Gear 1
+        bind_button(SDL_CONTROLLER_BUTTON_B, 3);                // Digital Controls. Map 'B' to Gear 2 (has to be enabled)
+        bind_button(SDL_CONTROLLER_BUTTON_START, 4);            // Digital Controls. Map 'START'
+        bind_button(SDL_CONTROLLER_BUTTON_Y, 5);                // Digital Controls. Map 'Y' to Coin
+        bind_button(SDL_CONTROLLER_BUTTON_BACK, 6);             // Digital Controls. Map 'Back' to Menu Button
+        bind_button(SDL_CONTROLLER_BUTTON_X, 7);                // Digital Controls. Map 'X' to Change View
+        bind_button(SDL_CONTROLLER_BUTTON_DPAD_UP, 8);          // Digital Controls. Map D-Pad
+        bind_button(SDL_CONTROLLER_BUTTON_DPAD_DOWN, 9);
+        bind_button(SDL_CONTROLLER_BUTTON_DPAD_LEFT, 10);
+        bind_button(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 11);
 
 #ifdef WIN32
-            std::cout << " without SDL rumble support." << std::endl;
+        std::cout << " without SDL rumble support." << std::endl;
 #else
-            // Linux only - Check for rumble support
-            if (SDL_GameControllerHasRumble(controller)) {
-                std::cout << " with SDL rumble support." << std::endl;
+        // Linux only - Check for rumble support
+        if (SDL_GameControllerHasRumble(dev.controller)) {
+            std::cout << " with SDL rumble support." << std::endl;
+        }
+        else {
+            std::cout << " without SDL rumble support." << std::endl;
+
+            // JJP - try and find if rumble is supported via /dev/hidraw
+            // First, get the vendor ID
+            SDL_Joystick* joy = SDL_GameControllerGetJoystick(dev.controller);
+            Uint16 vendor = 0;
+            Uint16 product = 0;
+            if (!joy) {
+                fprintf(stderr, "SDL_GameControllerGetJoystick Error: %s\n", SDL_GetError());
             }
             else {
-                std::cout << " without SDL rumble support." << std::endl;
+                // Get the vendor ID and product ID.
+                vendor = SDL_JoystickGetVendor(joy);
+                product = SDL_JoystickGetProduct(joy);
+            }
 
-                // JJP - try and find if rumble is supported via /dev/hidraw
-                // First, get the vendor ID
-                SDL_Joystick* joy = SDL_GameControllerGetJoystick(controller);
-                Uint16 vendor = 0;
-                Uint16 product = 0;
-                if (!joy) {
-                    fprintf(stderr, "SDL_GameControllerGetJoystick Error: %s\n", SDL_GetError());
-                }
-                else {
-                    // Get the vendor ID and product ID.
-                    vendor = SDL_JoystickGetVendor(joy);
-                    product = SDL_JoystickGetProduct(joy);
-                }
+            // Next, try and find the device via udev
+            // Create a new udev context.
+            struct udev* udev = udev_new();
+            if (!udev) {
+                fprintf(stderr, "Cannot create udev context\n");
+            }
+            else {
+                // Create an enumeration object and scan for hidraw devices.
+                struct udev_enumerate* enumerate = udev_enumerate_new(udev);
+                udev_enumerate_add_match_subsystem(enumerate, "hidraw");
+                udev_enumerate_scan_devices(enumerate);
 
-                // Next, try and find the device via udev
-                // Create a new udev context.
-                struct udev* udev = udev_new();
-                if (!udev) {
-                    fprintf(stderr, "Cannot create udev context\n");
-                }
-                else {
-                    // Create an enumeration object and scan for hidraw devices.
-                    struct udev_enumerate* enumerate = udev_enumerate_new(udev);
-                    udev_enumerate_add_match_subsystem(enumerate, "hidraw");
-                    udev_enumerate_scan_devices(enumerate);
+                // Get a list of all matching devices.
+                struct udev_list_entry* udev_devices = udev_enumerate_get_list_entry(enumerate);
+                struct udev_list_entry* entry;
 
-                    // Get a list of all matching devices.
-                    struct udev_list_entry* devices = udev_enumerate_get_list_entry(enumerate);
-                    struct udev_list_entry* entry;
+                // Iterate over each hidraw device.
+                udev_list_entry_foreach(entry, udev_devices) {
+                    // Note - exits on first succesful open
+                    const char* sysPath = udev_list_entry_get_name(entry);
+                    struct udev_device* udevdev = udev_device_new_from_syspath(udev, sysPath);
 
-                    // Iterate over each hidraw device.
-                    udev_list_entry_foreach(entry, devices) {
-                        // Note - exits on first succesful open
-                        const char* sysPath = udev_list_entry_get_name(entry);
-                        struct udev_device* dev = udev_device_new_from_syspath(udev, sysPath);
+                    // Get the device node (for example: /dev/hidraw0)
+                    const char* devNode = udev_device_get_devnode(udevdev);
 
-                        // Get the device node (for example: /dev/hidraw0)
-                        const char* devNode = udev_device_get_devnode(dev);
+                    // Walk up the device tree to find the USB device.
+                    struct udev_device* usb_dev = udev_device_get_parent_with_subsystem_devtype(
+                        udevdev, "usb", "usb_device");
 
-                        // Walk up the device tree to find the USB device.
-                        struct udev_device* usb_dev = udev_device_get_parent_with_subsystem_devtype(
-                            dev, "usb", "usb_device");
+                    if (usb_dev) {
+                        const char* vendor_str = udev_device_get_sysattr_value(usb_dev, "idVendor");
+                        const char* product_str = udev_device_get_sysattr_value(usb_dev, "idProduct");
 
-                        if (usb_dev) {
-                            const char* vendor_str = udev_device_get_sysattr_value(usb_dev, "idVendor");
-                            const char* product_str = udev_device_get_sysattr_value(usb_dev, "idProduct");
+                        Uint16 vendor_udev = (Uint16)strtol(vendor_str, NULL, 16);
+                        Uint16 product_udev = (Uint16)strtol(product_str, NULL, 16);
 
-                            Uint16 vendor_udev = (Uint16)strtol(vendor_str, NULL, 16);
-                            Uint16 product_udev = (Uint16)strtol(product_str, NULL, 16);
-
-                            if (vendor_str && product_str) {
-                                // Check if these match joystick/wheel IDs.
-                                if ((vendor == vendor_udev) && (product == product_udev)) {
-                                    // Device matches; devNode (e.g. /dev/hidrawX) can be used to control rumble
-                                    hidraw_device = open(devNode, O_RDWR); // O_WRONLY);
-                                    if (hidraw_device < 0)
-                                        fprintf(stderr, "Rumbler detected but could not open device\n");
-                                    else {
-                                        printf("Successfully opened rumble device at %s\n", devNode);
-                                        rumble_supported = true;
-                                        udev_device_unref(dev);
-                                        break;
-                                    }
+                        if (vendor_str && product_str) {
+                            // Check if these match joystick/wheel IDs.
+                            if ((vendor == vendor_udev) && (product == product_udev)) {
+                                // Device matches; devNode (e.g. /dev/hidrawX) can be used to control rumble
+                                hidraw_device = open(devNode, O_RDWR); // O_WRONLY);
+                                if (hidraw_device < 0)
+                                    fprintf(stderr, "Rumbler detected but could not open device\n");
+                                else {
+                                    printf("Successfully opened rumble device at %s\n", devNode);
+                                    rumble_supported = true;
+                                    udev_device_unref(udevdev);
+                                    break;
                                 }
                             }
-                        } // if (usb_dev)
-                        udev_device_unref(dev);
-                    } // udev_list_entry_foreach
-                    // Clean up.
-                    udev_enumerate_unref(enumerate);
-                    udev_unref(udev);
-                } // if (!udev)/else
-            } // if (SDL_GameControllerHasRumble(controller))/else
+                        }
+                    } // if (usb_dev)
+                    udev_device_unref(udevdev);
+                } // udev_list_entry_foreach
+                // Clean up.
+                udev_enumerate_unref(enumerate);
+                udev_unref(udev);
+            } // if (!udev)/else
+        } // if (SDL_GameControllerHasRumble(dev.controller))/else
 #endif
-        } // if (SDL_IsGameController(pad_id))
-        SDL_Joystick* __joy_for_haptic = controller ? SDL_GameControllerGetJoystick(controller) : stick;
-        haptic = __joy_for_haptic ? SDL_HapticOpenFromJoystick(__joy_for_haptic) : NULL;
-        if (haptic)
-        {
-            rumble_supported = false;
+    } // if (dev.controller != nullptr)
 
-            if (SDL_HapticRumbleSupported(haptic))
-                rumble_supported = SDL_HapticRumbleInit(haptic) != -1;
-        }
-#ifdef _WIN32
-        // Try DirectInput backend first; if not available we already attempted SDL above.
-        if (!rumble_supported) {
-            // Pass VID:PID to DI via env var so helper can match SDL device (optional).
-            if (stick) {
-                Uint16 vid = SDL_JoystickGetVendor(stick);
-                Uint16 pid = SDL_JoystickGetProduct(stick);
-                char buf[32]; std::snprintf(buf, sizeof(buf), "0x%04x:0x%04x", (unsigned)vid, (unsigned)pid);
-                #ifdef _MSC_VER
-                _putenv_s("FF_TARGET_VIDPID", buf);
-                #else
-                setenv("FF_TARGET_VIDPID", buf, 1);
-                #endif
-            }
-            if (forcefeedback::init(0x7fff, 0x2fff, 50)) {
-                std::cout << "DirectInput force feedback enabled" << std::endl;
-            }
-        }
-#else
-        // Linux: if SDL rumble is not available, try evdev kernel FF
-        if (!rumble_supported) {
-            if (forcefeedback::init(0x7fff, 0x2fff, 50)) {
-                std::cout << "Kernel force feedback (evdev) enabled" << std::endl;
-            }
-        }
-#endif
+    SDL_Joystick* __joy_for_haptic = dev.controller ? SDL_GameControllerGetJoystick(dev.controller) : dev.joystick;
+    haptic = __joy_for_haptic ? SDL_HapticOpenFromJoystick(__joy_for_haptic) : NULL;
+    if (haptic)
+    {
+        rumble_supported = false;
 
+        if (SDL_HapticRumbleSupported(haptic))
+            rumble_supported = SDL_HapticRumbleInit(haptic) != -1;
     }
+#ifdef _WIN32
+    // Try DirectInput backend first; if not available we already attempted SDL above.
+    if (!rumble_supported) {
+        // Pass VID:PID to DI via env var so helper can match SDL device (optional).
+        if (dev.joystick) {
+            Uint16 vid = SDL_JoystickGetVendor(dev.joystick);
+            Uint16 pid = SDL_JoystickGetProduct(dev.joystick);
+            char buf[32]; std::snprintf(buf, sizeof(buf), "0x%04x:0x%04x", (unsigned)vid, (unsigned)pid);
+            #ifdef _MSC_VER
+            _putenv_s("FF_TARGET_VIDPID", buf);
+            #else
+            setenv("FF_TARGET_VIDPID", buf, 1);
+            #endif
+        }
+        if (forcefeedback::init(0x7fff, 0x2fff, 50)) {
+            std::cout << "DirectInput force feedback enabled" << std::endl;
+        }
+    }
+#else
+    // Linux: if SDL rumble is not available, try evdev kernel FF
+    if (!rumble_supported) {
+        if (forcefeedback::init(0x7fff, 0x2fff, 50)) {
+            std::cout << "Kernel force feedback (evdev) enabled" << std::endl;
+        }
+    }
+#endif
 
     reset_axis_config();
     wheel = a_wheel = CENTRE;
@@ -233,32 +439,226 @@ void Input::bind_button(SDL_GameControllerButton button, int offset)
     if (pad_config[offset] == -1) pad_config[offset] = button;
 }
 
-void Input::close_joy()
+// ------------------------------------------------------------------------------------------------
+// Binding cache (Stage 2, tools/INPUT_BINDING_DESIGN.md A.3.1/A.3.4). Rebuilt after any hot-plug, config
+// edit or input-mode change; per-event handling below only ever scans the resulting resolved[].
+// ------------------------------------------------------------------------------------------------
+
+bool Input::has_binding_for_device(const std::string& signature, int group) const
 {
-    if (controller != NULL)
+    for (const auto& b : config.controls.device_bindings)
     {
-        SDL_GameControllerClose(controller);
-        controller = NULL;
+        if (b.group == group && b.device == signature)
+            return true;
+    }
+    return false;
+}
+
+void Input::materialise_default_gamepad_profile(const InputDevice& dev)
+{
+    // Same defaults as the legacy single-device table above (open_legacy_device), so a
+    // freshly-attached, never-configured GameController works out of the box (A.2.2).
+    struct Cell { int target, type, index; };
+    static const Cell defaults[] = {
+        { device_binding_t::TARGET_STEER, device_binding_t::TYPE_AXIS,   SDL_CONTROLLER_AXIS_LEFTX },
+        { device_binding_t::TARGET_ACCEL, device_binding_t::TYPE_AXIS,   SDL_CONTROLLER_AXIS_TRIGGERRIGHT },
+        { device_binding_t::TARGET_BRAKE, device_binding_t::TYPE_AXIS,   SDL_CONTROLLER_AXIS_TRIGGERLEFT },
+        { device_binding_t::TARGET_GEAR1, device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_A },
+        { device_binding_t::TARGET_GEAR2, device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_B },
+        { device_binding_t::TARGET_START, device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_START },
+        { device_binding_t::TARGET_COIN,  device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_Y },
+        { device_binding_t::TARGET_MENU,  device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_BACK },
+        { device_binding_t::TARGET_VIEW,  device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_X },
+        { device_binding_t::TARGET_UP,    device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_DPAD_UP },
+        { device_binding_t::TARGET_DOWN,  device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_DPAD_DOWN },
+        { device_binding_t::TARGET_LEFT,  device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_DPAD_LEFT },
+        { device_binding_t::TARGET_RIGHT, device_binding_t::TYPE_BUTTON, SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
+    };
+
+    for (const auto& cell : defaults)
+    {
+        device_binding_t b;
+        b.group  = device_binding_t::GROUP_GAMEPAD;
+        b.target = cell.target;
+        b.type   = cell.type;
+        b.index  = cell.index;
+        b.device = dev.signature;
+        b.vid    = dev.vid;
+        b.pid    = dev.pid;
+        b.name   = dev.name;
+        config.set_binding(b);
+    }
+}
+
+void Input::rebuild_binding_cache()
+{
+    if (config.controls.bindings_active)
+    {
+        // A.2.2: a recognised GameController with zero GAMEPAD cells for its signature gets the
+        // SE default profile synthesised in memory so it works immediately; config.save()
+        // persists it the next time settings are saved.
+        for (auto& dev : devices)
+        {
+            if (dev.controller != nullptr &&
+                !has_binding_for_device(dev.signature, device_binding_t::GROUP_GAMEPAD))
+            {
+                materialise_default_gamepad_profile(dev);
+            }
+        }
     }
 
-    if (stick != NULL)
+    for (auto& dev : devices)
     {
-        SDL_JoystickClose(stick);
-        stick = NULL;
+        dev.resolved[device_binding_t::GROUP_GAMEPAD].clear();
+        dev.resolved[device_binding_t::GROUP_WHEEL].clear();
+        dev.nav_bound[device_binding_t::GROUP_GAMEPAD] = false;
+        dev.nav_bound[device_binding_t::GROUP_WHEEL]   = false;
+
+        if (!config.controls.bindings_active)
+            continue; // legacy path: resolved[] stays empty and unused
+
+        for (const auto& b : config.controls.device_bindings)
+        {
+            if (!device_matches_binding(dev, b))
+                continue;
+
+            InputDevice::Resolved r;
+            r.type     = static_cast<uint8_t>(b.type);
+            r.index    = static_cast<uint8_t>(b.index);
+            r.hat_mask = static_cast<uint8_t>(b.value);
+            r.target   = static_cast<uint8_t>(b.target);
+            dev.resolved[b.group].push_back(r);
+
+            if (b.target == device_binding_t::TARGET_UP    ||
+                b.target == device_binding_t::TARGET_DOWN  ||
+                b.target == device_binding_t::TARGET_LEFT  ||
+                b.target == device_binding_t::TARGET_RIGHT)
+            {
+                dev.nav_bound[b.group] = true;
+            }
+        }
     }
 
-    if (haptic != NULL)
+    if (config.controls.bindings_active)
     {
-        SDL_HapticClose(haptic);
-        haptic = NULL;
-        rumble_supported = false;
+        gamepad = !devices.empty();
+
+        // Derived analog (A.3.4) for the active input_mode group only.
+        int active_group = config.controls.input_mode;
+        bool steer_bound = false, accel_bound = false, brake_bound = false;
+        for (const auto& b : config.controls.device_bindings)
+        {
+            if (b.group != active_group) continue;
+            if (b.target == device_binding_t::TARGET_STEER && b.type == device_binding_t::TYPE_AXIS)
+                steer_bound = true;
+            else if (b.target == device_binding_t::TARGET_ACCEL && b.type == device_binding_t::TYPE_AXIS)
+                accel_bound = true;
+            else if (b.target == device_binding_t::TARGET_BRAKE && b.type == device_binding_t::TYPE_AXIS)
+                brake_bound = true;
+        }
+        analog = steer_bound ? ((accel_bound && brake_bound) ? 1 : 2) : 0;
     }
-    // Close kernel/DI force feedback backend if active
-    if (forcefeedback::is_supported())
-        forcefeedback::close();
+    else
+    {
+        // Legacy path: preserve exactly what open_joy()/the ANALOG menu entry computed before
+        // Stage 2 - gamepad reflects presence of the single pad_id device, analog is whatever
+        // config.controls.analog (the manual ANALOG menu toggle) holds.
+        gamepad = find_legacy_device() != nullptr;
+        analog  = config.controls.analog;
+    }
+}
 
+void Input::reset_keys()
+{
+    // Clears every keys[] slot that a joystick/wheel binding can drive (not the function-key-only
+    // slots PAUSE/STEP/TIMER, which are keyboard-only and unaffected by device groups or
+    // input_mode). Called on game entry and on input-mode change (A.3.2) so a held control from
+    // the group that just became inactive cannot leave a stuck key behind.
+    keys[LEFT] = keys[RIGHT] = keys[UP] = keys[DOWN] = false;
+    keys[ACCEL] = keys[BRAKE] = keys[GEAR1] = keys[GEAR2] = false;
+    keys[START] = keys[COIN] = keys[MENU] = keys[VIEWPOINT] = false;
+}
 
-    gamepad = false;
+// ------------------------------------------------------------------------------------------------
+// Group gating (A.3.2): in cannonball::STATE_GAME only the active input_mode group drives the
+// car; everywhere else (menus, transitional states) both groups navigate. The keyboard is always
+// live and is not gated here.
+// ------------------------------------------------------------------------------------------------
+bool Input::group_active(int group) const
+{
+    if (cannonball::state == cannonball::STATE_GAME)
+        return group == config.controls.input_mode;
+    return true;
+}
+
+void Input::apply_target(int target, bool pressed)
+{
+    switch (target)
+    {
+        case device_binding_t::TARGET_ACCEL: keys[ACCEL]     = pressed; break;
+        case device_binding_t::TARGET_BRAKE: keys[BRAKE]     = pressed; break;
+        case device_binding_t::TARGET_GEAR1: keys[GEAR1]     = pressed; break;
+        case device_binding_t::TARGET_GEAR2: keys[GEAR2]     = pressed; break;
+        case device_binding_t::TARGET_START: keys[START]     = pressed; break;
+        case device_binding_t::TARGET_COIN:  keys[COIN]      = pressed; break;
+        case device_binding_t::TARGET_MENU:  keys[MENU]      = pressed; break;
+        case device_binding_t::TARGET_VIEW:  keys[VIEWPOINT] = pressed; break;
+        case device_binding_t::TARGET_UP:    keys[UP]        = pressed; break;
+        case device_binding_t::TARGET_DOWN:  keys[DOWN]      = pressed; break;
+        case device_binding_t::TARGET_LEFT:  keys[LEFT]      = pressed; break;
+        case device_binding_t::TARGET_RIGHT: keys[RIGHT]     = pressed; break;
+        default: break; // TARGET_STEER is axis-only; handled by apply_axis
+    }
+}
+
+// A.3.4: symmetric steering curve (reaches both 0x40 and 0xC0, 0 -> exactly 0x80); WHEEL-only
+// zone/dead. ACCEL/BRAKE axis mapping + invert. `index` is the raw axis (WHEEL) or
+// SDL_GameControllerAxis enum (GAMEPAD) the value came from, needed to tell a GAMEPAD trigger
+// (0..32767) from every other axis (-32768..32767).
+void Input::apply_axis(const InputDevice& /*dev*/, int group, int target, int index, int16_t value)
+{
+    if (target == device_binding_t::TARGET_STEER)
+    {
+        int raw = value;
+
+        // Saturation zone is a WHEEL setting only - applying it to a GAMEPAD thumbstick would
+        // make it far too sensitive (DX input.cpp:884-892). Bug fix: multiply up, not divide -
+        // see tools/INPUT_BINDING_DESIGN.md S0.4 (the legacy handle_axis() below gets the same fix).
+        if (group == device_binding_t::GROUP_WHEEL && wheel_zone > 0 && wheel_zone < 100)
+            raw = raw * 100 / (100 - wheel_zone);
+
+        if (raw < -32768) raw = -32768;
+        else if (raw > 32767) raw = 32767;
+
+        // Map the signed SDL range exactly onto OutRun's 0x40..0xC0 range, symmetrically.
+        int adjusted = CENTRE + (raw >= 0 ? (raw * 0x40) / 32767 : (raw * 0x40) / 32768);
+        if (adjusted < 0x40) adjusted = 0x40;
+        else if (adjusted > 0xC0) adjusted = 0xC0;
+
+        if (group == device_binding_t::GROUP_WHEEL && wheel_dead &&
+            std::abs(CENTRE - adjusted) <= wheel_dead)
+        {
+            adjusted = CENTRE;
+        }
+
+        a_wheel = adjusted;
+    }
+    else if (target == device_binding_t::TARGET_ACCEL || target == device_binding_t::TARGET_BRAKE)
+    {
+        bool is_accel = target == device_binding_t::TARGET_ACCEL;
+        int invert_slot = is_accel ? 1 : 2;
+        int working = invert[invert_slot] ? -value : value;
+
+        bool is_trigger_axis = group == device_binding_t::GROUP_GAMEPAD &&
+            (index == SDL_CONTROLLER_AXIS_TRIGGERLEFT || index == SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+
+        int scaled = is_trigger_axis ? (working / 0x80) : ((working + 0x8000) / 0x100);
+        if (scaled < 0) scaled = 0;
+        else if (scaled > 0xFF) scaled = 0xFF;
+
+        if (is_accel) a_accel = scaled;
+        else          a_brake = scaled;
+    }
 }
 
 // Detect whether a key press change has occurred
@@ -430,15 +830,63 @@ void Input::handle_key(const int key, const bool is_pressed)
     }
 }
 
+// ------------------------------------------------------------------------------------------------
+// Event routing (A.3.2). Each handler first resolves the SDL device id to its InputDevice; if
+// bindings_active is false only the device flagged legacy_device drives anything, via the
+// verbatim legacy functions below (A.3.3). If bindings_active is true, the event is matched
+// against that device's resolved[] cache for the relevant group, gated by group_active().
+// ------------------------------------------------------------------------------------------------
+
 void Input::handle_joy_axis(SDL_JoyAxisEvent* evt)
 {
-    if (controller != NULL) return;
-    handle_axis(evt->axis, evt->value);
+    const InputDevice* dev = find_device(evt->which);
+    if (!dev) return;
+
+    if (!config.controls.bindings_active)
+    {
+        if (!dev->legacy_device || dev->controller != nullptr) return;
+        handle_axis(evt->axis, evt->value);
+        return;
+    }
+
+    if (!group_active(device_binding_t::GROUP_WHEEL)) return;
+
+    for (const auto& r : dev->resolved[device_binding_t::GROUP_WHEEL])
+    {
+        if (r.type != device_binding_t::TYPE_AXIS || r.index != evt->axis) continue;
+        if (r.target == device_binding_t::TARGET_STEER ||
+            r.target == device_binding_t::TARGET_ACCEL ||
+            r.target == device_binding_t::TARGET_BRAKE)
+        {
+            apply_axis(*dev, device_binding_t::GROUP_WHEEL, r.target, r.index, evt->value);
+        }
+    }
 }
 
 void Input::handle_controller_axis(SDL_ControllerAxisEvent* evt)
 {
-    handle_axis(evt->axis, evt->value);
+    const InputDevice* dev = find_device(evt->which);
+    if (!dev) return;
+
+    if (!config.controls.bindings_active)
+    {
+        if (!dev->legacy_device) return;
+        handle_axis(evt->axis, evt->value);
+        return;
+    }
+
+    if (!group_active(device_binding_t::GROUP_GAMEPAD)) return;
+
+    for (const auto& r : dev->resolved[device_binding_t::GROUP_GAMEPAD])
+    {
+        if (r.type != device_binding_t::TYPE_AXIS || r.index != evt->axis) continue;
+        if (r.target == device_binding_t::TARGET_STEER ||
+            r.target == device_binding_t::TARGET_ACCEL ||
+            r.target == device_binding_t::TARGET_BRAKE)
+        {
+            apply_axis(*dev, device_binding_t::GROUP_GAMEPAD, r.target, r.index, evt->value);
+        }
+    }
 }
 
 void Input::handle_axis(const uint8_t ax, const int16_t value)
@@ -457,7 +905,7 @@ void Input::handle_axis(const uint8_t ax, const int16_t value)
             // first multiple the reading by the adjustment percentage
             int adjusted = value;
             if (wheel_zone)
-              adjusted = adjusted / (100 - wheel_zone); // multiply up the input value, note input still signed
+              adjusted = adjusted * 100 / (100 - wheel_zone); // multiply up the input value, note input still signed
             adjusted = ((adjusted + 0x8000) / 0x200); // reduce to 0..128
 
             adjusted += 0x40; // Centre; 0x40 is hard left
@@ -500,15 +948,20 @@ void Input::handle_axis(const uint8_t ax, const int16_t value)
 
 // ------------------------------------------------------------------------------------------------
 // Scale the trigger value to be between 0 and 0xFF
-// 
+//
 // This is based on whether this is an SDL Controller or Joystick.
 // Controllers: Trigger axis values range from 0 to SDL_JOYSTICK_AXIS_MAX (32767)
 // Joysticks:   Undefined, but usually between -32768 to 32767
+//
+// Legacy-path only (A.3.3): scoped by handle_axis()'s caller to the single legacy device, so
+// "is this a controller" is still a valid proxy for "is this axis a 0..32767 trigger" exactly as
+// before Stage 2.
 // ------------------------------------------------------------------------------------------------
 
 int Input::scale_trigger(const int value)
 {
-    if (controller != NULL)
+    const InputDevice* legacy = find_legacy_device();
+    if (legacy != nullptr && legacy->controller != nullptr)
         return value / 0x80;
     else
         return (value + 0x8000) / 0x100;
@@ -557,31 +1010,124 @@ void Input::reset_axis_config()
 
 void Input::handle_joy_down(SDL_JoyButtonEvent* evt)
 {
-    if (controller != NULL) return;
-    // Latch joystick button presses for redefines
-    joy_button = evt->button;
-    handle_joy(evt->button, true);
+    const InputDevice* dev = find_device(evt->which);
+    if (!dev) return;
+
+    // Latch for the legacy REDEFINE GAMEPAD wizard (Stage 3 removes it). Suppressed for
+    // GameController-recognised devices, which report the same physical press again via
+    // SDL_CONTROLLERBUTTONDOWN - exactly as before Stage 2.
+    if (dev->controller == nullptr)
+        joy_button = evt->button;
+
+    if (!config.controls.bindings_active)
+    {
+        if (!dev->legacy_device || dev->controller != nullptr) return;
+        handle_joy(evt->button, true);
+        return;
+    }
+
+    if (!group_active(device_binding_t::GROUP_WHEEL)) return;
+
+    for (const auto& r : dev->resolved[device_binding_t::GROUP_WHEEL])
+    {
+        if (r.type == device_binding_t::TYPE_BUTTON && r.index == evt->button)
+            apply_target(r.target, true);
+    }
 }
 
 void Input::handle_joy_up(SDL_JoyButtonEvent* evt)
 {
-    if (controller != NULL) return;
-    handle_joy(evt->button, false);
+    const InputDevice* dev = find_device(evt->which);
+    if (!dev) return;
+
+    if (!config.controls.bindings_active)
+    {
+        if (!dev->legacy_device || dev->controller != nullptr) return;
+        handle_joy(evt->button, false);
+        return;
+    }
+
+    if (!group_active(device_binding_t::GROUP_WHEEL)) return;
+
+    for (const auto& r : dev->resolved[device_binding_t::GROUP_WHEEL])
+    {
+        if (r.type == device_binding_t::TYPE_BUTTON && r.index == evt->button)
+            apply_target(r.target, false);
+    }
 }
 
 void Input::handle_controller_down(SDL_ControllerButtonEvent* evt)
 {
     joy_button = evt->button;
-    handle_joy(evt->button, true);
+
+    const InputDevice* dev = find_device(evt->which);
+    if (!dev) return;
+
+    if (!config.controls.bindings_active)
+    {
+        if (!dev->legacy_device) return;
+        handle_joy(evt->button, true);
+        return;
+    }
+
+    if (!group_active(device_binding_t::GROUP_GAMEPAD)) return;
+
+    for (const auto& r : dev->resolved[device_binding_t::GROUP_GAMEPAD])
+    {
+        if (r.type == device_binding_t::TYPE_BUTTON && r.index == evt->button)
+            apply_target(r.target, true);
+    }
+
+    // Navigation default (A.3.2): a device with no UP/DOWN/LEFT/RIGHT cell in this group still
+    // needs to reach the menu, so the D-pad falls back to SE's original mapping.
+    if (!dev->nav_bound[device_binding_t::GROUP_GAMEPAD])
+    {
+        switch (evt->button)
+        {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:    keys[UP]    = true; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  keys[DOWN]  = true; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  keys[LEFT]  = true; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: keys[RIGHT] = true; break;
+            default: break;
+        }
+    }
 }
 
 void Input::handle_controller_up(SDL_ControllerButtonEvent* evt)
 {
-    handle_joy(evt->button, false);
+    const InputDevice* dev = find_device(evt->which);
+    if (!dev) return;
+
+    if (!config.controls.bindings_active)
+    {
+        if (!dev->legacy_device) return;
+        handle_joy(evt->button, false);
+        return;
+    }
+
+    if (!group_active(device_binding_t::GROUP_GAMEPAD)) return;
+
+    for (const auto& r : dev->resolved[device_binding_t::GROUP_GAMEPAD])
+    {
+        if (r.type == device_binding_t::TYPE_BUTTON && r.index == evt->button)
+            apply_target(r.target, false);
+    }
+
+    if (!dev->nav_bound[device_binding_t::GROUP_GAMEPAD])
+    {
+        switch (evt->button)
+        {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:    keys[UP]    = false; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  keys[DOWN]  = false; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  keys[LEFT]  = false; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: keys[RIGHT] = false; break;
+            default: break;
+        }
+    }
 }
 
 void Input::handle_joy(const uint8_t button, const bool is_pressed)
-{	
+{
     if (button == pad_config[0])   keys[ACCEL]     = is_pressed;
     if (button == pad_config[1])   keys[BRAKE]     = is_pressed;
     if (button == pad_config[2])   keys[GEAR1]     = is_pressed;
@@ -594,7 +1140,7 @@ void Input::handle_joy(const uint8_t button, const bool is_pressed)
     if (button == pad_config[9])   keys[DOWN]      = is_pressed;
     if (button == pad_config[10])  keys[LEFT]      = is_pressed;
     if (button == pad_config[11])  keys[RIGHT]     = is_pressed;
-   
+
     // Limit Input Switches
     if (button == pad_config[12])  motor_limits[SW_LEFT]   = is_pressed;
     if (button == pad_config[13])  motor_limits[SW_CENTRE] = is_pressed;
@@ -603,12 +1149,38 @@ void Input::handle_joy(const uint8_t button, const bool is_pressed)
 
 void Input::handle_joy_hat(SDL_JoyHatEvent* evt)
 {
-    if (controller != NULL) return;
+    const InputDevice* dev = find_device(evt->which);
+    if (!dev) return;
 
-    keys[UP] = evt->value == SDL_HAT_UP;
-    keys[DOWN] = evt->value == SDL_HAT_DOWN;
-    keys[LEFT] = evt->value == SDL_HAT_LEFT;
-    keys[RIGHT] = evt->value == SDL_HAT_RIGHT;
+    if (!config.controls.bindings_active)
+    {
+        if (!dev->legacy_device || dev->controller != nullptr) return;
+
+        keys[UP] = evt->value == SDL_HAT_UP;
+        keys[DOWN] = evt->value == SDL_HAT_DOWN;
+        keys[LEFT] = evt->value == SDL_HAT_LEFT;
+        keys[RIGHT] = evt->value == SDL_HAT_RIGHT;
+        return;
+    }
+
+    if (!group_active(device_binding_t::GROUP_WHEEL)) return;
+
+    for (const auto& r : dev->resolved[device_binding_t::GROUP_WHEEL])
+    {
+        if (r.type != device_binding_t::TYPE_HAT || r.index != evt->hat) continue;
+        bool pressed = r.hat_mask != SDL_HAT_CENTERED && (evt->value & r.hat_mask) != 0;
+        apply_target(r.target, pressed);
+    }
+
+    // Navigation default (A.3.2): a device with no UP/DOWN/LEFT/RIGHT cell in this group still
+    // needs to reach the menu, so hat 0 falls back to SE's original mapping.
+    if (evt->hat == 0 && !dev->nav_bound[device_binding_t::GROUP_WHEEL])
+    {
+        keys[UP] = evt->value == SDL_HAT_UP;
+        keys[DOWN] = evt->value == SDL_HAT_DOWN;
+        keys[LEFT] = evt->value == SDL_HAT_LEFT;
+        keys[RIGHT] = evt->value == SDL_HAT_RIGHT;
+    }
 }
 
 void Input::set_rumble(bool enable, float strength, int mode)
@@ -676,4 +1248,3 @@ void Input::set_rumble(bool enable, float strength, int mode)
             SDL_HapticRumbleStop(haptic);
     }
 }
-

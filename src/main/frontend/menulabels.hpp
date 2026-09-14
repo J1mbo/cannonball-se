@@ -109,6 +109,7 @@ const static char* ENTRY_MUSICTEST          = "MUSIC... ";
 
 // Controls Menu
 const static char* ENTRY_GEAR               = "GEAR ";
+const static char* ENTRY_INPUT_MODE         = "INPUT MODE "; // Input binding matrix (Stage 2): active GAMEPAD/WHEEL group
 const static char* ENTRY_CONFIGUREGP        = "CONFIGURE GAMEPAD";
 const static char* ENTRY_REDEFKEY           = "REDEFINE KEYS";
 const static char* ENTRY_DSTEER             = "DIGITAL STEER SPEED ";
@@ -152,6 +153,7 @@ const static char* DIP_DIFFICULTY[4] = { "EASY", "NORMAL", "HARD", "HARDEST" };
 const static char* GEAR_LABELS[4] = {"MANUAL", "MANUAL CABINET", "MANUAL 2 BUTTONS", "AUTOMATIC"};
 const static char* FPS_LABELS[3] = { "30 FPS", "ORIGINAL", "60 FPS" };
 const static char* ANALOG_LABELS[3] = { "OFF", "ON", "ON WHEEL ONLY" };
+const static char* INPUT_MODE_LABELS[2] = { "GAMEPAD", "WHEEL" }; // device_binding_t::GROUP_GAMEPAD/GROUP_WHEEL
 const static char* VIDEO_LABELS[3] = { "OFF", "ON", "STRETCH" };
 const static char* RUMBLE_LABELS[5] = { "OFF", "LOW", "MED", "HIGH", "FULL" };
 const static char* CAB_LABELS[3] = { "MOVING", "UPRIGHT", "MINI" };

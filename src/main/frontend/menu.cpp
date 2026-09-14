@@ -251,6 +251,7 @@ void Menu::populate_controls()
         menu_controls.clear();
 
     menu_controls.push_back(ENTRY_GEAR);
+    menu_controls.push_back(ENTRY_INPUT_MODE);
     if (input.gamepad) menu_controls.push_back(ENTRY_CONFIGUREGP);
     menu_controls.push_back(ENTRY_REDEFKEY);
     menu_controls.push_back(ENTRY_DSTEER);
@@ -1070,6 +1071,15 @@ void Menu::tick_menu()
                 if (++config.controls.gear > config.controls.GEAR_AUTO)
                     config.controls.gear = config.controls.GEAR_BUTTON;
             }
+            else if (SELECTED(ENTRY_INPUT_MODE))
+            {
+                // Input binding matrix (Stage 2, tools/INPUT_BINDING_DESIGN.md A.3.2/A.4.1): cycle the
+                // active GAMEPAD/WHEEL group, drop any stuck key from the group that just went
+                // inactive, and rebuild the per-device resolved cache (also re-derives analog).
+                config.controls.input_mode ^= 1;
+                input.reset_keys();
+                input.rebuild_binding_cache();
+            }
             else if (SELECTED(ENTRY_CONFIGUREGP))
                 set_menu(&menu_controls_gp);
             else if (SELECTED(ENTRY_REDEFKEY))
@@ -1459,6 +1469,7 @@ void Menu::refresh_menu()
         else if (menu_selected == &menu_controls)
         {
             if (SELECTED(ENTRY_GEAR))               set_menu_text(ENTRY_GEAR, GEAR_LABELS[config.controls.gear]);
+            else if (SELECTED(ENTRY_INPUT_MODE))    set_menu_text(ENTRY_INPUT_MODE, INPUT_MODE_LABELS[config.controls.input_mode]);
             else if (SELECTED(ENTRY_DSTEER))        set_menu_text(ENTRY_DSTEER, Utils::to_string(config.controls.steer_speed));
             else if (SELECTED(ENTRY_DPEDAL))        set_menu_text(ENTRY_DPEDAL, Utils::to_string(config.controls.pedal_speed));
         }
