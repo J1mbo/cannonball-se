@@ -175,7 +175,7 @@ struct rumble_hid_custom_t
 };
 
 // Input binding matrix: one persisted (group, target) -> physical control assignment.
-// Reused from DX config_base.hpp:155-185, with `group` added (see tools/INPUT_BINDING_DESIGN.md A.1.1).
+// Adapted from the DX binding model, with `group` added (see tools/INPUT_BINDING_DESIGN.md A.1.1).
 struct device_binding_t
 {
     enum Type   { TYPE_BUTTON = 0, TYPE_AXIS = 1, TYPE_HAT = 2 };

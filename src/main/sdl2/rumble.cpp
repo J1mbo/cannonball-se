@@ -285,7 +285,7 @@ namespace rumble
                 extra_baseline_valid = true;
             }
 
-            // CRASH: rising edge from zero (DX gamepad_rumble_state.hpp:182-183); 160 ms one-shot.
+            // CRASH: rising edge from zero (see tools/INPUT_BINDING_DESIGN.md B.2.2); 160 ms one-shot.
             // Re-baselines automatically as crash_counter returns to 0, so a wrap/reset or a game
             // restart re-arms cleanly and fires only on a genuine new crash.
             if (crash > 0 && last_crash_counter <= 0)

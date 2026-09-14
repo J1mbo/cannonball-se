@@ -20,7 +20,7 @@
       are deleted with that wizard; see tools/INPUT_BINDING_DESIGN.md Stage 3.
     - Bug fix: wheel-zone maths corrected from divide to multiply-up (both in the
       new apply_axis() and in the legacy handle_axis() below) - see
-      tools/INPUT_BINDING_DESIGN.md S0.4.
+      tools/INPUT_BINDING_DESIGN.md 0.4.
     - Rumble subsystem (Stage 4a): set_rumble(), the udev/hidraw discovery and the
       SDL_Haptic setup formerly here have moved to sdl2/rumble.cpp and
       sdl2/rumble_backend_sdl.cpp; Input no longer contains any rumble/haptic
@@ -492,8 +492,8 @@ void Input::apply_axis(const InputDevice& /*dev*/, int group, int target, int in
         int raw = value;
 
         // Saturation zone is a WHEEL setting only - applying it to a GAMEPAD thumbstick would
-        // make it far too sensitive (DX input.cpp:884-892). Bug fix: multiply up, not divide -
-        // see tools/INPUT_BINDING_DESIGN.md S0.4 (the legacy handle_axis() below gets the same fix).
+        // make it far too sensitive (as in the DX steering curve). Bug fix: multiply up, not divide -
+        // see tools/INPUT_BINDING_DESIGN.md 0.4 (the legacy handle_axis() below gets the same fix).
         if (group == device_binding_t::GROUP_WHEEL && wheel_zone > 0 && wheel_zone < 100)
             raw = raw * 100 / (100 - wheel_zone);
 

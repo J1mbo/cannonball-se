@@ -6,8 +6,8 @@
     calling the rumble function with (0,0,0) once at open() time: it returns
     0 on devices that actually support rumble and a negative error
     otherwise, which is the only reliable check on SDL 2.0.9-2.0.17 (before
-    SDL_GameControllerHasRumble existed in 2.0.18) - see DX input.cpp:305-306,
-    referenced by tools/INPUT_BINDING_DESIGN.md B.2.3.
+    SDL_GameControllerHasRumble existed in 2.0.18) - the same probe DX uses,
+    described in tools/INPUT_BINDING_DESIGN.md B.2.3.
 
     SDL_HAPTIC: SDL_HapticOpenFromJoystick + SDL_HapticRumbleInit/Play/Stop.
     This is the haptic setup that used to live inline in
