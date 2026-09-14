@@ -1111,8 +1111,13 @@ void Menu::tick_menu()
             else if (SELECTED(ENTRY_CONFIGINPUTS))
             {
                 // Input binding matrix (Stage 3, tools/INPUT_BINDING_DESIGN.md A.4.1/A.4.2): open the
-                // matrix editor. On first open of a legacy config, migrate the old arrays first
-                // so nothing is lost (A.2.2), then reset the editor cursor/phase.
+                // matrix editor. Snapshot the editable state first so CANCEL can restore it (this
+                // also covers undoing the first-open legacy migration below), then on first open of
+                // a legacy config, migrate the old arrays so nothing is lost (A.2.2), then reset the
+                // editor cursor/phase.
+                bind_snap_bindings = config.controls.device_bindings;
+                memcpy(bind_snap_keyconfig, config.controls.keyconfig, sizeof(bind_snap_keyconfig));
+                bind_snap_active = config.controls.bindings_active;
                 if (!config.controls.bindings_active)
                     migrate_legacy_to_bindings();
                 bind_row       = 0;
@@ -1696,12 +1701,43 @@ void Menu::redefine_keyboard()
     }
 }
 
+// ohud.blit_text_new only renders A-Z (lowercase is uppercased), 0-9, space, '-', '.', '%', '!',
+// ',' and '/'; any other character renders as a garbage tile. Used to sanitise text built from
+// SDL device/key names before it is drawn. Uppercases, drops unsupported characters (rather than
+// substituting them), collapses runs of spaces, and trims the ends.
+static std::string font_safe(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s)
+    {
+        char u = static_cast<char>(toupper(c));
+        if ((u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9') ||
+            u == ' ' || u == '-' || u == '.' || u == '%' || u == '!' || u == ',' || u == '/')
+            out += u;
+    }
+    // Collapse runs of spaces to one.
+    std::string collapsed;
+    collapsed.reserve(out.size());
+    for (char c : out)
+    {
+        if (c == ' ' && !collapsed.empty() && collapsed.back() == ' ') continue;
+        collapsed += c;
+    }
+    // Trim leading/trailing spaces.
+    size_t start = collapsed.find_first_not_of(' ');
+    if (start == std::string::npos) return std::string();
+    size_t end = collapsed.find_last_not_of(' ');
+    return collapsed.substr(start, end - start + 1);
+}
+
 // ------------------------------------------------------------------------------------------------
 // Stage 3 (tools/INPUT_BINDING_DESIGN.md A.4.2): binding-matrix editor. Reached via STATE_REDEFINE_JOY and
-// dispatched from tick_ui(). 13 data rows + BACK; three columns (KEYBOARD / GAMEPAD / WHEEL). All
-// editor state is held in the bind_* Menu members. Writes go through config and are persisted by
-// the existing SAVE AND RETURN entry; leaving the editor rebuilds the binding cache so edits are
-// live immediately. Exit is MENU or BACK - ESC still quits the program and is not repurposed here.
+// dispatched from tick_ui(). 13 data rows + SAVE + CANCEL; three columns (KEYBOARD / GAMEPAD / WHEEL). All
+// editor state is held in the bind_* Menu members. SAVE keeps the edits live (the settings menu SAVE entry persists them);
+// CANCEL restores the snapshot taken on entry and discards them. Leaving the editor (either way, or
+// via MENU) rebuilds the binding cache so edits are live immediately. ESC still quits the program
+// and is not repurposed here.
 // ------------------------------------------------------------------------------------------------
 void Menu::redefine_joystick()
 {
@@ -1723,16 +1759,17 @@ void Menu::redefine_joystick()
         { "LEFT",         2, device_binding_t::TARGET_LEFT  },
         { "RIGHT",        3, device_binding_t::TARGET_RIGHT },
     };
-    const int DATA_ROWS = 13;
-    const int BACK_ROW  = DATA_ROWS;
+    const int DATA_ROWS  = 13;
+    const int SAVE_ROW   = DATA_ROWS;      // 13
+    const int CANCEL_ROW = DATA_ROWS + 1;  // 14
 
     // Cursor normalisation - also snaps the spec's bind_row=0/bind_col=0 init off STEERING's
-    // non-selectable keyboard cell, and forces col 0 on the BACK row.
+    // non-selectable keyboard cell, and forces col 0 on the SAVE/CANCEL rows.
     if (bind_row < 0) bind_row = 0;
-    if (bind_row > BACK_ROW) bind_row = BACK_ROW;
+    if (bind_row > CANCEL_ROW) bind_row = CANCEL_ROW;
     if (bind_col < 0) bind_col = 0;
     if (bind_col > 2) bind_col = 2;
-    if (bind_row == BACK_ROW) bind_col = 0;
+    if (bind_row >= DATA_ROWS) bind_col = 0;
     else if (bind_row == 0 && bind_col == 0) bind_col = 1; // STEERING has no keyboard cell
 
     if (bind_msg_timer > 0 && --bind_msg_timer == 0) bind_msg.clear();
@@ -1766,19 +1803,19 @@ void Menu::redefine_joystick()
 
             if (input.has_pressed(Input::UP))
             {
-                bind_row = (bind_row == 0) ? BACK_ROW : bind_row - 1;
-                if (bind_row == BACK_ROW) bind_col = 0;
+                bind_row = (bind_row == 0) ? CANCEL_ROW : bind_row - 1;
+                if (bind_row >= DATA_ROWS) bind_col = 0;
                 else if (bind_row == 0 && bind_col == 0) bind_col = 1;
                 break;
             }
             if (input.has_pressed(Input::DOWN))
             {
-                bind_row = (bind_row == BACK_ROW) ? 0 : bind_row + 1;
-                if (bind_row == BACK_ROW) bind_col = 0;
+                bind_row = (bind_row == CANCEL_ROW) ? 0 : bind_row + 1;
+                if (bind_row >= DATA_ROWS) bind_col = 0;
                 else if (bind_row == 0 && bind_col == 0) bind_col = 1;
                 break;
             }
-            if (bind_row != BACK_ROW)
+            if (bind_row < DATA_ROWS)
             {
                 int col_min = (bind_row == 0) ? 1 : 0; // STEERING skips the keyboard column
                 if (input.has_pressed(Input::LEFT))  { bind_col = (bind_col <= col_min) ? 2 : bind_col - 1; break; }
@@ -1788,7 +1825,28 @@ void Menu::redefine_joystick()
             if (select_pressed() || input.key_press == SDLK_RETURN)
             {
                 input.key_press = -1;
-                if (bind_row == BACK_ROW) { leave_editor(); return; }
+                if (bind_row == SAVE_ROW)
+                {
+                    // Keep the edits (already live in config.controls and the binding cache);
+                    // persisting them is the settings menu SAVE entry, so remind the user. The
+                    // message is shown after leave_editor() switches back to STATE_MENU, as
+                    // display_message is used elsewhere in this menu.
+                    display_message("SAVE SETTINGS TO USE UPDATED CONFIG");
+                    leave_editor();
+                    return;
+                }
+                if (bind_row == CANCEL_ROW)
+                {
+                    // Restore the snapshot taken on entry, undoing any edits made in this session
+                    // (including a first-open legacy migration).
+                    config.controls.device_bindings = bind_snap_bindings;
+                    memcpy(config.controls.keyconfig, bind_snap_keyconfig, sizeof(bind_snap_keyconfig));
+                    config.controls.bindings_active = bind_snap_active;
+                    input.rebuild_binding_cache();
+                    display_message("CHANGES DISCARDED");
+                    leave_editor();
+                    return;
+                }
                 // Wait for the activating control to be released before capturing, so the button
                 // that opened the cell cannot be captured as its binding.
                 bind_phase = PH_WAIT_TO_CAPTURE;
@@ -1854,6 +1912,25 @@ void Menu::redefine_joystick()
                                                                        device_binding_t::TYPE_BUTTON;
                         b.index  = c.index;
                         b.value  = (c.kind == Input::Captured::HAT) ? c.hat_value : 0;
+
+                        // Derive the per-binding invert flag from the captured direction (c.delta) so
+                        // pedals/wheels that report backwards work without hand-editing config.xml:
+                        // ACCEL/BRAKE - pressing must increase the value; STEER - the prompt asks for
+                        // a LEFT turn, which is negative in SDL's convention (the same convention
+                        // apply_axis maps to 0x40 = hard left). Every other target is digital-only.
+                        if (c.kind == Input::Captured::AXIS)
+                        {
+                            if (row.target == device_binding_t::TARGET_ACCEL ||
+                                row.target == device_binding_t::TARGET_BRAKE)
+                                b.invert = c.delta < 0;
+                            else if (row.target == device_binding_t::TARGET_STEER)
+                                b.invert = c.delta > 0;
+                            else
+                                b.invert = false;
+                        }
+                        else
+                            b.invert = false;
+
                         const InputDevice* d = input.find_device(c.device);
                         if (d) { b.device = d->signature; b.vid = d->vid; b.pid = d->pid; b.name = d->name; }
                         config.set_binding(b);
@@ -1893,7 +1970,8 @@ void Menu::redefine_joystick()
         if (s)
             for (const char* p = s; *p && out.size() < n; ++p)
                 if (*p != ' ') out += static_cast<char>(toupper(static_cast<unsigned char>(*p)));
-        return out.empty() ? std::string("?") : out;
+        out = font_safe(out);
+        return out.empty() ? std::string("-") : out;
     };
     auto hat_dir = [](int v) -> const char* {
         switch (v)
@@ -1922,9 +2000,9 @@ void Menu::redefine_joystick()
     ohud.blit_text_new(12, 2, "CONFIGURE INPUTS", ohud.GREEN);
 
     ohud.blit_text_new(1,  4, "CONTROL", ohud.GREEN);
-    ohud.blit_text_new(14, 4, "KEYBOARD", (bind_row != BACK_ROW && bind_col == 0) ? ohud.PINK : ohud.GREEN);
-    ohud.blit_text_new(24, 4, "GAMEPAD",  (bind_row != BACK_ROW && bind_col == 1) ? ohud.PINK : ohud.GREEN);
-    ohud.blit_text_new(33, 4, "WHEEL",    (bind_row != BACK_ROW && bind_col == 2) ? ohud.PINK : ohud.GREEN);
+    ohud.blit_text_new(14, 4, "KEYBOARD", (bind_row < DATA_ROWS && bind_col == 0) ? ohud.PINK : ohud.GREEN);
+    ohud.blit_text_new(24, 4, "GAMEPAD",  (bind_row < DATA_ROWS && bind_col == 1) ? ohud.PINK : ohud.GREEN);
+    ohud.blit_text_new(33, 4, "WHEEL",    (bind_row < DATA_ROWS && bind_col == 2) ? ohud.PINK : ohud.GREEN);
 
     for (int r = 0; r < DATA_ROWS; r++)
     {
@@ -1976,7 +2054,8 @@ void Menu::redefine_joystick()
         }
     }
 
-    ohud.blit_text_new(18, 20, "BACK", (bind_row == BACK_ROW) ? ohud.PINK : ohud.GREEN);
+    ohud.blit_text_new(18, 20, "SAVE",   (bind_row == SAVE_ROW)   ? ohud.PINK : ohud.GREEN);
+    ohud.blit_text_new(17, 21, "CANCEL", (bind_row == CANCEL_ROW) ? ohud.PINK : ohud.GREEN);
 
     ohud.blit_text_new(1, 22, "ARROWS - SELECT   ENTER - CHANGE", ohud.GREY);
     ohud.blit_text_new(1, 23, "DEL/BSP - CLEAR   MENU  - EXIT", ohud.GREY);
@@ -1990,13 +2069,16 @@ void Menu::redefine_joystick()
     else if (bind_phase == PH_CAPTURE)
     {
         if (bind_col == 0)                                           dyn = "PRESS A KEY";
-        else if (ROWS[bind_row].target == device_binding_t::TARGET_STEER) dyn = "MOVE STEERING AXIS";
+        else if (ROWS[bind_row].target == device_binding_t::TARGET_STEER) dyn = "TURN WHEEL LEFT";
         else if (ROWS[bind_row].target == device_binding_t::TARGET_ACCEL ||
                  ROWS[bind_row].target == device_binding_t::TARGET_BRAKE) dyn = "MOVE AXIS OR PRESS BUTTON";
         else                                                        dyn = "PRESS BUTTON OR HAT";
     }
     if (!dyn.empty())
+    {
+        dyn = font_safe(dyn);
         ohud.blit_text_new(1, 26, dyn.c_str(), ohud.PINK);
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -2031,7 +2113,7 @@ void Menu::migrate_legacy_to_bindings()
         const int group = (legacy->controller != nullptr) ? device_binding_t::GROUP_GAMEPAD
                                                            : device_binding_t::GROUP_WHEEL;
 
-        auto add = [&](int target, int type, int index)
+        auto add = [&](int target, int type, int index, bool invert = false)
         {
             if (index < 0) return;
             device_binding_t b;
@@ -2044,6 +2126,7 @@ void Menu::migrate_legacy_to_bindings()
             b.vid    = legacy->vid;
             b.pid    = legacy->pid;
             b.name   = legacy->name;
+            b.invert = invert;
             config.set_binding(b);
         };
 
@@ -2061,13 +2144,15 @@ void Menu::migrate_legacy_to_bindings()
 
         // Analog axis cells - axis[0..2], honouring the legacy ANALOG setting so behaviour is not
         // silently changed: STEER whenever analog is on, ACCEL/BRAKE only in full-analog mode.
-        // These replace the matching button cell (set_binding is keyed on group+target).
+        // These replace the matching button cell (set_binding is keyed on group+target). invert
+        // seeds from the legacy controls.invert[1]/[2] flags for ACCEL/BRAKE; the legacy path never
+        // inverted steering, so STEER always migrates with invert = false.
         if (config.controls.analog != 0)
-            add(device_binding_t::TARGET_STEER, device_binding_t::TYPE_AXIS, config.controls.axis[0]);
+            add(device_binding_t::TARGET_STEER, device_binding_t::TYPE_AXIS, config.controls.axis[0], false);
         if (config.controls.analog == 1)
         {
-            add(device_binding_t::TARGET_ACCEL, device_binding_t::TYPE_AXIS, config.controls.axis[1]);
-            add(device_binding_t::TARGET_BRAKE, device_binding_t::TYPE_AXIS, config.controls.axis[2]);
+            add(device_binding_t::TARGET_ACCEL, device_binding_t::TYPE_AXIS, config.controls.axis[1], config.controls.invert[1] != 0);
+            add(device_binding_t::TARGET_BRAKE, device_binding_t::TYPE_AXIS, config.controls.axis[2], config.controls.invert[2] != 0);
         }
     }
 

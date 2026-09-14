@@ -49,6 +49,10 @@ Input input;
 
 namespace
 {
+    // Capture axis qualification threshold (A.3.5): about 50 on the game's 0-255 pedal scale -
+    // smaller movements (noise, a nudged wheel) never qualify.
+    constexpr int CAPTURE_AXIS_MIN_DELTA = SDL_JOYSTICK_AXIS_MAX / 5;
+
     // A.1.2: device signature = GUID + "|A<axes>|B<buttons>|H<hats>".
     // The "|A...|B...|H..." suffix is used on its own for the VID/PID fallback match, so that a
     // GUID that drifts across an SDL upgrade (CRC bytes on Linux) doesn't orphan a binding as long
@@ -397,6 +401,7 @@ void Input::rebuild_binding_cache()
             r.index    = static_cast<uint8_t>(b.index);
             r.hat_mask = static_cast<uint8_t>(b.value);
             r.target   = static_cast<uint8_t>(b.target);
+            r.invert   = b.invert ? 1 : 0;
             dev.resolved[b.group].push_back(r);
 
             if (b.target == device_binding_t::TARGET_UP    ||
@@ -484,12 +489,17 @@ void Input::apply_target(int target, bool pressed)
 // A.3.4: symmetric steering curve (reaches both 0x40 and 0xC0, 0 -> exactly 0x80); WHEEL-only
 // zone/dead. ACCEL/BRAKE axis mapping + invert. `index` is the raw axis (WHEEL) or
 // SDL_GameControllerAxis enum (GAMEPAD) the value came from, needed to tell a GAMEPAD trigger
-// (0..32767) from every other axis (-32768..32767).
-void Input::apply_axis(const InputDevice& /*dev*/, int group, int target, int index, int16_t value)
+// (0..32767) from every other axis (-32768..32767). `invert` is the per-binding flag
+// (device_binding_t::invert, resolved via InputDevice::Resolved::invert) - it is authoritative on
+// this path and negates the value before any mapping below; the legacy invert[1]/[2] flags are
+// only consulted to seed it at load/migration and are not read here.
+void Input::apply_axis(const InputDevice& /*dev*/, int group, int target, int index, int16_t value, bool invert)
 {
+    int v = invert ? -static_cast<int>(value) : value;
+
     if (target == device_binding_t::TARGET_STEER)
     {
-        int raw = value;
+        int raw = v;
 
         // Saturation zone is a WHEEL setting only - applying it to a GAMEPAD thumbstick would
         // make it far too sensitive (as in the DX steering curve). Bug fix: multiply up, not divide -
@@ -516,8 +526,7 @@ void Input::apply_axis(const InputDevice& /*dev*/, int group, int target, int in
     else if (target == device_binding_t::TARGET_ACCEL || target == device_binding_t::TARGET_BRAKE)
     {
         bool is_accel = target == device_binding_t::TARGET_ACCEL;
-        int invert_slot = is_accel ? 1 : 2;
-        int working = invert[invert_slot] ? -value : value;
+        int working = v;
 
         bool is_trigger_axis = group == device_binding_t::GROUP_GAMEPAD &&
             (index == SDL_CONTROLLER_AXIS_TRIGGERLEFT || index == SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
@@ -716,13 +725,16 @@ void Input::handle_joy_axis(SDL_JoyAxisEvent* evt)
     {
         // Editor capture (A.3.5): WHEEL stream only; latch the first axis that moves far enough
         // from its baseline. Never touch keys[]/axes while capturing.
-        if (capture_group == device_binding_t::GROUP_WHEEL && capture_pending.kind == Captured::NONE &&
-            std::abs(static_cast<int>(evt->value) - static_cast<int>(capture_baseline_of(evt->which, evt->axis)))
-                >= (SDL_JOYSTICK_AXIS_MAX / 5))
+        if (capture_group == device_binding_t::GROUP_WHEEL && capture_pending.kind == Captured::NONE)
         {
-            capture_pending.kind   = Captured::AXIS;
-            capture_pending.device = evt->which;
-            capture_pending.index  = evt->axis;
+            int delta = static_cast<int>(evt->value) - static_cast<int>(capture_baseline_of(evt->which, evt->axis));
+            if (std::abs(delta) >= CAPTURE_AXIS_MIN_DELTA)
+            {
+                capture_pending.kind   = Captured::AXIS;
+                capture_pending.device = evt->which;
+                capture_pending.index  = evt->axis;
+                capture_pending.delta  = delta;
+            }
         }
         return;
     }
@@ -743,7 +755,7 @@ void Input::handle_joy_axis(SDL_JoyAxisEvent* evt)
             r.target == device_binding_t::TARGET_ACCEL ||
             r.target == device_binding_t::TARGET_BRAKE)
         {
-            apply_axis(*dev, device_binding_t::GROUP_WHEEL, r.target, r.index, evt->value);
+            apply_axis(*dev, device_binding_t::GROUP_WHEEL, r.target, r.index, evt->value, r.invert != 0);
         }
     }
 }
@@ -757,13 +769,16 @@ void Input::handle_controller_axis(SDL_ControllerAxisEvent* evt)
     {
         // Editor capture (A.3.5): GAMEPAD stream only; latch the first axis that moves far enough
         // from its baseline. Never touch keys[]/axes while capturing.
-        if (capture_group == device_binding_t::GROUP_GAMEPAD && capture_pending.kind == Captured::NONE &&
-            std::abs(static_cast<int>(evt->value) - static_cast<int>(capture_baseline_of(evt->which, evt->axis)))
-                >= (SDL_JOYSTICK_AXIS_MAX / 5))
+        if (capture_group == device_binding_t::GROUP_GAMEPAD && capture_pending.kind == Captured::NONE)
         {
-            capture_pending.kind   = Captured::AXIS;
-            capture_pending.device = evt->which;
-            capture_pending.index  = evt->axis;
+            int delta = static_cast<int>(evt->value) - static_cast<int>(capture_baseline_of(evt->which, evt->axis));
+            if (std::abs(delta) >= CAPTURE_AXIS_MIN_DELTA)
+            {
+                capture_pending.kind   = Captured::AXIS;
+                capture_pending.device = evt->which;
+                capture_pending.index  = evt->axis;
+                capture_pending.delta  = delta;
+            }
         }
         return;
     }
@@ -784,7 +799,7 @@ void Input::handle_controller_axis(SDL_ControllerAxisEvent* evt)
             r.target == device_binding_t::TARGET_ACCEL ||
             r.target == device_binding_t::TARGET_BRAKE)
         {
-            apply_axis(*dev, device_binding_t::GROUP_GAMEPAD, r.target, r.index, evt->value);
+            apply_axis(*dev, device_binding_t::GROUP_GAMEPAD, r.target, r.index, evt->value, r.invert != 0);
         }
     }
 }

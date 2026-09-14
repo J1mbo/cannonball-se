@@ -120,7 +120,7 @@ private:
     int16_t  hid_edit_field = 0;   // selected field within the row (byte index, or action index)
 
     // Stage 3 (tools/INPUT_BINDING_DESIGN.md A.4.2): binding-matrix editor state, kept as Menu members
-    // (not function statics). bind_row 0..12 = data rows, 13 = BACK; bind_col 0=KEYBOARD,
+    // (not function statics). bind_row 0..12 = data rows, 13 = SAVE, 14 = CANCEL; bind_col 0=KEYBOARD,
     // 1=GAMEPAD, 2=WHEEL. bind_phase runs BROWSE -> WAIT_RELEASE -> CAPTURE -> WAIT_RELEASE.
     int16_t          bind_row = 0, bind_col = 0;
     uint8_t          bind_phase = 0;
@@ -128,6 +128,12 @@ private:
     int              bind_wait_key = -1;   // scancode awaited for release after a keyboard bind (-1 = none)
     int32_t          bind_msg_timer = 0;
     std::string      bind_msg;
+
+    // Snapshot of the editable binding state, taken on entry to the matrix editor so CANCEL can
+    // restore it (including undoing a first-open legacy migration).
+    std::vector<device_binding_t> bind_snap_bindings;
+    int                            bind_snap_keyconfig[12];
+    bool                           bind_snap_active;
 
     void populate_for_pc();
     void populate_controls();

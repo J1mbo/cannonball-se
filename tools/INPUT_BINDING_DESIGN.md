@@ -157,7 +157,7 @@ because one-binding-per-cell maps to one path-addressable element per cell.
     <bindings>                            <!-- Absent -> legacy padconfig/axis path (bindings_active=0) -->
         <gamepad>
             <steer type="axis"   index="0" device="030000005e0400008e02000014010000|A6|B11|H1"
-                   vid="045e" pid="028e" name="Xbox 360 Controller"/>
+                   vid="045e" pid="028e" name="Xbox 360 Controller" invert="0"/> <!-- axis only; set automatically at capture -->
             <accel type="axis"   index="5" device="..." vid="045e" pid="028e" name="..."/>
             <brake type="axis"   index="4" device="..." vid="045e" pid="028e" name="..."/>
             <gear1 type="button" index="0" device="..." vid="045e" pid="028e" name="..."/>
@@ -184,10 +184,12 @@ Human-editable on a headless Pi over ssh, which is the point of attributes rathe
   `bindings_active = cfg.find_node("controls.bindings") != nullptr`;
   for `group in {gamepad, wheel}` × `target in TARGET names`:
   `path = "controls.bindings."+group+"."+target`; if `cfg.find_node(path)` → read attributes
-  `type,index,value,device,vid,pid,name`; validate (`index>=0`, `type` in range, `device` non-empty,
-  STEER must be `axis`); push. Malformed cells are skipped with one `std::cerr` line.
+  `type,index,value,invert,device,vid,pid,name`; validate (`index>=0`, `type` in range, `device`
+  non-empty, STEER must be `axis`); push. Malformed cells are skipped with one `std::cerr` line.
+  `invert` (axis only) defaults from the legacy `controls.invert[1]/[2]` flags for ACCEL/BRAKE, 0
+  otherwise, when absent (A.3.4).
 - **Save** (append after config.cpp:483): `put_int("controls.input_mode")`; if `bindings_active`:
-  for every cell path either `put_attribute` the seven attributes or `cfg.erase(path)` when unbound.
+  for every cell path either `put_attribute` the eight attributes or `cfg.erase(path)` when unbound.
   Never write `<bindings>` unless `bindings_active` (so an untouched legacy config.xml round-trips
   byte-identical apart from `input_mode`).
 - `Config` gets three small helpers (config.hpp): `const device_binding_t* find_binding(group,
@@ -298,8 +300,14 @@ path permanently (SmartyPi cabinet only).
   `wheel_zone/wheel_dead` come from `asettings[]` as today (input.cpp:65-66) and apply to the
   **WHEEL group only** (DX `4490269`) — a thumbstick with a 75 % zone is unusable.
 - **ACCEL/BRAKE axis:** GAMEPAD `TRIGGERLEFT/RIGHT` are `0..32767` → `value/0x80`; anything else
-  is `-32768..32767` → `(value+0x8000)/0x100`; clamp `0..0xFF`; `invert[1]/[2]` honoured
-  (input.cpp:479-490 semantics, DX `input.cpp:922-943`).
+  is `-32768..32767` → `(value+0x8000)/0x100`; clamp `0..0xFF`.
+- **Invert:** the per-binding `device_binding_t::invert` flag negates `value` before any of the
+  mapping above runs - `apply_axis` takes it as a parameter and applies it uniformly to STEER as
+  well as ACCEL/BRAKE, so a pedal that rests high and goes negative when pressed, or a wheel that
+  reports increasing values when turned left, works without hand-editing config.xml. It is set
+  automatically at capture (A.3.5) and is authoritative on this path; the legacy `invert[1]/[2]`
+  flags only seed it at migration/load (A.2.1) and remain in use on the legacy `handle_axis()` path
+  (input.cpp, unchanged), which never gained a STEER invert.
 - **Derived `analog`** (replaces the manual ANALOG OFF/ON/ON-WHEEL-ONLY entry when
   `bindings_active`): in `rebuild_binding_cache()`, for the active group
   `analog = steer_axis_bound ? (accel_axis_bound && brake_axis_bound ? 1 : 2) : 0`. `oinputs.cpp:54-75`
@@ -309,7 +317,8 @@ path permanently (SmartyPi cabinet only).
 
 ```cpp
     struct Captured { enum Kind { NONE, AXIS, BUTTON, HAT } kind = NONE;
-                      SDL_JoystickID device = -1; int index = -1; int hat_value = 0; };
+                      SDL_JoystickID device = -1; int index = -1; int hat_value = 0;
+                      int delta = 0; };  // AXIS only: value - baseline at qualification (sign = direction)
     void     begin_capture(int group);            // snapshots every axis baseline, flushes queued
                                                   // SDL_JOYAXISMOTION/SDL_CONTROLLERAXISMOTION, clears latch
     void     end_capture();                       // capture_group = -1
@@ -326,6 +335,11 @@ path permanently (SmartyPi cabinet only).
   are ignored until `end_capture`.
 - Only STEER accepts AXIS. ACCEL/BRAKE accept AXIS, BUTTON or HAT. Others accept BUTTON or HAT.
 - `key_press` (input.hpp:60) is reused unchanged for the keyboard column.
+- `Captured.delta` records the signed movement from baseline, and the editor derives the
+  per-binding `invert` flag from its sign when the accepted control is an axis: for ACCEL/BRAKE,
+  pressing must increase the value (`invert = delta < 0`); for STEER, the capture prompt asks for a
+  LEFT turn, which is negative in SDL's convention (`invert = delta > 0`). Every other target is
+  digital-only and always gets `invert = false`.
 
 Existing public latches `joy_button`, `get_axis_config()` remain for the legacy wizard until it is
 deleted in Stage 3.

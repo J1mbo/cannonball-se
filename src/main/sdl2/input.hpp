@@ -48,6 +48,7 @@ struct InputDevice
         uint8_t index;     // GC axis/button enum (GAMEPAD) or raw index (WHEEL)
         uint8_t hat_mask;  // SDL_HAT_* mask; unused unless type == TYPE_HAT
         uint8_t target;    // device_binding_t::Target
+        uint8_t invert;    // device_binding_t::invert; axis only
     };
     std::vector<Resolved> resolved[device_binding_t::GROUP_COUNT];
 
@@ -138,6 +139,7 @@ public:
         SDL_JoystickID device = -1;
         int            index = -1;
         int            hat_value = 0;
+        int            delta = 0;  // AXIS only: value - rest baseline at the moment it qualified (sign gives direction)
     };
     void     begin_capture(int group);   // snapshot axis baselines, flush queued axis motion, clear latch
     void     end_capture();              // capture_group = -1
@@ -196,7 +198,7 @@ private:
     // Stage 2 multi-device helpers (tools/INPUT_BINDING_DESIGN.md A.3).
     const InputDevice* find_legacy_device() const;
     bool group_active(int group) const;
-    void apply_axis(const InputDevice& dev, int group, int target, int index, int16_t value);
+    void apply_axis(const InputDevice& dev, int group, int target, int index, int16_t value, bool invert);
     void apply_target(int target, bool pressed);
     bool has_binding_for_device(const std::string& signature, int group) const;
     void materialise_default_gamepad_profile(const InputDevice& dev);

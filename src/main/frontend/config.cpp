@@ -437,6 +437,13 @@ void Config::load()
                 std::string pid_str= cfg.get_attribute<std::string>(path + ".<xmlattr>.pid", "");
                 std::string name   = cfg.get_attribute<std::string>(path + ".<xmlattr>.name", "");
 
+                // invert defaults to the legacy accel/brake flags (already loaded above, controls.invert[1/2])
+                // when absent, so a config.xml written before this attribute existed keeps the behaviour
+                // those flags gave it; any other target defaults to 0.
+                int invert_default = (type == device_binding_t::TYPE_AXIS && t.target == device_binding_t::TARGET_ACCEL) ? controls.invert[1] :
+                                      (type == device_binding_t::TYPE_AXIS && t.target == device_binding_t::TARGET_BRAKE) ? controls.invert[2] : 0;
+                int invert_val     = cfg.get_attribute<int>(path + ".<xmlattr>.invert", invert_default);
+
                 if (index < 0 || device.empty() ||
                     (t.target == device_binding_t::TARGET_STEER && type != device_binding_t::TYPE_AXIS))
                 {
@@ -453,6 +460,7 @@ void Config::load()
                 binding.value  = value;
                 binding.device = device;
                 binding.name   = name;
+                binding.invert = (invert_val != 0);
                 try { if (!vid_str.empty()) binding.vid = static_cast<uint16_t>(std::stoul(vid_str, nullptr, 16)); }
                 catch (...) { binding.vid = 0; }
                 try { if (!pid_str.empty()) binding.pid = static_cast<uint16_t>(std::stoul(pid_str, nullptr, 16)); }
@@ -754,6 +762,7 @@ bool Config::save()
                 cfg.put_attribute<std::string>(path + ".<xmlattr>.type",   type_str);
                 cfg.put_attribute<int>        (path + ".<xmlattr>.index", binding->index);
                 cfg.put_attribute<int>        (path + ".<xmlattr>.value", binding->value);
+                cfg.put_attribute<int>        (path + ".<xmlattr>.invert", binding->invert ? 1 : 0);
                 cfg.put_attribute<std::string>(path + ".<xmlattr>.device", binding->device);
                 std::snprintf(hexbuf, sizeof(hexbuf), "%04x", static_cast<unsigned int>(binding->vid));
                 cfg.put_attribute<std::string>(path + ".<xmlattr>.vid", hexbuf);

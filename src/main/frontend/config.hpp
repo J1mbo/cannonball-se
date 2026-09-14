@@ -197,6 +197,7 @@ struct device_binding_t
     std::string device;                   // signature, see A.1.2 ("" never stored; "*" not supported)
     uint16_t    vid = 0, pid = 0;         // ADDED: fallback match + rumble-profile suggestion
     std::string name;                     // ADDED: display only (never matched on)
+    bool        invert = false;           // axis only: negate the SDL value before mapping (set automatically at capture)
 };
 
 struct controls_settings_t
