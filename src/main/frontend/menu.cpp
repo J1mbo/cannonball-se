@@ -97,6 +97,28 @@ static std::string font_safe(const std::string& s)
     return collapsed.substr(start, end - start + 1);
 }
 
+// ALSA/PulseAudio device names are often "card, long description" (or just
+// long). For the OUTPUT DEVICE tile: cut at the first space from the 10th
+// character onward (short names like "USB AUDIO" survive untouched), else
+// hard-crop long names to 15 chars with a "..." tail (the tile font has no
+// ellipsis glyph), then drop any trailing space/comma the cut left behind.
+static std::string short_device_label(const std::string& name)
+{
+    std::string s = name;
+    size_t cut = std::string::npos;
+    for (size_t i = 9; i < s.size(); ++i)
+    {
+        if (s[i] == ' ') { cut = i; break; }
+    }
+    if (cut != std::string::npos)
+        s = s.substr(0, cut);
+    else if (s.size() > 15)
+        s = s.substr(0, 15) + "...";
+
+    size_t last = s.find_last_not_of(" ,");
+    return (last == std::string::npos) ? std::string() : s.substr(0, last + 1);
+}
+
 
 // Logo Y Position
 const static int16_t LOGO_Y = -60;
@@ -1473,7 +1495,7 @@ void Menu::refresh_menu()
                 // open - if it couldn't be honoured at startup, the console
                 // warning from start_audio() covers that.
                 std::string text = config.sound.playback_device_name.empty()
-                                  ? "DEFAULT" : font_safe(config.sound.playback_device_name);
+                                  ? "DEFAULT" : short_device_label(font_safe(config.sound.playback_device_name));
                 size_t max_len = strlen(ENTRY_OUTPUT_DEVICE) < 40 ? 40 - strlen(ENTRY_OUTPUT_DEVICE) : 0;
                 if (text.size() > max_len) text = text.substr(0, max_len);
                 set_menu_text(ENTRY_OUTPUT_DEVICE, text);
