@@ -61,6 +61,15 @@ For the full terms, see [LGPL-2.1.txt](LGPL-2.1.txt).
 
 ---
 
+## CannonBall DX — User Setup Experience
+
+- **Components:** Menu-Driven Input Binding system and Extended Rumble Effects
+- **Author:** Based on work by Endprodukt, cannonball-dx (https://github.com/Endprodukt/cannonball-dx),
+  a fork of CannonBall-SE
+- **License:** the CannonBall-SE terms — see [CannonBall-SE-license.txt](CannonBall-SE-license.txt)
+
+---
+
 ## SDL2, TinyXML-2, mpg123, ANGLE
 
 These are external dependencies, linked rather than vendored, and are installed by
