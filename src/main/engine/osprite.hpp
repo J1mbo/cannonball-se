@@ -37,7 +37,6 @@ public:
 	void inc_x(uint16_t);
 	void set_y(uint16_t);
 	void set_pitch(uint8_t);
-	void set_rawh(uint8_t);
 	void set_vzoom(uint16_t);
 	void set_hzoom(uint16_t);
 	void set_priority(uint8_t);

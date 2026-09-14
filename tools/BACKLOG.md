@@ -3,7 +3,7 @@
 Open work, indexed. Each item names the document that holds the full reasoning, so this file
 stays a list rather than becoming a second source of truth.
 
-Last reviewed 2026-09-08.
+Last reviewed 2026-09-09.
 
 ---
 
@@ -66,6 +66,40 @@ changes are meant to be bit-identical, and that claim needs to be checkable befo
 
 Tiers 2 and 3 of [`PERFRAME_MEMORY_INVENTORY.md`](PERFRAME_MEMORY_INVENTORY.md) remain open;
 Tier 1 shipped in `c94f086`. Tier 2 items are conditional and want confirming measurements first.
+
+---
+
+## Test gates
+
+### Golden frame checksums are stale
+
+**Status: confirmed stale, needs a decision then a re-baseline.** The four values in
+[`road_tiles/analysis/GOLDEN_CHECKSUMS.md`](road_tiles/analysis/GOLDEN_CHECKSUMS.md) no longer
+match the tree and have not for some time. Established 2026-09-09 while gating `0f1fe9a`: the run
+recipe is still correct (rebuilding `fcf9d05`, the commit that introduced `CB_FRAME_CKSUM`, from a
+pristine `git archive` reproduces all four documented values exactly), so this is real code drift,
+not a broken procedure. The pixels moved at least twice — somewhere in the sprite S0-R2 / Tier 1
+series, all of which were described as bit-exact, and again at `bd06b6e`, which changed
+default-path sprite geometry and where a move was expected.
+
+Current values at `0f1fe9a` (600 frames, `-perftest -t 1`, offscreen SDL), measured independently
+by three agents in separate build trees:
+
+| mode | hires | widescreen | checksum |
+|---|---|---|---|
+| hires_nw | 1 | 0 | `0x05d98764ff87acd5` |
+| lores_nw | 0 | 0 | `0x6630b4b099cf1157` |
+| hires_wide | 1 | 1 | `0x432cb013834a6d87` |
+| lores_wide | 0 | 1 | `0x20674347e186b8e3` |
+
+Why it needs a decision rather than a straight overwrite: the "bit-exact" claim on the S0-R2 /
+Tier 1 commits is either wrong or the gate was not run on them, and blessing the current numbers
+without knowing which would bake in whatever changed. Worth identifying the commit that moved the
+pixels first. Until then the gate is only usable as a *relative* check between two commits, which
+is how `0f1fe9a` was verified.
+
+Also unrecorded: the document does not say what the four config files contain, so the recipe has to
+be reconstructed each time. Record them alongside the values.
 
 ---
 

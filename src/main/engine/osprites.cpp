@@ -808,15 +808,32 @@ void OSprites::do_sprite(oentry* input)
     set_sprite_xy(input, output, calc_width, calc_height);
 
     // Here we need the entire value set by above routine, not just top 0x1FF mask!
-    // NB: offset is in hi-res canvas pixels but x1/x2 are lo-res, and x2 picks it
-    // up twice. Pre-existing, and only the off-screen test below consumes these:
-    // it hides a sprite up to ~4 lo-res px early at the right edge (the derived
-    // offset reaches +8 where the old constants reached +4). Left as-is because
-    // the renderer clips independently (draw_sprite_fast's cx0/cx1), so this
-    // costs a few edge columns, never an over-draw. See XOFFSET doc section 4.
-    int16_t sprite_x1 = output->get_x() + offset;
+    // These two locals feed the off-screen cull and the clip flag below, both of
+    // which work in lo-res units, so the hires offset (word 15, hi-res canvas
+    // pixels) has to be halved on the way in. Note the offset *centres* the
+    // substituted frame on the original rather than translating it: the drawn
+    // left edge moves by +offset and the right edge by -offset. So x1 and x2
+    // take it with opposite signs -- x2 is not x1 + calc_width. Measured against
+    // the default path over every table x zoom cell, the right-hand term is out
+    // by up to 40 hi-res px if the offset is added twice (as it was before
+    // 0f1fe9a) and by up to 16 if it is modelled as a translation; with the
+    // signs as below the two agree to within 1 px on all 39,680 cells.
+    // Rounded away from zero by division rather than a shift, so the negative
+    // case does not lean on >> semantics, and because away-from-zero is the
+    // tighter bound in every substituted cell (never smaller than the shift's
+    // magnitude). Either keeps the left-edge margin >= 3 hi-res px for any
+    // offset; the measured offset range is -3..+8.
+    //
+    // Caveat on what the clip flag is worth: it was never an exact bound even on
+    // the default path, because calc_width is the WH-table width and a frame's
+    // rows can run wider (scenery type 8 at zoom row 219 draws 2W+20). Only
+    // render_ref's no-clip variants trust it; draw_sprite_fast recomputes
+    // cx0/cx1 regardless, so the shipped renderer is immune either way.
+    const int16_t offset_lores = (int16_t)(offset >= 0 ? (offset + 1) / 2
+                                                       : -((-offset + 1) / 2));
+    int16_t sprite_x1 = output->get_x() + offset_lores;
 //    int16_t sprite_x2 = sprite_x1 + width;
-    int16_t sprite_x2 = sprite_x1 + calc_width + offset;
+    int16_t sprite_x2 = output->get_x() + calc_width - offset_lores;
     int16_t sprite_y1 = output->get_y();
 //    int16_t sprite_y2 = sprite_y1 + height;
     int16_t sprite_y2 = sprite_y1 + calc_height;

@@ -75,11 +75,6 @@ void osprite::set_pitch(uint8_t p)
     data[0x02] = (data[0x2] & 0x1FF) | ((p & 0xFE) << 8);
 }
 
-void osprite::set_rawh(uint8_t h)
-{
-    data[0x07] = h;
-}
-
 void osprite::inc_x(uint16_t v)
 {
     data[0x6] += v;
