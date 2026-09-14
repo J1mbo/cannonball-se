@@ -886,6 +886,9 @@ static bool parse_command_line(int argc, char* argv[]) {
                   (strcmp(argv[i], "-list-audio-devices") == 0) ) {
             // list out SDL audio devices available:
             cannonball::audio.start_audio(true);
+            // _Exit skips stdio flushing; keep the list visible when output is redirected
+            std::fflush(stdout);
+            std::fflush(stderr);
             _Exit(0);
         }
         else if (strcmp(argv[i], "-cfgfile") == 0 && i+1 < argc) {
