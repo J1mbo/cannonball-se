@@ -27,6 +27,8 @@
 #include "sdl2/rumble.hpp"
 
 #include <iostream>
+#include <cstdio>   // snprintf (Stage 4b ADVANCED HID SETUP editor row formatting)
+#include <cstring>  // strlen (Stage 4b editor byte-row cursor offset)
 
 
 // Drop Boost string predicates; use lightweight std helpers instead
@@ -269,14 +271,21 @@ void Menu::populate_controls()
     menu_controls_gp.push_back(ENTRY_REDEFJOY);
     menu_controls_gp.push_back(ENTRY_BACK);
 
-    // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.6.1): strength/backend/test only -
-    // HID PROFILE and ADVANCED HID SETUP are Stage 4b.
+    // Rumble subsystem (Stage 4a/4b, tools/INPUT_BINDING_DESIGN.md B.6.1).
     if (menu_feedback.size() > 0)
         menu_feedback.clear();
 
     menu_feedback.push_back(ENTRY_RUMBLE);
     menu_feedback.push_back(ENTRY_RUMBLE_BACKEND);
+    // HID PROFILE (Stage 4b, B.6.1): shown only when the backend is explicitly HID, or AUTO has a
+    // matching (suggested) profile for the current target device - otherwise there is nothing
+    // meaningful to cycle.
+    if (rumble::configured_backend() == rumble::HID_REPORT ||
+        (rumble::configured_backend() == rumble::AUTO && rumble::hid_selected_profile_index() >= 0 &&
+         rumble::hid_profile_matches_target(rumble::hid_selected_profile_index())))
+        menu_feedback.push_back(ENTRY_RUMBLE_PROFILE);
     menu_feedback.push_back(ENTRY_RUMBLE_TEST);
+    menu_feedback.push_back(ENTRY_RUMBLE_ADVANCED);
     menu_feedback.push_back(ENTRY_BACK);
 }
 
@@ -392,6 +401,7 @@ void Menu::tick()
         case STATE_MENU:
         case STATE_REDEFINE_KEYS:
         case STATE_REDEFINE_JOY:
+        case STATE_RUMBLE_EDITOR:
             tick_ui();
             break;
 
@@ -441,6 +451,10 @@ void Menu::tick_ui()
     else if (state == STATE_REDEFINE_JOY)
     {
         redefine_joystick();
+    }
+    else if (state == STATE_RUMBLE_EDITOR)
+    {
+        rumble_editor();
     }
 
     // Show messages
@@ -1148,7 +1162,7 @@ void Menu::tick_menu()
         }
         else if (menu_selected == &menu_feedback)
         {
-            // Rumble subsystem (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.6.1): strength/backend/test only.
+            // Rumble subsystem (Stage 4a/4b, tools/INPUT_BINDING_DESIGN.md B.6.1).
             if (SELECTED(ENTRY_RUMBLE))
             {
                 config.controls.rumble += 0.25f;
@@ -1160,11 +1174,46 @@ void Menu::tick_menu()
                 int next = (static_cast<int>(rumble::configured_backend()) + 1) % 6; // AUTO..OFF wrap
                 rumble::set_backend(static_cast<rumble::Backend>(next));
             }
+            else if (SELECTED(ENTRY_RUMBLE_PROFILE))
+            {
+                // Cycle through profiles matching the current target device + CUSTOM (B.3.3);
+                // wraps past any that don't match so this never silently arms an unrelated profile.
+                int count = rumble::hid_profile_count();
+                int cur = rumble::hid_selected_profile_index();
+                for (int tries = 0; tries < count; tries++)
+                {
+                    cur = (cur + 1) % count;
+                    if (rumble::hid_profile_matches_target(cur) || rumble::hid_profile_name(cur) == std::string("CUSTOM"))
+                    {
+                        rumble::set_hid_profile_index(cur);
+                        break;
+                    }
+                }
+            }
             else if (SELECTED(ENTRY_RUMBLE_TEST))
             {
                 bool started = rumble::test(rumble::TEST, 400);
                 display_message(started ? (std::string("TESTING: ") + rumble::active_backend_name())
                                          : "NO RUMBLE DEVICE");
+            }
+            else if (SELECTED(ENTRY_RUMBLE_ADVANCED))
+            {
+                rumble::stop_all(); // B.6.2: only TEST writes while the editor is open
+                int suggested = rumble::hid_selected_profile_index();
+                if (suggested < 0)
+                {
+                    // Nothing configured/matching yet - start from the first built-in that matches
+                    // the target device, else plain "thrustmaster3" as a harmless default shape.
+                    suggested = 0;
+                    for (int i = 0; i < rumble::hid_profile_count(); i++)
+                        if (rumble::hid_profile_matches_target(i)) { suggested = i; break; }
+                }
+                hid_edit = rumble::hid_profile_snapshot(suggested);
+                rumble::HidTargetInfo t = rumble::hid_target_info();
+                if (t.present) { hid_edit.vid = t.vid; hid_edit.pid = t.pid; } // arm for TEST (B.3.2)
+                hid_edit_row = 0;
+                hid_edit_field = 0;
+                state = STATE_RUMBLE_EDITOR;
             }
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
@@ -1538,6 +1587,17 @@ void Menu::refresh_menu()
                 }
                 set_menu_text(ENTRY_RUMBLE_BACKEND, label);
             }
+            else if (SELECTED(ENTRY_RUMBLE_PROFILE))
+            {
+                // B.3.3: name the selected profile, and flag it as auto-suggested when the user
+                // hasn't explicitly forced HID_REPORT (i.e. we're under AUTO and it merely happens
+                // to be the best match for the current target device).
+                int idx = rumble::hid_selected_profile_index();
+                std::string label = (idx >= 0) ? rumble::hid_profile_name(idx) : "NONE";
+                if (idx >= 0 && rumble::configured_backend() == rumble::AUTO)
+                    label += " (SUGGESTED)";
+                set_menu_text(ENTRY_RUMBLE_PROFILE, label);
+            }
         }
         else if (menu_selected == &menu_engine || menu_selected == &menu_s_dips)
         {
@@ -1685,6 +1745,293 @@ void Menu::redefine_joystick()
             state = STATE_MENU;
             break;
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Stage 4b (tools/INPUT_BINDING_DESIGN.md B.6.2): ADVANCED HID SETUP editor - STATE_RUMBLE_EDITOR, entered
+// from menu_feedback's ENTRY_RUMBLE_ADVANCED (which populates hid_edit and calls rumble::stop_all()
+// before switching state, so only the TEST actions below ever write while this screen is open) and
+// dispatched from tick_ui() the same way STATE_REDEFINE_JOY dispatches to redefine_joystick().
+//
+// Edits live in `hid_edit` (a Menu member, not a config-backed field) until SAVE CUSTOM; MENU
+// discards it. Every editable row exposes one uniform interaction (per B.6.2): ENTER (select_pressed(),
+// i.e. START/ACCEL/GEAR1 - same activation used everywhere else in this menu) = +1, ACCEL = +16
+// (0x10), BRAKE = -1; UP/DOWN move between rows, LEFT/RIGHT between fields within a row (a byte
+// index for the ON/OFF/PULSE/TEMPLATE rows, or one of several actions for the DEVICE/TEST/ACTIONS
+// rows, where ENTER activates the selected action instead of adjusting a number).
+// ------------------------------------------------------------------------------------------------
+void Menu::rumble_editor()
+{
+    enum RowKind
+    {
+        ROW_DEVICE, ROW_LEN, ROW_REPORTID, ROW_MODE,
+        ROW_ON, ROW_OFF, ROW_PULSE,                          // PRESETS mode rows
+        ROW_TEMPLATE, ROW_LOWBYTE, ROW_HIGHBYTE, ROW_SCALE,  // INTENSITY mode rows
+        ROW_KEEPALIVE, ROW_TEST, ROW_ACTIONS
+    };
+
+    // Row list depends on hid_edit.mode - PRESETS shows ON/OFF/PULSE, INTENSITY shows
+    // TEMPLATE/LOW BYTE/HIGH BYTE/SCALE instead (B.6.2).
+    std::vector<RowKind> rows;
+    rows.push_back(ROW_DEVICE);
+    rows.push_back(ROW_LEN);
+    rows.push_back(ROW_REPORTID);
+    rows.push_back(ROW_MODE);
+    if (hid_edit.mode == rumble::HID_PRESETS)
+    {
+        rows.push_back(ROW_ON);
+        rows.push_back(ROW_OFF);
+        rows.push_back(ROW_PULSE);
+    }
+    else
+    {
+        rows.push_back(ROW_TEMPLATE);
+        rows.push_back(ROW_LOWBYTE);
+        rows.push_back(ROW_HIGHBYTE);
+        rows.push_back(ROW_SCALE);
+    }
+    rows.push_back(ROW_KEEPALIVE);
+    rows.push_back(ROW_TEST);
+    rows.push_back(ROW_ACTIONS);
+
+    const int row_count = static_cast<int>(rows.size());
+    if (hid_edit_row >= row_count) hid_edit_row = row_count - 1;
+    if (hid_edit_row < 0) hid_edit_row = 0;
+
+    const int len = std::max(1, std::min<int>(rumble::HidProfileEdit::MAX_LEN, hid_edit.report_len));
+
+    auto field_count = [&](RowKind k) -> int
+    {
+        switch (k)
+        {
+            case ROW_ON: case ROW_OFF: case ROW_PULSE: case ROW_TEMPLATE: return len;
+            case ROW_TEST:    return 3; // TEST ON / TEST OFF / TEST PULSE
+            case ROW_ACTIONS: return 3; // SAVE CUSTOM / RESET / BACK
+            default:          return 1;
+        }
+    };
+
+    RowKind cur = rows[hid_edit_row];
+    int fcount = field_count(cur);
+    if (hid_edit_field >= fcount) hid_edit_field = fcount - 1;
+    if (hid_edit_field < 0) hid_edit_field = 0;
+
+    // ---- Input ----------------------------------------------------------------------------
+    if (input.has_pressed(Input::MENU))
+    {
+        state = STATE_MENU; // discard hid_edit - only SAVE CUSTOM below persists anything
+        refresh_menu();
+        return;
+    }
+
+    if (input.has_pressed(Input::DOWN) || oinputs.is_analog_l())
+    {
+        hid_edit_row = (hid_edit_row + 1) % row_count;
+        hid_edit_field = 0;
+    }
+    else if (input.has_pressed(Input::UP) || oinputs.is_analog_r())
+    {
+        hid_edit_row = (hid_edit_row - 1 + row_count) % row_count;
+        hid_edit_field = 0;
+    }
+    else if (input.has_pressed(Input::RIGHT))
+    {
+        hid_edit_field = (hid_edit_field + 1) % fcount;
+    }
+    else if (input.has_pressed(Input::LEFT))
+    {
+        hid_edit_field = (hid_edit_field - 1 + fcount) % fcount;
+    }
+    else
+    {
+        bool press_brake = input.has_pressed(Input::BRAKE);
+        bool press_accel = input.has_pressed(Input::ACCEL);
+        bool press_enter = select_pressed(); // START/ACCEL/GEAR1 (or cabinet START/analog-select)
+        int  delta = press_brake ? -1 : press_accel ? 16 : (press_enter ? 1 : 0);
+
+        if (cur == ROW_DEVICE && press_enter)
+        {
+            rumble::HidTargetInfo t = rumble::hid_target_info();
+            if (t.present)
+            {
+                hid_edit.vid = t.vid;
+                hid_edit.pid = t.pid;
+                display_message("VID/PID SET FROM DEVICE");
+            }
+            else
+                display_message("NO RUMBLE DEVICE ATTACHED");
+        }
+        else if (cur == ROW_TEST && press_enter)
+        {
+            rumble::HidTestAction action =
+                hid_edit_field == 0 ? rumble::HID_TEST_ON :
+                hid_edit_field == 1 ? rumble::HID_TEST_OFF : rumble::HID_TEST_PULSE;
+            display_message(rumble::hid_test(hid_edit, action) ? "TEST SENT" : "TEST FAILED - CHECK VID/PID");
+        }
+        else if (cur == ROW_ACTIONS && press_enter)
+        {
+            if (hid_edit_field == 0) // SAVE AS CUSTOM (B.6.2) - only this writes config
+            {
+                rumble::save_custom_hid_profile(hid_edit);
+                display_message("SAVED - USE SAVE AND RETURN TO KEEP");
+            }
+            else if (hid_edit_field == 1) // RESET TO SUGGESTED
+            {
+                int suggested = 0;
+                for (int i = 0; i < rumble::hid_profile_count(); i++)
+                {
+                    if (rumble::hid_profile_matches_target(i)) { suggested = i; break; }
+                }
+                hid_edit = rumble::hid_profile_snapshot(suggested);
+                rumble::HidTargetInfo t = rumble::hid_target_info();
+                if (t.present) { hid_edit.vid = t.vid; hid_edit.pid = t.pid; }
+                hid_edit_field = 0;
+                display_message("RESET TO SUGGESTED PROFILE");
+            }
+            else // BACK
+            {
+                state = STATE_MENU;
+                refresh_menu();
+                return;
+            }
+        }
+        else if (delta != 0)
+        {
+            switch (cur)
+            {
+                case ROW_LEN:
+                    hid_edit.report_len = std::max(1, std::min<int>(rumble::HidProfileEdit::MAX_LEN, hid_edit.report_len + delta));
+                    break;
+                case ROW_REPORTID:
+                    hid_edit.report_id = std::max(-1, std::min(255, hid_edit.report_id + delta));
+                    break;
+                case ROW_MODE:
+                    hid_edit.mode = (hid_edit.mode == rumble::HID_PRESETS) ? rumble::HID_INTENSITY : rumble::HID_PRESETS;
+                    hid_edit_row = 0; hid_edit_field = 0; // row layout just changed shape
+                    break;
+                case ROW_ON:       hid_edit.on[hid_edit_field]    = static_cast<uint8_t>(hid_edit.on[hid_edit_field]    + delta); break;
+                case ROW_OFF:      hid_edit.off[hid_edit_field]   = static_cast<uint8_t>(hid_edit.off[hid_edit_field]   + delta); break;
+                case ROW_PULSE:    hid_edit.pulse[hid_edit_field] = static_cast<uint8_t>(hid_edit.pulse[hid_edit_field] + delta); break;
+                case ROW_TEMPLATE: hid_edit.tmpl[hid_edit_field]  = static_cast<uint8_t>(hid_edit.tmpl[hid_edit_field]  + delta); break;
+                case ROW_LOWBYTE:
+                    hid_edit.pos_low = std::max(-1, std::min(len - 1, hid_edit.pos_low + delta));
+                    break;
+                case ROW_HIGHBYTE:
+                    hid_edit.pos_high = std::max(-1, std::min(len - 1, hid_edit.pos_high + delta));
+                    break;
+                case ROW_SCALE:
+                    hid_edit.scale = (hid_edit.scale == rumble::HID_NIBBLE_HI) ? rumble::HID_BYTE : rumble::HID_NIBBLE_HI;
+                    break;
+                case ROW_KEEPALIVE:
+                    hid_edit.keepalive_ms = std::max(0, std::min(60000, hid_edit.keepalive_ms + delta));
+                    break;
+                default: break;
+            }
+        }
+    }
+
+    // ---- Drawing (40x28 text grid; see report for exact column/row map) -------------------
+    auto hex2 = [](uint8_t b) { char buf[3]; std::snprintf(buf, sizeof(buf), "%02X", b); return std::string(buf); };
+    auto row_colour = [&](RowKind k) { return static_cast<uint16_t>(rows[hid_edit_row] == k ? ohud.PINK : ohud.GREEN); };
+
+    ohud.blit_text_new(7, 2, "HID RUMBLE PROFILE EDITOR", ohud.GREEN);
+
+    rumble::HidTargetInfo t = rumble::hid_target_info();
+    {
+        char buf[40];
+        if (t.present)
+            std::snprintf(buf, sizeof(buf), "DEVICE  %.20s %04X:%04X", t.name.c_str(), t.vid, t.pid);
+        else
+            std::snprintf(buf, sizeof(buf), "DEVICE  (NONE ATTACHED)");
+        ohud.blit_text_new(1, 4, buf, ohud.GREY);
+    }
+
+    {
+        char buf[40];
+        std::snprintf(buf, sizeof(buf), "VID/PID %04X:%04X   USE DEVICE", hid_edit.vid, hid_edit.pid);
+        ohud.blit_text_new(1, 6, buf, row_colour(ROW_DEVICE));
+    }
+    {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "REPORT LENGTH  %d", hid_edit.report_len);
+        ohud.blit_text_new(1, 7, buf, row_colour(ROW_LEN));
+    }
+    {
+        char buf[32];
+        if (hid_edit.report_id < 0) std::snprintf(buf, sizeof(buf), "REPORT ID      NONE");
+        else                        std::snprintf(buf, sizeof(buf), "REPORT ID      %d", hid_edit.report_id);
+        ohud.blit_text_new(1, 8, buf, row_colour(ROW_REPORTID));
+    }
+    {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "MODE           %s", HID_MODE_LABELS[hid_edit.mode == rumble::HID_INTENSITY ? 1 : 0]);
+        ohud.blit_text_new(1, 9, buf, row_colour(ROW_MODE));
+    }
+
+    auto draw_byte_row = [&](int y, const char* label, const uint8_t* bytes, RowKind kind)
+    {
+        std::string line = label;
+        for (int i = 0; i < len; i++)
+        {
+            line += hex2(bytes[i]);
+            if (i != len - 1) line += ' ';
+        }
+        ohud.blit_text_new(1, y, line.c_str(), row_colour(kind));
+        if (rows[hid_edit_row] == kind) // overlay the selected byte in PINK
+        {
+            int x = 1 + static_cast<int>(std::strlen(label)) + hid_edit_field * 3;
+            ohud.blit_text_new(x, y, hex2(bytes[hid_edit_field]).c_str(), ohud.PINK);
+        }
+    };
+
+    if (hid_edit.mode == rumble::HID_PRESETS)
+    {
+        draw_byte_row(11, "ON     ", hid_edit.on,    ROW_ON);
+        draw_byte_row(12, "OFF    ", hid_edit.off,   ROW_OFF);
+        draw_byte_row(13, "PULSE  ", hid_edit.pulse, ROW_PULSE);
+    }
+    else
+    {
+        draw_byte_row(11, "TEMPLATE  ", hid_edit.tmpl, ROW_TEMPLATE);
+        {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "LOW BYTE   %d", hid_edit.pos_low);
+            ohud.blit_text_new(1, 12, buf, row_colour(ROW_LOWBYTE));
+        }
+        {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "HIGH BYTE  %d", hid_edit.pos_high);
+            ohud.blit_text_new(1, 13, buf, row_colour(ROW_HIGHBYTE));
+        }
+        {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "SCALE      %s", HID_SCALE_LABELS[hid_edit.scale == rumble::HID_BYTE ? 1 : 0]);
+            ohud.blit_text_new(1, 14, buf, row_colour(ROW_SCALE));
+        }
+    }
+
+    {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "KEEPALIVE      %d MS", hid_edit.keepalive_ms);
+        ohud.blit_text_new(1, 15, buf, row_colour(ROW_KEEPALIVE));
+    }
+
+    {
+        bool sel = rows[hid_edit_row] == ROW_TEST;
+        ohud.blit_text_new(1,  17, "TEST ON",    static_cast<uint16_t>(sel && hid_edit_field == 0 ? ohud.PINK : ohud.GREEN));
+        ohud.blit_text_new(11, 17, "TEST OFF",   static_cast<uint16_t>(sel && hid_edit_field == 1 ? ohud.PINK : ohud.GREEN));
+        ohud.blit_text_new(22, 17, "TEST PULSE", static_cast<uint16_t>(sel && hid_edit_field == 2 ? ohud.PINK : ohud.GREEN));
+    }
+    {
+        bool sel = rows[hid_edit_row] == ROW_ACTIONS;
+        ohud.blit_text_new(1,  19, "SAVE CUSTOM", static_cast<uint16_t>(sel && hid_edit_field == 0 ? ohud.PINK : ohud.GREEN));
+        ohud.blit_text_new(14, 19, "RESET",       static_cast<uint16_t>(sel && hid_edit_field == 1 ? ohud.PINK : ohud.GREEN));
+        ohud.blit_text_new(22, 19, "BACK",        static_cast<uint16_t>(sel && hid_edit_field == 2 ? ohud.PINK : ohud.GREEN));
+    }
+
+    ohud.blit_text_new(1, 22, "UP/DOWN ROW   LEFT/RIGHT FIELD", ohud.GREY);
+    ohud.blit_text_new(1, 23, "ENTER +1   ACCEL +16   BRAKE -1", ohud.GREY);
+    ohud.blit_text_new(1, 24, "MENU - EXIT WITHOUT SAVING", ohud.GREY);
 }
 
 // Display a contextual message in the top left of the screen

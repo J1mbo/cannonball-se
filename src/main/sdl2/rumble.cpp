@@ -2,14 +2,17 @@
     Rumble / force-feedback subsystem - mixer, backend selection and safety.
 
     See sdl2/rumble.hpp for the public API and tools/INPUT_BINDING_DESIGN.md
-    Deliverable B for the design this implements. Stage 4a: CORE + the
-    SDL_CONTROLLER/SDL_HAPTIC/FFB backends. HID_REPORT (profiles table,
-    hidraw/SDL_hid_*) is Stage 4b and is not implemented here - selecting it
-    behaves exactly like OFF.
+    Deliverable B for the design this implements. Stage 4a implemented the
+    CORE + SDL_CONTROLLER/SDL_HAPTIC/FFB backends, with HID_REPORT behaving
+    like OFF (no backend behind it yet). Stage 4b wires in the profile-driven
+    HID_REPORT backend (rumble_backend_hid.cpp) and adds the menu-facing
+    hid_* wrappers at the bottom of this file (B.3, B.6).
 
     Safety (B.7), all enforced here rather than in any backend:
       1. Edge-triggered writes - a frame identical to the last one actually
-         sent is not re-sent.
+         sent is not re-sent, except for a backend that reports a non-zero
+         keepalive_ms() (Stage 4b, B.3.1: some HID rumble reports time out
+         and switch off if not periodically repeated).
       2. Hard rate cap - at most one backend write per tick() call.
       3. 3 consecutive backend failures disable it for the session; AUTO
          falls through to the next candidate, an explicit choice becomes OFF.
@@ -17,7 +20,8 @@
          shutdown(); a stale-tick guard forces OFF if tick() is not called
          for over 100 ms (a stalled main loop).
       5. The TEST path shares this same limiter and cannot be re-triggered
-         while a test is already running.
+         while a test is already running; the Stage 4b editor's raw HID
+         TEST ON/PULSE actions share it too (see hid_test() below).
 
     Copyright (c) 2026 James Pearce.
     See license.txt for more details.
@@ -25,6 +29,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <set>
 
@@ -117,9 +122,19 @@ namespace rumble
         RumbleFrame last_sent{ 0xFFFF, 0xFFFF, 0xFFFF }; // sentinel: cannot match any real frame
         int      fail_count = 0;
         uint32_t last_tick_ms = 0;
+        uint32_t last_write_ms = 0; // Stage 4b: last time write_frame() actually wrote a frame
 
         bool     test_running = false;
         uint32_t test_deadline_ms = 0;
+
+        // Stage 4b (B.6.2): when the ADVANCED HID SETUP editor's TEST ON/PULSE writes a report
+        // directly (hid_test(), independent of the active backend/mixer), this remembers the OFF
+        // bytes to send when the shared `test_running` window (above) expires in tick().
+        bool     raw_test_pending = false;
+        uint16_t raw_test_vid = 0, raw_test_pid = 0;
+        int16_t  raw_test_report_id = -1;
+        uint8_t  raw_test_off_bytes[HidProfileEdit::MAX_LEN] = { 0 };
+        int      raw_test_off_len = 0;
 
         // ------------------------------------------------------------------------------------
         // Target-device selection (B.2.3): the device holding the active group's STEER cell;
@@ -178,8 +193,9 @@ namespace rumble
             {
                 case SDL_CONTROLLER: b = create_sdl_controller_backend(); break;
                 case SDL_HAPTIC:     b = create_sdl_haptic_backend();     break;
+                case HID_REPORT:     b = create_hid_backend();            break;
                 case FFB:            b = create_ffb_backend();            break;
-                default: return nullptr; // AUTO/HID_REPORT/OFF are not directly openable here
+                default: return nullptr; // AUTO/OFF are not directly openable here
             }
             if (!b)
                 return nullptr;
@@ -209,6 +225,7 @@ namespace rumble
             for (auto& s : slots)
                 s = EffectSlot{};
             test_running = false;
+            raw_test_pending = false; // Stage 4b: abandon any pending editor raw-HID auto-off
         }
 
         // Re-select the target device and backend. Always lands on a non-null `active` (NullBackend
@@ -252,9 +269,10 @@ namespace rumble
                 return;
             }
 
-            // AUTO order (Stage 4a: no HID_REPORT step - that is Stage 4b):
-            // SDL_CONTROLLER -> SDL_HAPTIC -> FFB (if haptic-enabled and not a moving cabinet) -> OFF.
-            static const Backend order[] = { SDL_CONTROLLER, SDL_HAPTIC, FFB };
+            // AUTO order (B.2.1): SDL_CONTROLLER -> SDL_HAPTIC -> HID_REPORT (only if a built-in or
+            // custom profile matches the target's VID/PID - HidReportBackend::open() itself refuses
+            // otherwise, B.7.4) -> FFB (if haptic-enabled and not a moving cabinet) -> OFF.
+            static const Backend order[] = { SDL_CONTROLLER, SDL_HAPTIC, HID_REPORT, FFB };
             for (Backend b : order)
             {
                 if (disabled_this_session.count(b))
@@ -273,13 +291,23 @@ namespace rumble
             active_kind = OFF;
         }
 
-        // B.7.1/B.7.2/B.7.3: edge-triggered, at most one write per tick, 3-strikes disable.
+        // B.7.1/B.7.2/B.7.3: edge-triggered, at most one write per tick, 3-strikes disable. Stage 4b
+        // addition: a backend that reports a non-zero keepalive_ms() (some HID rumble reports time
+        // out and switch off if not periodically repeated, B.3.1) gets the identical frame re-sent
+        // once that many ms have elapsed, even though nothing upstream changed.
         void write_frame(const RumbleFrame& frame)
         {
             if (!active)
                 return;
 
-            if (same_frame(frame, last_sent))
+            bool identical = same_frame(frame, last_sent);
+            uint32_t now = SDL_GetTicks();
+            bool keepalive_due = identical
+                && !(frame.low == 0 && frame.high == 0) // never keepalive an OFF frame
+                && active->keepalive_ms() > 0
+                && (now - last_write_ms) >= active->keepalive_ms();
+
+            if (identical && !keepalive_due)
                 return;
 
             bool ok;
@@ -294,6 +322,7 @@ namespace rumble
             }
 
             last_sent = frame;
+            last_write_ms = now;
 
             if (ok)
             {
@@ -362,6 +391,15 @@ namespace rumble
 
     const char* active_backend_name()
     {
+        // B.7.7: if HID_REPORT was configured (directly or via AUTO) but the last hidraw/SDL_hid
+        // attempt failed with EACCES, say so explicitly rather than silently reporting "NONE" -
+        // the fix (a udev rule / group membership) is different from "no rumble device attached".
+        if (active_kind == OFF)
+        {
+            Backend cfg = static_cast<Backend>(config.controls.rumble_backend);
+            if ((cfg == HID_REPORT || cfg == AUTO) && hid_permission_denied())
+                return "HID: PERMISSION DENIED";
+        }
         return active ? active->name() : "NONE";
     }
 
@@ -436,7 +474,19 @@ namespace rumble
         last_tick_ms = now;
 
         if (test_running && now >= test_deadline_ms)
+        {
             test_running = false;
+
+            // Stage 4b (B.6.2): the ADVANCED HID SETUP editor's TEST ON/PULSE wrote raw bytes
+            // directly (hid_test()), bypassing the Effect/mixer path entirely - send the matching
+            // OFF report now that the shared test window has expired.
+            if (raw_test_pending)
+            {
+                hid_raw_write(raw_test_vid, raw_test_pid, raw_test_report_id,
+                               raw_test_off_bytes, raw_test_off_len);
+                raw_test_pending = false;
+            }
+        }
 
         // Expire one-shot events (event()/test()) whose window has elapsed. Continuous slots
         // (set_level()) have no expiry of their own - the caller drives them to zero directly.
@@ -486,5 +536,123 @@ namespace rumble
         }
 
         write_frame(frame);
+    }
+
+    // ============================================================================================
+    // Stage 4b - raw-HID profile surface for the FEEDBACK menu and the ADVANCED HID SETUP editor
+    // (tools/INPUT_BINDING_DESIGN.md B.3, B.6). The catalogue itself (built-ins + CUSTOM) lives in
+    // rumble_backend_hid.cpp; everything here just forwards to it plus the module state (`target`,
+    // `test_running`) already owned by this file.
+    // ============================================================================================
+
+    HidTargetInfo hid_target_info()
+    {
+        HidTargetInfo info;
+        if (target)
+        {
+            info.present = true;
+            info.name    = target->name;
+            info.vid     = target->vid;
+            info.pid     = target->pid;
+        }
+        return info;
+    }
+
+    int hid_profile_count() { return hid_catalogue_count(); }
+
+    const char* hid_profile_name(int index) { return hid_catalogue_name(index); }
+
+    bool hid_profile_matches_target(int index)
+    {
+        if (!target)
+            return false;
+        return hid_catalogue_vendor_match(index, target->vid, target->pid);
+    }
+
+    int hid_selected_profile_index()
+    {
+        return hid_catalogue_index_for_id(config.controls.rumble_hid_profile);
+    }
+
+    void set_hid_profile_index(int index)
+    {
+        if (index < 0 || index >= hid_catalogue_count())
+            return;
+
+        config.controls.rumble_hid_profile = hid_catalogue_id(index);
+        disabled_this_session.erase(HID_REPORT); // a deliberate profile change deserves a fresh try
+        select_and_open();                        // B.7.5: stop_all()s first, then re-resolves
+    }
+
+    HidProfileEdit hid_profile_snapshot(int index)
+    {
+        return hid_catalogue_snapshot(index);
+    }
+
+    void save_custom_hid_profile(const HidProfileEdit& profile)
+    {
+        rumble_hid_custom_t& c = config.controls.rumble_hid_custom;
+        int len = std::min<int>(profile.report_len, HidProfileEdit::MAX_LEN);
+        len = std::max(1, len);
+
+        c.valid       = true;
+        c.vid         = profile.vid;
+        c.pid         = profile.pid;
+        c.len         = len;
+        c.report_id   = profile.report_id;
+        c.mode        = (profile.mode == HID_INTENSITY) ? 1 : 0;
+        c.low_byte    = profile.pos_low;
+        c.high_byte   = profile.pos_high;
+        c.scale       = (profile.scale == HID_BYTE) ? 1 : 0;
+        c.keepalive_ms= std::max(0, profile.keepalive_ms);
+
+        std::memset(c.on,    0, sizeof(c.on));
+        std::memset(c.off,   0, sizeof(c.off));
+        std::memset(c.pulse, 0, sizeof(c.pulse));
+        std::memset(c.tmpl,  0, sizeof(c.tmpl));
+        std::memcpy(c.on,    profile.on,    len);
+        std::memcpy(c.off,   profile.off,   len);
+        std::memcpy(c.pulse, profile.pulse, len);
+        std::memcpy(c.tmpl,  profile.tmpl,  len);
+
+        config.controls.rumble_hid_profile = "custom";
+        disabled_this_session.erase(HID_REPORT);
+        select_and_open();
+    }
+
+    bool hid_test(const HidProfileEdit& profile, HidTestAction action)
+    {
+        if (test_running)
+            return false; // B.7.6: shared TEST limiter
+
+        // B.3.2/B.7.4: the editor may only ever write bytes to a device whose VID/PID matches the
+        // profile being tested, regardless of which backend rumble::AUTO/explicit selection has
+        // open right now.
+        if (!target || profile.vid != target->vid || profile.pid != target->pid)
+            return false;
+
+        uint8_t payload[HidProfileEdit::MAX_LEN];
+        int len = render_hid_edit_action(profile, action, payload);
+        if (len <= 0)
+            return false;
+
+        HidWriteResult wr = hid_raw_write(profile.vid, profile.pid,
+                                           static_cast<int16_t>(profile.report_id), payload, len);
+        if (wr != HidWriteResult::OK)
+            return false;
+
+        if (action != HID_TEST_OFF)
+        {
+            // B.6.2: TEST ON/PULSE auto-off after the same 500 ms cap as the ordinary TEST effect.
+            test_running     = true;
+            test_deadline_ms = SDL_GetTicks() + kTestDurationCapMs;
+
+            raw_test_pending    = true;
+            raw_test_vid        = profile.vid;
+            raw_test_pid        = profile.pid;
+            raw_test_report_id  = static_cast<int16_t>(profile.report_id);
+            raw_test_off_len    = render_hid_edit_action(profile, HID_TEST_OFF, raw_test_off_bytes);
+        }
+        return true;
     }
 }

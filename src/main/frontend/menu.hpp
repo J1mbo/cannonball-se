@@ -12,6 +12,7 @@
 
 #include <vector>
 #include "stdint.hpp"
+#include "sdl2/rumble.hpp" // rumble::HidProfileEdit (Stage 4b editor scratch state)
 
 class CabDiag;
 class TTrial;
@@ -40,6 +41,7 @@ private:
         STATE_REDEFINE_JOY,
         STATE_TTRIAL,
         STATE_DIAGNOSTICS,
+        STATE_RUMBLE_EDITOR,   // Stage 4b: ADVANCED HID SETUP (tools/INPUT_BINDING_DESIGN.md B.6.2)
     };
 
     TTrial* ttrial;
@@ -107,7 +109,15 @@ private:
     std::vector<std::string> menu_s_enhance;        // smartypi specific
 
     std::vector<std::string> text_redefine;
-    
+
+    // Stage 4b (tools/INPUT_BINDING_DESIGN.md B.6.2): ADVANCED HID SETUP editor state, kept as Menu members
+    // (not function statics) matching the pattern used for the Stage 3 matrix editor rewrite
+    // (A.4.2). `hid_edit` is a scratch copy - only SAVE AS CUSTOM persists it via
+    // rumble::save_custom_hid_profile(); MENU/BACK discard it.
+    rumble::HidProfileEdit hid_edit;
+    int16_t  hid_edit_row   = 0;   // selected row (device/len/reportid/mode/bytes.../keepalive/test/actions)
+    int16_t  hid_edit_field = 0;   // selected field within the row (byte index, or action index)
+
     void populate_for_pc();
     void populate_controls();
     void populate_for_cabinet();
@@ -122,6 +132,7 @@ private:
     void set_menu_text(std::string s1, std::string s2);
     void redefine_keyboard();
     void redefine_joystick();
+    void rumble_editor();          // Stage 4b: STATE_RUMBLE_EDITOR (B.6.2)
     void display_message(std::string);
     bool check_jap_roms();
     void start_game(int mode, int settings = 0);

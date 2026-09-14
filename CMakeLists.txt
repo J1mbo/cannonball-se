@@ -156,6 +156,7 @@ set(src_sdl
     "${main_cpp_base}/sdl2/rumble.cpp"
     "${main_cpp_base}/sdl2/rumble_backend_sdl.cpp"
     "${main_cpp_base}/sdl2/rumble_backend_ffb.cpp"
+    "${main_cpp_base}/sdl2/rumble_backend_hid.cpp"
     "${main_cpp_base}/sdl2/renderbase.cpp"
     "${main_cpp_base}/sdl2/snes_ntsc.cpp"
     )

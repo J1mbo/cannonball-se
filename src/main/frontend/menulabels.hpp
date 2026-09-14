@@ -121,10 +121,21 @@ const static char* ENTRY_RUMBLE             = "RUMBLE STRENGTH ";
 const static char* ENTRY_REDEFJOY           = "REDEFINE GAMEPAD";
 
 // Rumble and Feedback Menu (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.6.1). ENTRY_RUMBLE (above) is
-// reused for the strength row. HID PROFILE / ADVANCED HID SETUP are Stage 4b.
+// reused for the strength row.
 const static char* ENTRY_FEEDBACK           = "RUMBLE AND FEEDBACK...";
 const static char* ENTRY_RUMBLE_BACKEND     = "BACKEND ";
 const static char* ENTRY_RUMBLE_TEST        = "TEST RUMBLE";
+
+// Rumble and Feedback Menu (Stage 4b, tools/INPUT_BINDING_DESIGN.md B.6.1/B.6.2): HID profile selection
+// and the ADVANCED HID SETUP editor. The editor itself (Menu::rumble_editor()) draws its rows
+// directly rather than through the populate_*/SELECTED() menu-list pattern (it is a fixed-layout
+// byte editor, not a scrollable option list), so only the two row labels it looks up by value
+// (HID_MODE_LABELS/HID_SCALE_LABELS) live here; its short on-screen row/action text is inline.
+const static char* ENTRY_RUMBLE_PROFILE     = "HID PROFILE ";
+const static char* ENTRY_RUMBLE_ADVANCED    = "ADVANCED HID SETUP...";
+
+const static char* HID_MODE_LABELS[2]  = { "PRESETS", "INTENSITY" };
+const static char* HID_SCALE_LABELS[2] = { "NIBBLE", "BYTE" };
 
 // Game Engine Menu
 const static char* ENTRY_TRACKS             = "TRACKS ";

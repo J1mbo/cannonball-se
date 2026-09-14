@@ -86,6 +86,23 @@ EOF
   sudo udevadm trigger
 '
 
+# 5a. OPTIONAL - tighter hidraw permissions for the rumble subsystem's raw-HID profiles
+#     (tools/INPUT_BINDING_DESIGN.md B.7.7). Step 5 above already grants world read/write on every
+#     hidraw node (0666), which is sufficient for HID_REPORT rumble to work, so this step is
+#     NOT run automatically. If you would rather restrict hidraw access to members of the
+#     `input` group and scope it to a specific vendor (e.g. Thrustmaster, 0x044f) instead of
+#     every hidraw device on the system, uncomment the block below (and adjust idVendor) before
+#     running this script, or apply it by hand afterwards:
+#
+# sudo tee /etc/udev/rules.d/99-cannonball-hidraw.rules > /dev/null <<EOF
+# KERNEL=="hidraw*", ATTRS{idVendor}=="044f", MODE="0660", GROUP="input"
+# EOF
+# sudo udevadm control --reload-rules
+# sudo udevadm trigger
+#
+#     Note this rule only takes effect for a matching device if it is more specific than (or
+#     applied instead of) the blanket 99-cannonball.rules rule above.
+
 # 6. Grant real-time audio scheduling (rtprio), used by the audio mix/SDL
 #    threads to avoid ALSA underruns under CPU load (see
 #    tools/AUDIO_PERF_PLAN.md). Falls back gracefully at runtime if this

@@ -153,6 +153,27 @@ struct sound_settings_t
     int custom_tracks_loaded = 0; // used to mask help text at startup if tracks are loaded
 };
 
+// Rumble subsystem (Stage 4b, tools/INPUT_BINDING_DESIGN.md B.3.2/B.4): the one user-editable custom raw-HID
+// profile, persisted under controls.rumble_hid.custom only after "SAVE AS CUSTOM" in the ADVANCED
+// HID SETUP editor. `valid` is false until a well-formed <custom> block has been loaded or saved -
+// config.cpp rejects a malformed block wholesale (byte strings, indices) rather than partially
+// trusting it, so nothing downstream needs to re-validate.
+struct rumble_hid_custom_t
+{
+    bool     valid = false;
+    uint16_t vid = 0, pid = 0;
+    int      len = 3;               // 1..64
+    int      report_id = -1;        // -1 = unnumbered report; 0..255 = numbered report prefix
+    int      mode = 0;              // 0 = PRESETS, 1 = INTENSITY (mirrors rumble::HidMode)
+    uint8_t  on[64]    = { 0 };
+    uint8_t  off[64]   = { 0 };
+    uint8_t  pulse[64] = { 0 };
+    uint8_t  tmpl[64]  = { 0 };
+    int      low_byte = -1, high_byte = -1;
+    int      scale = 0;             // 0 = NIBBLE_HI, 1 = BYTE (mirrors rumble::HidScale)
+    int      keepalive_ms = 0;
+};
+
 // Input binding matrix: one persisted (group, target) -> physical control assignment.
 // Reused from DX config_base.hpp:155-185, with `group` added (see tools/INPUT_BINDING_DESIGN.md A.1.1).
 struct device_binding_t
@@ -216,6 +237,12 @@ struct controls_settings_t
     int rumble_backend;                      // rumble::Backend, as int
     std::string rumble_device;               // optional device-signature override for the rumble target
     int rumble_extras;                       // Stage 4c richer effects (crash/gear/start); unused in 4a
+
+    // Raw-HID rumble profiles (Stage 4b, see tools/INPUT_BINDING_DESIGN.md B.3/B.4). `rumble_hid_profile`
+    // is a built-in id (e.g. "thrustmaster3") or "custom"; `rumble_hid_custom` is the one editable
+    // custom profile (rumble_hid_custom_t::valid is false until a well-formed block exists).
+    std::string rumble_hid_profile;
+    rumble_hid_custom_t rumble_hid_custom;
 };
 
 struct smartypi_settings_t

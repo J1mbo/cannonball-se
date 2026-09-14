@@ -15,11 +15,13 @@
     - Play stats load/save
     - Input binding matrix load/save (controls.input_mode, controls.bindings.*)
     - Rumble subsystem load/save (controls.rumble_backend/rumble_device/rumble_extras)
+    - Raw-HID rumble profile load/save (controls.rumble_hid.profile/custom, Stage 4b)
 ***************************************************************************/
 
 #include <iostream>
 #include <fstream>   // for std::ifstream / std::ofstream
 #include <iterator>  // for std::istreambuf_iterator
+#include <sstream>   // for std::istringstream / std::ostringstream (rumble_hid_custom hex parsing)
 #include <filesystem>
 #include <regex>
 #include <map>
@@ -37,6 +39,40 @@
 #include "engine/outils.hpp"
 #include "engine/audio/osoundint.hpp"
 
+namespace
+{
+    // Rumble subsystem (Stage 4b, tools/INPUT_BINDING_DESIGN.md B.4): the custom HID profile's on/off/pulse/
+    // template byte arrays are stored as space-separated hex ("01 F0 00"). Parses `s` into `out[0..len)`;
+    // returns false (leaving `out` untouched) unless every token is present, well-formed 2-digit hex,
+    // and the token count is exactly `len` - config.cpp then discards the whole <custom> block rather
+    // than trust a partially-valid one.
+    bool parse_hex_bytes(const std::string& s, uint8_t* out, int len)
+    {
+        std::istringstream iss(s);
+        std::string tok;
+        int i = 0;
+        while (iss >> tok)
+        {
+            if (i >= len || tok.size() != 2 || !std::isxdigit((unsigned char)tok[0]) || !std::isxdigit((unsigned char)tok[1]))
+                return false;
+            out[i++] = static_cast<uint8_t>(std::stoul(tok, nullptr, 16));
+        }
+        return i == len;
+    }
+
+    std::string bytes_to_hex(const uint8_t* b, int len)
+    {
+        std::ostringstream oss;
+        char buf[4];
+        for (int i = 0; i < len; i++)
+        {
+            if (i) oss << ' ';
+            std::snprintf(buf, sizeof(buf), "%02x", b[i]);
+            oss << buf;
+        }
+        return oss.str();
+    }
+}
 
 Config config;
 
@@ -445,6 +481,80 @@ void Config::load()
     controls.rumble_extras = cfg.get_int("controls.rumble_extras", 0);
 
     // ------------------------------------------------------------------------
+    // Raw-HID rumble profiles (Stage 4b, tools/INPUT_BINDING_DESIGN.md B.3/B.4). `profile` is a built-in id
+    // (default "thrustmaster3") or "custom"; the <custom> block is only trusted if every field
+    // validates (B.4: length == len, tokens 00..FF) - an invalid block is dropped wholesale with
+    // one log line and "custom" as the selected profile falls back to the default built-in, since
+    // there would otherwise be nothing usable behind it.
+    // ------------------------------------------------------------------------
+    controls.rumble_hid_profile = cfg.get_string("controls.rumble_hid.profile", "thrustmaster3");
+    controls.rumble_hid_custom  = rumble_hid_custom_t{};
+    if (cfg.find_node("controls.rumble_hid.custom"))
+    {
+        const std::string base = "controls.rumble_hid.custom";
+        bool ok = true;
+
+        std::string vid_str = cfg.get_attribute<std::string>(base + ".<xmlattr>.vid", "");
+        std::string pid_str = cfg.get_attribute<std::string>(base + ".<xmlattr>.pid", "");
+        int len              = cfg.get_attribute<int>(base + ".<xmlattr>.len", 0);
+        int report_id        = cfg.get_attribute<int>(base + ".<xmlattr>.report_id", -1);
+        std::string mode_str = cfg.get_attribute<std::string>(base + ".<xmlattr>.mode", "presets");
+        std::string scale_str= cfg.get_attribute<std::string>(base + ".<xmlattr>.scale", "nibble");
+        int low_byte         = cfg.get_attribute<int>(base + ".<xmlattr>.low_byte", -1);
+        int high_byte        = cfg.get_attribute<int>(base + ".<xmlattr>.high_byte", -1);
+        int keepalive_ms     = cfg.get_attribute<int>(base + ".<xmlattr>.keepalive_ms", 0);
+
+        rumble_hid_custom_t c;
+        try
+        {
+            if (vid_str.empty() || pid_str.empty()) throw std::runtime_error("missing vid/pid");
+            c.vid = static_cast<uint16_t>(std::stoul(vid_str, nullptr, 16));
+            c.pid = static_cast<uint16_t>(std::stoul(pid_str, nullptr, 16));
+        }
+        catch (...) { ok = false; }
+
+        if (len < 1 || len > 64) ok = false;
+        if (report_id < -1 || report_id > 255) ok = false;
+        c.len = len;
+        c.report_id = report_id;
+        c.mode  = (mode_str == "intensity") ? 1 : 0;
+        c.scale = (scale_str == "byte") ? 1 : 0;
+        c.low_byte = low_byte;
+        c.high_byte = high_byte;
+        c.keepalive_ms = keepalive_ms < 0 ? 0 : keepalive_ms;
+
+        if (ok && c.mode == 0) // PRESETS: on/off/pulse must each be `len` well-formed hex bytes
+        {
+            ok = parse_hex_bytes(cfg.get_attribute<std::string>(base + ".<xmlattr>.on",    ""), c.on,    len)
+              && parse_hex_bytes(cfg.get_attribute<std::string>(base + ".<xmlattr>.off",   ""), c.off,   len)
+              && parse_hex_bytes(cfg.get_attribute<std::string>(base + ".<xmlattr>.pulse", ""), c.pulse, len);
+        }
+        else if (ok) // INTENSITY: template must be `len` well-formed hex bytes; low/high in range
+        {
+            ok = parse_hex_bytes(cfg.get_attribute<std::string>(base + ".<xmlattr>.template", ""), c.tmpl, len)
+              && low_byte  >= -1 && low_byte  < len
+              && high_byte >= -1 && high_byte < len;
+        }
+
+        if (ok)
+        {
+            c.valid = true;
+            controls.rumble_hid_custom = c;
+        }
+        else
+        {
+            std::cerr << "Warning: malformed controls.rumble_hid.custom block; ignored." << std::endl;
+            if (controls.rumble_hid_profile == "custom")
+                controls.rumble_hid_profile = "thrustmaster3";
+        }
+    }
+    else if (controls.rumble_hid_profile == "custom")
+    {
+        // "custom" selected but no <custom> block at all - nothing to arm; same fallback as above.
+        controls.rumble_hid_profile = "thrustmaster3";
+    }
+
+    // ------------------------------------------------------------------------
     // Engine Settings
     // ------------------------------------------------------------------------
 
@@ -663,6 +773,37 @@ bool Config::save()
     }
     cfg.put_string("controls.rumble_device", controls.rumble_device);
     cfg.put_int("controls.rumble_extras", controls.rumble_extras);
+
+    // Raw-HID rumble profiles (Stage 4b, tools/INPUT_BINDING_DESIGN.md B.4). The <custom> block is only
+    // written once a valid profile exists (i.e. after SAVE AS CUSTOM in the ADVANCED HID SETUP
+    // editor) - erase() any stale one otherwise, so an unedited config.xml round-trips unchanged.
+    cfg.put_string("controls.rumble_hid.profile", controls.rumble_hid_profile);
+    if (controls.rumble_hid_custom.valid)
+    {
+        const rumble_hid_custom_t& c = controls.rumble_hid_custom;
+        const std::string base = "controls.rumble_hid.custom";
+        char hexbuf[8];
+
+        std::snprintf(hexbuf, sizeof(hexbuf), "%04x", static_cast<unsigned int>(c.vid));
+        cfg.put_attribute<std::string>(base + ".<xmlattr>.vid", hexbuf);
+        std::snprintf(hexbuf, sizeof(hexbuf), "%04x", static_cast<unsigned int>(c.pid));
+        cfg.put_attribute<std::string>(base + ".<xmlattr>.pid", hexbuf);
+        cfg.put_attribute<int>(base + ".<xmlattr>.len", c.len);
+        cfg.put_attribute<int>(base + ".<xmlattr>.report_id", c.report_id);
+        cfg.put_attribute<std::string>(base + ".<xmlattr>.mode", c.mode == 1 ? "intensity" : "presets");
+        cfg.put_attribute<std::string>(base + ".<xmlattr>.scale", c.scale == 1 ? "byte" : "nibble");
+        cfg.put_attribute<int>(base + ".<xmlattr>.low_byte", c.low_byte);
+        cfg.put_attribute<int>(base + ".<xmlattr>.high_byte", c.high_byte);
+        cfg.put_attribute<int>(base + ".<xmlattr>.keepalive_ms", c.keepalive_ms);
+        cfg.put_attribute<std::string>(base + ".<xmlattr>.on",       bytes_to_hex(c.on,    c.len));
+        cfg.put_attribute<std::string>(base + ".<xmlattr>.off",      bytes_to_hex(c.off,   c.len));
+        cfg.put_attribute<std::string>(base + ".<xmlattr>.pulse",    bytes_to_hex(c.pulse, c.len));
+        cfg.put_attribute<std::string>(base + ".<xmlattr>.template", bytes_to_hex(c.tmpl,  c.len));
+    }
+    else
+    {
+        cfg.erase("controls.rumble_hid.custom");
+    }
 
     cfg.put_int("engine.freeplay",        (int) engine.freeplay);
     cfg.put_int("engine.time",            engine.freeze_timer ? 4 : engine.dip_time);
