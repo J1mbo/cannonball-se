@@ -281,6 +281,8 @@ void Menu::populate_controls()
         menu_feedback.push_back(ENTRY_RUMBLE_PROFILE);
     menu_feedback.push_back(ENTRY_RUMBLE_TEST);
     menu_feedback.push_back(ENTRY_RUMBLE_ADVANCED);
+    // Stage 4c (tools/INPUT_BINDING_DESIGN.md B.2.2): optional richer effects, OFF by default.
+    menu_feedback.push_back(ENTRY_RUMBLE_EXTRAS);
     menu_feedback.push_back(ENTRY_BACK);
 }
 
@@ -1181,6 +1183,13 @@ void Menu::tick_menu()
                 display_message(started ? (std::string("TESTING: ") + rumble::active_backend_name())
                                          : "NO RUMBLE DEVICE");
             }
+            else if (SELECTED(ENTRY_RUMBLE_EXTRAS))
+            {
+                // Stage 4c (tools/INPUT_BINDING_DESIGN.md B.2.2): toggle the optional CRASH/GEAR/START_REV
+                // effects polled inside rumble::tick(). rumble.cpp clears any stuck continuous
+                // START_REV level itself on the on->off transition.
+                config.controls.rumble_extras = config.controls.rumble_extras ? 0 : 1;
+            }
             else if (SELECTED(ENTRY_RUMBLE_ADVANCED))
             {
                 rumble::stop_all(); // B.6.2: only TEST writes while the editor is open
@@ -1578,6 +1587,8 @@ void Menu::refresh_menu()
                     label += " (SUGGESTED)";
                 set_menu_text(ENTRY_RUMBLE_PROFILE, label);
             }
+            else if (SELECTED(ENTRY_RUMBLE_EXTRAS))
+                set_menu_text(ENTRY_RUMBLE_EXTRAS, config.controls.rumble_extras ? "ON" : "OFF");
         }
         else if (menu_selected == &menu_engine || menu_selected == &menu_s_dips)
         {

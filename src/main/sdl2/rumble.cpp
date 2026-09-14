@@ -40,6 +40,13 @@
 #include "sdl2/input.hpp"       // InputDevice, extern Input input, Input::get_devices()
 #include "frontend/config.hpp"  // extern Config config, device_binding_t
 
+// Stage 4c (tools/INPUT_BINDING_DESIGN.md B.2.2): the optional richer effects poll these engine globals
+// directly, exactly as the DX build does (gamepad_rumble_state.hpp), so no engine file is touched.
+// Header-only reads of existing externs.
+#include "engine/ocrash.hpp"    // extern OCrash ocrash;  int16_t crash_counter
+#include "engine/oinputs.hpp"   // extern OInputs oinputs; bool gear; int16_t acc_adjust
+#include "engine/outrun.hpp"    // extern Outrun outrun;   int8_t game_state; GS_START1..GS_INGAME
+
 namespace rumble
 {
     namespace
@@ -220,12 +227,119 @@ namespace rumble
             active_kind = OFF;
         }
 
+        // ------------------------------------------------------------------------------------
+        // Stage 4c (tools/INPUT_BINDING_DESIGN.md B.2.2): optional richer effects (CRASH/GEAR/START_REV)
+        // derived by polling engine globals here rather than firing them from main.cpp. This is
+        // the SE equivalent of DX's gamepad_rumble_state.hpp, adapted to the slot API above.
+        //
+        // Edge-tracking state for the poll. `extra_baseline_valid` makes the first poll after any
+        // reset a pure baseline capture (no fire), so a re-selected/hot-plugged device or a game
+        // restart can never spuriously fire CRASH/GEAR on the next tick. `start_level01` is the
+        // ramped START_REV intensity in 0..1 (see poll_engine_effects()).
+        // ------------------------------------------------------------------------------------
+        int16_t last_crash_counter = 0;
+        bool    last_gear          = false;
+        float   start_level01      = 0.f;
+        bool    was_in_start       = false;
+        bool    extra_baseline_valid = false;
+        bool    was_extras_on      = false; // tracks on->off edge so START_REV can be cleared once
+
+        void reset_extra_state()
+        {
+            last_crash_counter   = 0;
+            last_gear            = false;
+            start_level01        = 0.f;
+            was_in_start         = false;
+            extra_baseline_valid = false;
+            // `was_extras_on` is deliberately NOT reset: the on->off clear of the continuous
+            // START_REV slot is keyed on it and must survive a stop_all()/device change so a
+            // level set while extras were on is always cleared once when they are turned off.
+        }
+
+        // Called at the top of tick() (tools/INPUT_BINDING_DESIGN.md B.2.2). A true no-op when extras are
+        // off, except for a single clear of the continuous START_REV slot on the on->off edge so
+        // toggling extras off mid-start cannot leave a stuck level.
+        void poll_engine_effects()
+        {
+            if (!config.controls.rumble_extras)
+            {
+                if (was_extras_on)
+                {
+                    set_level(START_REV, 0.f);
+                    start_level01 = 0.f;
+                    was_extras_on = false;
+                }
+                return;
+            }
+            was_extras_on = true;
+
+            const int16_t crash = ocrash.crash_counter;
+            const bool    gear  = oinputs.gear;
+            const int8_t  gs    = outrun.game_state;
+
+            // First poll after any reset: capture baselines only, don't fire.
+            if (!extra_baseline_valid)
+            {
+                last_crash_counter   = crash;
+                last_gear            = gear;
+                extra_baseline_valid = true;
+            }
+
+            // CRASH: rising edge from zero (DX gamepad_rumble_state.hpp:182-183); 160 ms one-shot.
+            // Re-baselines automatically as crash_counter returns to 0, so a wrap/reset or a game
+            // restart re-arms cleanly and fires only on a genuine new crash.
+            if (crash > 0 && last_crash_counter <= 0)
+                event(CRASH, 1.0f, kShapes[CRASH].duration_ms);
+            last_crash_counter = crash;
+
+            // GEAR: one short bump on a gear change while racing (DX :128-140); 95 ms one-shot.
+            // `last_gear` is updated every poll (also outside GS_INGAME), so re-entering gameplay
+            // never fires from a change that happened off the road.
+            if (gs == GS_INGAME && gear != last_gear)
+                event(GEAR, 1.0f, kShapes[GEAR].duration_ms);
+            last_gear = gear;
+
+            // START_REV: continuous half/level rev during the start line, scaled by the throttle
+            // and ramped (DX :151-177,257-261). DX works in master units; here the ramp is kept in
+            // normalised 0..1 (master cancels) and fed to set_level(), letting the mixer apply the
+            // START_REV shape (low = half, high = full) and master. Full throttle targets 0.90 to
+            // match DX's 90%-of-master peak; ramp-up ~0.3 s at 30 Hz (DX master/10), down ~master/6.
+            const bool in_start = (gs == GS_START1 || gs == GS_START2 || gs == GS_START3);
+
+            float target01 = 0.f;
+            if (in_start)
+            {
+                int pedal = static_cast<int>(oinputs.acc_adjust);
+                pedal = pedal < 0 ? 0 : (pedal > 0xFF ? 0xFF : pedal);
+                if (pedal >= 8) // DX ignores the very bottom of pedal travel
+                    target01 = (static_cast<float>(pedal) / 255.0f) * 0.90f;
+            }
+
+            const float ramp_up   = 0.10f;
+            const float ramp_down = 1.0f / 6.0f;
+            if (start_level01 < target01)
+                start_level01 = std::min(target01, start_level01 + ramp_up);
+            else if (start_level01 > target01)
+                start_level01 = std::max(target01, start_level01 - ramp_down);
+
+            if (in_start)
+                set_level(START_REV, start_level01);
+            else if (was_in_start)
+            {
+                // Leaving the start range: clear the continuous slot once so nothing sticks.
+                set_level(START_REV, 0.f);
+                start_level01 = 0.f;
+            }
+            was_in_start = in_start;
+        }
+
         void reset_slots()
         {
             for (auto& s : slots)
                 s = EffectSlot{};
             test_running = false;
             raw_test_pending = false; // Stage 4b: abandon any pending editor raw-HID auto-off
+            reset_extra_state();      // Stage 4c: re-baseline the polled-effect edge state too
         }
 
         // Re-select the target device and backend. Always lands on a non-null `active` (NullBackend
@@ -472,6 +586,11 @@ namespace rumble
             hard_off(); // B.7.5: main loop stalled - do not resume with a possibly-stale mix
 
         last_tick_ms = now;
+
+        // Stage 4c (tools/INPUT_BINDING_DESIGN.md B.2.2): derive the optional CRASH/GEAR/START_REV effects
+        // from the engine globals before the one-shot expiry loop below. A true no-op (bar a single
+        // START_REV clear on the extras on->off edge) when config.controls.rumble_extras is off.
+        poll_engine_effects();
 
         if (test_running && now >= test_deadline_ms)
         {

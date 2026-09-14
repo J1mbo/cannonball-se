@@ -133,6 +133,10 @@ const static char* ENTRY_RUMBLE_TEST        = "TEST RUMBLE";
 const static char* ENTRY_RUMBLE_PROFILE     = "HID PROFILE ";
 const static char* ENTRY_RUMBLE_ADVANCED    = "ADVANCED HID SETUP...";
 
+// Rumble and Feedback Menu (Stage 4c, tools/INPUT_BINDING_DESIGN.md B.2.2): optional richer effects
+// (CRASH/GEAR/START_REV) derived by polling engine globals in rumble.cpp; OFF by default.
+const static char* ENTRY_RUMBLE_EXTRAS      = "EXTRA EFFECTS ";
+
 const static char* HID_MODE_LABELS[2]  = { "PRESETS", "INTENSITY" };
 const static char* HID_SCALE_LABELS[2] = { "NIBBLE", "BYTE" };
 
