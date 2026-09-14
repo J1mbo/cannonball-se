@@ -11,8 +11,10 @@
 #pragma once
 
 #include <vector>
+#include <string>
 #include "stdint.hpp"
 #include "sdl2/rumble.hpp" // rumble::HidProfileEdit (Stage 4b editor scratch state)
+#include "sdl2/input.hpp"  // Input::Captured (Stage 3 matrix editor state)
 
 class CabDiag;
 class TTrial;
@@ -97,7 +99,6 @@ private:
     // JJP - end of insert
     std::vector<std::string> menu_sound;
     std::vector<std::string> menu_controls;
-    std::vector<std::string> menu_controls_gp;
     std::vector<std::string> menu_feedback;      // Stage 4a: RUMBLE AND FEEDBACK... submenu
     std::vector<std::string> menu_engine;
     std::vector<std::string> menu_enhancements;
@@ -118,6 +119,16 @@ private:
     int16_t  hid_edit_row   = 0;   // selected row (device/len/reportid/mode/bytes.../keepalive/test/actions)
     int16_t  hid_edit_field = 0;   // selected field within the row (byte index, or action index)
 
+    // Stage 3 (tools/INPUT_BINDING_DESIGN.md A.4.2): binding-matrix editor state, kept as Menu members
+    // (not function statics). bind_row 0..12 = data rows, 13 = BACK; bind_col 0=KEYBOARD,
+    // 1=GAMEPAD, 2=WHEEL. bind_phase runs BROWSE -> WAIT_RELEASE -> CAPTURE -> WAIT_RELEASE.
+    int16_t          bind_row = 0, bind_col = 0;
+    uint8_t          bind_phase = 0;
+    Input::Captured  bind_wait;            // control captured, awaited for release after a bind
+    int              bind_wait_key = -1;   // scancode awaited for release after a keyboard bind (-1 = none)
+    int32_t          bind_msg_timer = 0;
+    std::string      bind_msg;
+
     void populate_for_pc();
     void populate_controls();
     void populate_for_cabinet();
@@ -131,7 +142,9 @@ private:
     void refresh_menu();
     void set_menu_text(std::string s1, std::string s2);
     void redefine_keyboard();
-    void redefine_joystick();
+    void redefine_joystick();      // Stage 3: binding-matrix editor (STATE_REDEFINE_JOY, A.4.2)
+    void leave_editor();           // Stage 3: end capture, rebuild cache, return to STATE_MENU
+    void migrate_legacy_to_bindings(); // Stage 3: first-open migration of legacy arrays (A.2.2)
     void rumble_editor();          // Stage 4b: STATE_RUMBLE_EDITOR (B.6.2)
     void display_message(std::string);
     bool check_jap_roms();

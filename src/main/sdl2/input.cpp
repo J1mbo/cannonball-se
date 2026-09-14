@@ -11,9 +11,13 @@
     - Input binding matrix: multi-device runtime (device scan/hot-plug, per-device
       resolved binding cache, group gating, WHEEL-only zone/dead steering curve,
       derived analog, default GameController profile materialisation). The legacy
-      single-device path (handle_axis/handle_joy/store_last_axis/get_axis_config/
-      scale_trigger) is kept verbatim for the device at controls.pad_id when
-      controls.bindings_active == false; see tools/INPUT_BINDING_DESIGN.md Stage 2 (A.3).
+      single-device path (handle_axis/handle_joy/scale_trigger) is kept verbatim
+      for the device at controls.pad_id when controls.bindings_active == false;
+      see tools/INPUT_BINDING_DESIGN.md Stage 2 (A.3).
+    - Capture API (Stage 3, A.3.5): begin_capture/poll_capture/end_capture/
+      control_released, used by the matrix editor. The legacy REDEFINE GAMEPAD
+      wizard latches (joy_button/store_last_axis/get_axis_config/reset_axis_config)
+      are deleted with that wizard; see tools/INPUT_BINDING_DESIGN.md Stage 3.
     - Bug fix: wheel-zone maths corrected from divide to multiply-up (both in the
       new apply_axis() and in the legacy handle_axis() below) - see
       tools/INPUT_BINDING_DESIGN.md S0.4.
@@ -73,8 +77,8 @@ Input::Input(void)
     gamepad = false;
 
     // Rumble/haptic detection has moved to the rumble subsystem (Stage 4a); this field is no
-    // longer set by Input and always reads false. Kept only because menu.cpp's legacy
-    // menu_controls_gp still references it (that submenu is retired in Stage 3, not this one).
+    // longer set by Input and always reads false. Its last consumer (the retired menu_controls_gp
+    // submenu) was removed in Stage 3; the field is left in place as harmless dead state.
     rumble_supported = false;
 }
 
@@ -292,7 +296,6 @@ void Input::open_legacy_device(InputDevice& dev)
         bind_button(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 11);
     }
 
-    reset_axis_config();
     wheel = a_wheel = CENTRE;
 }
 
@@ -709,6 +712,21 @@ void Input::handle_joy_axis(SDL_JoyAxisEvent* evt)
     const InputDevice* dev = find_device(evt->which);
     if (!dev) return;
 
+    if (capture_group != -1)
+    {
+        // Editor capture (A.3.5): WHEEL stream only; latch the first axis that moves far enough
+        // from its baseline. Never touch keys[]/axes while capturing.
+        if (capture_group == device_binding_t::GROUP_WHEEL && capture_pending.kind == Captured::NONE &&
+            std::abs(static_cast<int>(evt->value) - static_cast<int>(capture_baseline_of(evt->which, evt->axis)))
+                >= (SDL_JOYSTICK_AXIS_MAX / 5))
+        {
+            capture_pending.kind   = Captured::AXIS;
+            capture_pending.device = evt->which;
+            capture_pending.index  = evt->axis;
+        }
+        return;
+    }
+
     if (!config.controls.bindings_active)
     {
         if (!dev->legacy_device || dev->controller != nullptr) return;
@@ -734,6 +752,21 @@ void Input::handle_controller_axis(SDL_ControllerAxisEvent* evt)
 {
     const InputDevice* dev = find_device(evt->which);
     if (!dev) return;
+
+    if (capture_group != -1)
+    {
+        // Editor capture (A.3.5): GAMEPAD stream only; latch the first axis that moves far enough
+        // from its baseline. Never touch keys[]/axes while capturing.
+        if (capture_group == device_binding_t::GROUP_GAMEPAD && capture_pending.kind == Captured::NONE &&
+            std::abs(static_cast<int>(evt->value) - static_cast<int>(capture_baseline_of(evt->which, evt->axis)))
+                >= (SDL_JOYSTICK_AXIS_MAX / 5))
+        {
+            capture_pending.kind   = Captured::AXIS;
+            capture_pending.device = evt->which;
+            capture_pending.index  = evt->axis;
+        }
+        return;
+    }
 
     if (!config.controls.bindings_active)
     {
@@ -762,7 +795,6 @@ void Input::handle_axis(const uint8_t ax, const int16_t value)
     if (analog)
     {
         int workingv = value;
-        store_last_axis(ax, value);
 
         // Steering
         // OutRun requires values between 0x48 and 0xb8. // JJP - 0x40 to 0xC0?
@@ -835,44 +867,109 @@ int Input::scale_trigger(const int value)
 }
 
 // ------------------------------------------------------------------------------------------------
-// Store the last analog axis to be pressed and depressed beyond the cap value for config purposes
+// Capture API (Stage 3, tools/INPUT_BINDING_DESIGN.md A.3.5). Used only by the matrix editor. While
+// capture_group != -1 the event handlers below latch the first qualifying control on the capturing
+// stream into capture_pending instead of updating keys[]/axes.
 // ------------------------------------------------------------------------------------------------
-void Input::store_last_axis(const uint8_t ax, const int16_t value)
+
+int16_t Input::capture_baseline_of(SDL_JoystickID device, int index) const
 {
-    const static int CAP = SDL_JOYSTICK_AXIS_MAX / 4;
-
-    if (std::abs(value) > CAP)
-        axis_last = ax;
-    else if (ax == axis_last)
-    {
-        axis_last = -1;
-        axis_counter = 0;
-    }
-
-    if (ax == axis_last)
-    {
-        if (value > CAP*2 && axis_counter == 0) axis_counter = 1;
-        if (value < CAP*2 && axis_counter == 1) axis_counter = 2;
-        if (axis_counter == 2)                  axis_config = ax; // Store the axis
-    }
+    for (const auto& b : capture_baselines)
+        if (b.device == device && b.index == index)
+            return b.value;
+    return 0;
 }
 
-int Input::get_axis_config()
+void Input::begin_capture(int group)
 {
-    if (axis_counter == 2)
+    capture_group      = group;
+    capture_last_group = group;
+    capture_pending    = Captured();
+    capture_baselines.clear();
+
+    // Snapshot every axis' current value so axis qualification is delta-from-rest: a pedal parked
+    // at -32768, a noisy centred wheel, or a control held to open the cell cannot self-bind.
+    for (auto& dev : devices)
     {
-        int value = axis_config;
-        reset_axis_config();
-        return value;
+        if (group == device_binding_t::GROUP_GAMEPAD)
+        {
+            if (dev.controller == nullptr) continue;
+            for (int a = 0; a < SDL_CONTROLLER_AXIS_MAX; a++)
+            {
+                AxisBaseline b;
+                b.device = dev.instance_id;
+                b.index  = a;
+                b.value  = SDL_GameControllerGetAxis(dev.controller, static_cast<SDL_GameControllerAxis>(a));
+                capture_baselines.push_back(b);
+            }
+        }
+        else
+        {
+            if (dev.joystick == nullptr) continue;
+            for (int a = 0; a < dev.axes; a++)
+            {
+                AxisBaseline b;
+                b.device = dev.instance_id;
+                b.index  = a;
+                b.value  = SDL_JoystickGetAxis(dev.joystick, a);
+                capture_baselines.push_back(b);
+            }
+        }
     }
-    return -1;
+
+    // Drop any axis motion already queued before the cell opened (a stale multi-axis report).
+    SDL_FlushEvent(SDL_JOYAXISMOTION);
+    SDL_FlushEvent(SDL_CONTROLLERAXISMOTION);
 }
 
-void Input::reset_axis_config()
+void Input::end_capture()
 {
-    axis_config = -1;
-    axis_last = -1;
-    axis_counter = 0;
+    capture_group = -1;
+}
+
+Input::Captured Input::poll_capture()
+{
+    Captured c = capture_pending;
+    capture_pending = Captured();   // cleared on read so an unwanted kind can be ignored
+    return c;
+}
+
+bool Input::control_released(const Captured& c) const
+{
+    // capture_last_group tells us which handle to read; it survives end_capture() (which only
+    // clears capture_group) so this still works during the post-capture wait-for-release.
+    const InputDevice* dev = find_device(c.device);
+    if (dev == nullptr) return true;
+
+    switch (c.kind)
+    {
+        case Captured::AXIS:
+        {
+            int16_t cur;
+            if (capture_last_group == device_binding_t::GROUP_GAMEPAD && dev->controller != nullptr)
+                cur = SDL_GameControllerGetAxis(dev->controller, static_cast<SDL_GameControllerAxis>(c.index));
+            else if (dev->joystick != nullptr)
+                cur = SDL_JoystickGetAxis(dev->joystick, c.index);
+            else
+                return true;
+            return std::abs(static_cast<int>(cur) - static_cast<int>(capture_baseline_of(c.device, c.index)))
+                   < (SDL_JOYSTICK_AXIS_MAX / 5);
+        }
+        case Captured::BUTTON:
+            if (capture_last_group == device_binding_t::GROUP_GAMEPAD && dev->controller != nullptr)
+                return SDL_GameControllerGetButton(dev->controller, static_cast<SDL_GameControllerButton>(c.index)) == 0;
+            else if (dev->joystick != nullptr)
+                return SDL_JoystickGetButton(dev->joystick, c.index) == 0;
+            return true;
+
+        case Captured::HAT:
+            if (dev->joystick != nullptr)
+                return SDL_JoystickGetHat(dev->joystick, c.index) != c.hat_value;
+            return true;
+
+        default:
+            return true;
+    }
 }
 
 void Input::handle_joy_down(SDL_JoyButtonEvent* evt)
@@ -880,11 +977,17 @@ void Input::handle_joy_down(SDL_JoyButtonEvent* evt)
     const InputDevice* dev = find_device(evt->which);
     if (!dev) return;
 
-    // Latch for the legacy REDEFINE GAMEPAD wizard (Stage 3 removes it). Suppressed for
-    // GameController-recognised devices, which report the same physical press again via
-    // SDL_CONTROLLERBUTTONDOWN - exactly as before Stage 2.
-    if (dev->controller == nullptr)
-        joy_button = evt->button;
+    if (capture_group != -1)
+    {
+        // Editor capture (A.3.5): WHEEL stream only; latch the first button pressed.
+        if (capture_group == device_binding_t::GROUP_WHEEL && capture_pending.kind == Captured::NONE)
+        {
+            capture_pending.kind   = Captured::BUTTON;
+            capture_pending.device = evt->which;
+            capture_pending.index  = evt->button;
+        }
+        return;
+    }
 
     if (!config.controls.bindings_active)
     {
@@ -907,6 +1010,8 @@ void Input::handle_joy_up(SDL_JoyButtonEvent* evt)
     const InputDevice* dev = find_device(evt->which);
     if (!dev) return;
 
+    if (capture_group != -1) return; // button-up never latches a binding
+
     if (!config.controls.bindings_active)
     {
         if (!dev->legacy_device || dev->controller != nullptr) return;
@@ -925,10 +1030,20 @@ void Input::handle_joy_up(SDL_JoyButtonEvent* evt)
 
 void Input::handle_controller_down(SDL_ControllerButtonEvent* evt)
 {
-    joy_button = evt->button;
-
     const InputDevice* dev = find_device(evt->which);
     if (!dev) return;
+
+    if (capture_group != -1)
+    {
+        // Editor capture (A.3.5): GAMEPAD stream only; latch the first button pressed.
+        if (capture_group == device_binding_t::GROUP_GAMEPAD && capture_pending.kind == Captured::NONE)
+        {
+            capture_pending.kind   = Captured::BUTTON;
+            capture_pending.device = evt->which;
+            capture_pending.index  = evt->button;
+        }
+        return;
+    }
 
     if (!config.controls.bindings_active)
     {
@@ -964,6 +1079,8 @@ void Input::handle_controller_up(SDL_ControllerButtonEvent* evt)
 {
     const InputDevice* dev = find_device(evt->which);
     if (!dev) return;
+
+    if (capture_group != -1) return; // button-up never latches a binding
 
     if (!config.controls.bindings_active)
     {
@@ -1018,6 +1135,20 @@ void Input::handle_joy_hat(SDL_JoyHatEvent* evt)
 {
     const InputDevice* dev = find_device(evt->which);
     if (!dev) return;
+
+    if (capture_group != -1)
+    {
+        // Editor capture (A.3.5): WHEEL stream only; latch the first hat pushed off centre.
+        if (capture_group == device_binding_t::GROUP_WHEEL && capture_pending.kind == Captured::NONE &&
+            evt->value != SDL_HAT_CENTERED)
+        {
+            capture_pending.kind      = Captured::HAT;
+            capture_pending.device    = evt->which;
+            capture_pending.index     = evt->hat;
+            capture_pending.hat_value = evt->value;
+        }
+        return;
+    }
 
     if (!config.controls.bindings_active)
     {

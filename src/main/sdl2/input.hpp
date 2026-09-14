@@ -103,9 +103,6 @@ public:
     // Latch last key press for redefines
     int key_press;
 
-    // Latch last joystick button press for redefines
-    int16_t joy_button;
-
     // Analog Controls
     int wheel, a_wheel;
     int a_accel;
@@ -128,6 +125,25 @@ public:
     // target-device selection. Input owns the device list; rumble.cpp never mutates it.
     const std::vector<InputDevice>& get_devices() const { return devices; }
 
+    // ------------------------------------------------------------------------------------------
+    // Capture API (Stage 3, tools/INPUT_BINDING_DESIGN.md A.3.5) - used only by the matrix editor
+    // (Menu::redefine_joystick). While a capture is active (capture_group != -1) neither joystick
+    // group updates keys[]/axes; the first qualifying event on the capturing stream is latched into
+    // capture_pending instead. GAMEPAD capture listens to SDL_CONTROLLER* events only (index = GC
+    // enum), WHEEL capture to SDL_JOY* events only (raw index); the other stream is ignored.
+    // ------------------------------------------------------------------------------------------
+    struct Captured
+    {
+        enum Kind { NONE, AXIS, BUTTON, HAT } kind = NONE;
+        SDL_JoystickID device = -1;
+        int            index = -1;
+        int            hat_value = 0;
+    };
+    void     begin_capture(int group);   // snapshot axis baselines, flush queued axis motion, clear latch
+    void     end_capture();              // capture_group = -1
+    Captured poll_capture();             // first qualifying event since begin_capture; cleared on read
+    bool     control_released(const Captured& c) const; // for the wait-for-release phase
+
     void handle_key_up(SDL_Keysym*);
     void handle_key_down(SDL_Keysym*);
     void handle_joy_axis(SDL_JoyAxisEvent*);
@@ -141,8 +157,6 @@ public:
     bool is_pressed(presses p);
     bool is_pressed_clear(presses p);
     bool has_pressed(presses p);
-    void reset_axis_config();
-    int get_axis_config();
 
 private:
     static const int CENTRE = 0x80;
@@ -162,15 +176,21 @@ private:
     int wheel_zone;
     int wheel_dead;
 
-    // Last axis used
-    int axis_last , axis_counter, axis_config;
+    // Capture API state (Stage 3, A.3.5). capture_group is the group the editor is listening to
+    // (-1 == not capturing). capture_last_group survives end_capture() so control_released() can
+    // still pick the controller-vs-joystick handle during the post-capture wait-for-release phase.
+    int      capture_group = -1;
+    int      capture_last_group = -1;
+    Captured capture_pending;
+    struct AxisBaseline { SDL_JoystickID device; int index; int16_t value; };
+    std::vector<AxisBaseline> capture_baselines;
+    int16_t  capture_baseline_of(SDL_JoystickID device, int index) const;
 
     void bind_axis(SDL_GameControllerAxis ax, int offset);
     void bind_button(SDL_GameControllerButton button, int offset);
     void handle_key(const int, const bool);
     void handle_joy(const uint8_t, const bool);
     void handle_axis(const uint8_t axis, const int16_t value);
-    void store_last_axis(const uint8_t axis, const int16_t value);
     int scale_trigger(const int);
 
     // Stage 2 multi-device helpers (tools/INPUT_BINDING_DESIGN.md A.3).

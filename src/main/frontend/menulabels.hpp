@@ -110,15 +110,14 @@ const static char* ENTRY_MUSICTEST          = "MUSIC... ";
 // Controls Menu
 const static char* ENTRY_GEAR               = "GEAR ";
 const static char* ENTRY_INPUT_MODE         = "INPUT MODE "; // Input binding matrix (Stage 2): active GAMEPAD/WHEEL group
-const static char* ENTRY_CONFIGUREGP        = "CONFIGURE GAMEPAD";
+const static char* ENTRY_CONFIGINPUTS       = "CONFIGURE INPUTS"; // Input binding matrix (Stage 3): matrix editor
 const static char* ENTRY_REDEFKEY           = "REDEFINE KEYS";
 const static char* ENTRY_DSTEER             = "DIGITAL STEER SPEED ";
 const static char* ENTRY_DPEDAL             = "DIGITAL PEDAL SPEED ";
 
-// GamePad Menu
-const static char* ENTRY_ANALOG             = "ANALOG ";
+// GamePad Menu (ENTRY_ANALOG / ENTRY_REDEFJOY retired in Stage 3 with the menu_controls_gp submenu;
+// the matrix editor (CONFIGURE INPUTS) replaces REDEFINE GAMEPAD and analog is now derived).
 const static char* ENTRY_RUMBLE             = "RUMBLE STRENGTH ";
-const static char* ENTRY_REDEFJOY           = "REDEFINE GAMEPAD";
 
 // Rumble and Feedback Menu (Stage 4a, tools/INPUT_BINDING_DESIGN.md B.6.1). ENTRY_RUMBLE (above) is
 // reused for the strength row.

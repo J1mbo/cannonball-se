@@ -254,22 +254,17 @@ void Menu::populate_controls()
     if (menu_controls.size() > 0)
         menu_controls.clear();
 
+    // Input binding matrix (Stage 3, tools/INPUT_BINDING_DESIGN.md A.4.1): CONFIGURE INPUTS (the matrix
+    // editor) is always shown - the keyboard column is always editable - and replaces the old
+    // input.gamepad-gated CONFIGURE GAMEPAD entry and its menu_controls_gp submenu.
     menu_controls.push_back(ENTRY_GEAR);
     menu_controls.push_back(ENTRY_INPUT_MODE);
-    if (input.gamepad) menu_controls.push_back(ENTRY_CONFIGUREGP);
+    menu_controls.push_back(ENTRY_CONFIGINPUTS);
     menu_controls.push_back(ENTRY_REDEFKEY);
     menu_controls.push_back(ENTRY_DSTEER);
     menu_controls.push_back(ENTRY_DPEDAL);
     menu_controls.push_back(ENTRY_FEEDBACK);
     menu_controls.push_back(ENTRY_BACK);
-
-    if (menu_controls_gp.size() > 0)
-        menu_controls_gp.clear();
-
-    menu_controls_gp.push_back(ENTRY_ANALOG);
-    if (input.rumble_supported) menu_controls_gp.push_back(ENTRY_RUMBLE);
-    menu_controls_gp.push_back(ENTRY_REDEFJOY);
-    menu_controls_gp.push_back(ENTRY_BACK);
 
     // Rumble subsystem (Stage 4a/4b, tools/INPUT_BINDING_DESIGN.md B.6.1).
     if (menu_feedback.size() > 0)
@@ -1111,8 +1106,23 @@ void Menu::tick_menu()
                 // stop_all()s first, forcing OFF before anything might change underneath it).
                 rumble::on_devices_changed();
             }
-            else if (SELECTED(ENTRY_CONFIGUREGP))
-                set_menu(&menu_controls_gp);
+            else if (SELECTED(ENTRY_CONFIGINPUTS))
+            {
+                // Input binding matrix (Stage 3, tools/INPUT_BINDING_DESIGN.md A.4.1/A.4.2): open the
+                // matrix editor. On first open of a legacy config, migrate the old arrays first
+                // so nothing is lost (A.2.2), then reset the editor cursor/phase.
+                if (!config.controls.bindings_active)
+                    migrate_legacy_to_bindings();
+                bind_row       = 0;
+                bind_col       = 0;
+                bind_phase     = 0; // BROWSE
+                bind_wait      = Input::Captured();
+                bind_wait_key  = -1;
+                bind_msg.clear();
+                bind_msg_timer = 0;
+                input.key_press = -1; // don't let the RETURN that opened this entry self-activate a cell
+                state = STATE_REDEFINE_JOY;
+            }
             else if (SELECTED(ENTRY_REDEFKEY))
             {
                 display_message("PRESS MENU TO END AT ANY STAGE");
@@ -1132,31 +1142,6 @@ void Menu::tick_menu()
             }
             else if (SELECTED(ENTRY_FEEDBACK))
                 set_menu(&menu_feedback);
-            else if (SELECTED(ENTRY_BACK))
-                menu_back();
-        }
-        else if (menu_selected == &menu_controls_gp)
-        {
-            if (SELECTED(ENTRY_ANALOG))
-            {
-                if (++config.controls.analog == 3)
-                    config.controls.analog = 0;
-                input.analog = config.controls.analog;
-            }
-            else if (SELECTED(ENTRY_RUMBLE))
-            {
-                config.controls.rumble += 0.25f;
-                if (config.controls.rumble > 1.0f) config.controls.rumble = 0;
-                rumble::set_master(config.controls.rumble);
-            }
-            else if (SELECTED(ENTRY_REDEFJOY))
-            {
-                //display_message("PRESS MENU TO END AT ANY STAGE");
-                state = STATE_REDEFINE_JOY;
-                redef_state = 0;
-                input.joy_button = -1;
-                input.reset_axis_config();
-            }
             else if (SELECTED(ENTRY_BACK))
                 menu_back();
         }
@@ -1565,11 +1550,6 @@ void Menu::refresh_menu()
             else if (SELECTED(ENTRY_DSTEER))        set_menu_text(ENTRY_DSTEER, Utils::to_string(config.controls.steer_speed));
             else if (SELECTED(ENTRY_DPEDAL))        set_menu_text(ENTRY_DPEDAL, Utils::to_string(config.controls.pedal_speed));
         }
-        else if (menu_selected == &menu_controls_gp)
-        {
-            if (SELECTED(ENTRY_ANALOG))             set_menu_text(ENTRY_ANALOG, ANALOG_LABELS[config.controls.analog]);
-            else if (SELECTED(ENTRY_RUMBLE))        set_menu_text(ENTRY_RUMBLE, RUMBLE_LABELS[std::min(4, (int)(config.controls.rumble / 0.25f))]);
-        }
         else if (menu_selected == &menu_feedback)
         {
             if (SELECTED(ENTRY_RUMBLE))
@@ -1706,45 +1686,384 @@ void Menu::redefine_keyboard()
     }
 }
 
+// ------------------------------------------------------------------------------------------------
+// Stage 3 (tools/INPUT_BINDING_DESIGN.md A.4.2): binding-matrix editor. Reached via STATE_REDEFINE_JOY and
+// dispatched from tick_ui(). 13 data rows + BACK; three columns (KEYBOARD / GAMEPAD / WHEEL). All
+// editor state is held in the bind_* Menu members. Writes go through config and are persisted by
+// the existing SAVE AND RETURN entry; leaving the editor rebuilds the binding cache so edits are
+// live immediately. Exit is MENU or BACK - ESC still quits the program and is not repurposed here.
+// ------------------------------------------------------------------------------------------------
 void Menu::redefine_joystick()
 {
-    if (redef_state == 3 && config.controls.gear != config.controls.GEAR_SEPARATE) // Skip redefine of second gear press
-        redef_state++;
+    enum { PH_BROWSE, PH_WAIT_TO_CAPTURE, PH_CAPTURE, PH_WAIT_TO_BROWSE };
 
-    switch (redef_state)
+    struct RowDef { const char* label; int kslot; int target; };
+    static const RowDef ROWS[] = {
+        { "STEERING",    -1, device_binding_t::TARGET_STEER },
+        { "ACCELERATE",   4, device_binding_t::TARGET_ACCEL },
+        { "BRAKE",        5, device_binding_t::TARGET_BRAKE },
+        { "GEAR LOW",     6, device_binding_t::TARGET_GEAR1 },
+        { "GEAR HIGH",    7, device_binding_t::TARGET_GEAR2 },
+        { "START",        8, device_binding_t::TARGET_START },
+        { "COIN",         9, device_binding_t::TARGET_COIN  },
+        { "MENU",        10, device_binding_t::TARGET_MENU  },
+        { "VIEW CHANGE", 11, device_binding_t::TARGET_VIEW  },
+        { "UP",           0, device_binding_t::TARGET_UP    },
+        { "DOWN",         1, device_binding_t::TARGET_DOWN  },
+        { "LEFT",         2, device_binding_t::TARGET_LEFT  },
+        { "RIGHT",        3, device_binding_t::TARGET_RIGHT },
+    };
+    const int DATA_ROWS = 13;
+    const int BACK_ROW  = DATA_ROWS;
+
+    // Cursor normalisation - also snaps the spec's bind_row=0/bind_col=0 init off STEERING's
+    // non-selectable keyboard cell, and forces col 0 on the BACK row.
+    if (bind_row < 0) bind_row = 0;
+    if (bind_row > BACK_ROW) bind_row = BACK_ROW;
+    if (bind_col < 0) bind_col = 0;
+    if (bind_col > 2) bind_col = 2;
+    if (bind_row == BACK_ROW) bind_col = 0;
+    else if (bind_row == 0 && bind_col == 0) bind_col = 1; // STEERING has no keyboard cell
+
+    if (bind_msg_timer > 0 && --bind_msg_timer == 0) bind_msg.clear();
+
+    auto group_of = [](int col) {
+        return col == 1 ? device_binding_t::GROUP_GAMEPAD : device_binding_t::GROUP_WHEEL;
+    };
+
+    // ---- Input by phase --------------------------------------------------------------------
+    switch (bind_phase)
     {
-        case 0:
-        case 1:
-        case 2:
-        case 3:
-        case 4:
-        case 5:
-        case 6:
-        case 7:
-            draw_text(text_redefine.at(redef_state + 4));
-            // Analog controls enabled (Accelerator & Brake): Read axis being pressed
-            if (config.controls.analog == 1 && (redef_state == 0 || redef_state == 1))
-            {
-                int last_axis = input.get_axis_config();
+        case PH_BROWSE:
+        {
+            if (input.has_pressed(Input::MENU)) { leave_editor(); return; }
 
-                if (last_axis != -1)
+            if (input.key_press == SDLK_DELETE || input.key_press == SDLK_BACKSPACE)
+            {
+                input.key_press = -1;
+                if (bind_row < DATA_ROWS)
                 {
-                    config.controls.axis[redef_state + 1] = last_axis;
-                    redef_state++;
+                    if (bind_col == 0)
+                    {
+                        if (ROWS[bind_row].kslot >= 0) config.controls.keyconfig[ROWS[bind_row].kslot] = -1;
+                    }
+                    else
+                        config.clear_binding(group_of(bind_col), ROWS[bind_row].target);
+                    input.rebuild_binding_cache();
+                }
+                break;
+            }
+
+            if (input.has_pressed(Input::UP))
+            {
+                bind_row = (bind_row == 0) ? BACK_ROW : bind_row - 1;
+                if (bind_row == BACK_ROW) bind_col = 0;
+                else if (bind_row == 0 && bind_col == 0) bind_col = 1;
+                break;
+            }
+            if (input.has_pressed(Input::DOWN))
+            {
+                bind_row = (bind_row == BACK_ROW) ? 0 : bind_row + 1;
+                if (bind_row == BACK_ROW) bind_col = 0;
+                else if (bind_row == 0 && bind_col == 0) bind_col = 1;
+                break;
+            }
+            if (bind_row != BACK_ROW)
+            {
+                int col_min = (bind_row == 0) ? 1 : 0; // STEERING skips the keyboard column
+                if (input.has_pressed(Input::LEFT))  { bind_col = (bind_col <= col_min) ? 2 : bind_col - 1; break; }
+                if (input.has_pressed(Input::RIGHT)) { bind_col = (bind_col >= 2) ? col_min : bind_col + 1; break; }
+            }
+
+            if (select_pressed() || input.key_press == SDLK_RETURN)
+            {
+                input.key_press = -1;
+                if (bind_row == BACK_ROW) { leave_editor(); return; }
+                // Wait for the activating control to be released before capturing, so the button
+                // that opened the cell cannot be captured as its binding.
+                bind_phase = PH_WAIT_TO_CAPTURE;
+            }
+            break;
+        }
+
+        case PH_WAIT_TO_CAPTURE:
+        {
+            const Uint8* kb = SDL_GetKeyboardState(NULL);
+            bool released = !input.is_pressed(Input::START) && !input.is_pressed(Input::ACCEL) &&
+                            !input.is_pressed(Input::GEAR1) && kb[SDL_SCANCODE_RETURN] == 0;
+            if (released)
+            {
+                if (bind_col == 0) input.key_press = -1;              // keyboard column
+                else               input.begin_capture(group_of(bind_col));
+                bind_phase = PH_CAPTURE;
+            }
+            break;
+        }
+
+        case PH_CAPTURE:
+        {
+            const RowDef& row = ROWS[bind_row];
+            if (bind_col == 0)
+            {
+                if (input.has_pressed(Input::MENU)) { input.key_press = -1; bind_phase = PH_BROWSE; }
+                else if (input.key_press != -1)
+                {
+                    if (row.kslot >= 0)
+                    {
+                        config.controls.keyconfig[row.kslot] = input.key_press;
+                        input.rebuild_binding_cache();
+                        bind_wait_key  = SDL_GetScancodeFromKey(input.key_press);
+                        bind_wait      = Input::Captured();
+                        bind_msg       = "BOUND KEY";
+                        bind_msg_timer = 60;
+                    }
+                    input.key_press = -1;
+                    bind_phase = PH_WAIT_TO_BROWSE;
                 }
             }
-            else if (input.joy_button != -1)
+            else
             {
-                config.controls.padconfig[redef_state] = input.joy_button;
-                redef_state++;
-                input.joy_button = -1;
+                if (input.has_pressed(Input::MENU)) { input.end_capture(); bind_phase = PH_BROWSE; break; }
+
+                Input::Captured c = input.poll_capture();
+                if (c.kind != Input::Captured::NONE)
+                {
+                    bool accept =
+                        (row.target == device_binding_t::TARGET_STEER) ? (c.kind == Input::Captured::AXIS) :
+                        (row.target == device_binding_t::TARGET_ACCEL ||
+                         row.target == device_binding_t::TARGET_BRAKE) ? true :
+                        (c.kind == Input::Captured::BUTTON || c.kind == Input::Captured::HAT);
+
+                    if (accept)
+                    {
+                        device_binding_t b;
+                        b.group  = group_of(bind_col);
+                        b.target = row.target;
+                        b.type   = (c.kind == Input::Captured::AXIS) ? device_binding_t::TYPE_AXIS :
+                                   (c.kind == Input::Captured::HAT)  ? device_binding_t::TYPE_HAT  :
+                                                                       device_binding_t::TYPE_BUTTON;
+                        b.index  = c.index;
+                        b.value  = (c.kind == Input::Captured::HAT) ? c.hat_value : 0;
+                        const InputDevice* d = input.find_device(c.device);
+                        if (d) { b.device = d->signature; b.vid = d->vid; b.pid = d->pid; b.name = d->name; }
+                        config.set_binding(b);
+                        input.end_capture();
+                        input.rebuild_binding_cache();
+                        bind_msg = std::string("BOUND ") + (d ? d->name : std::string());
+                        if (bind_msg.size() > 34) bind_msg.resize(34);
+                        bind_msg_timer = 60;
+                        bind_wait     = c;
+                        bind_wait_key = -1;
+                        bind_phase    = PH_WAIT_TO_BROWSE;
+                    }
+                    // A non-accepted kind is ignored; keep waiting for a control the row accepts.
+                }
             }
             break;
+        }
 
-        case 8:
-            state = STATE_MENU;
+        case PH_WAIT_TO_BROWSE:
+        {
+            bool released;
+            if (bind_wait_key >= 0)
+            {
+                const Uint8* kb = SDL_GetKeyboardState(NULL);
+                released = kb[bind_wait_key] == 0;
+            }
+            else
+                released = input.control_released(bind_wait);
+            if (released) bind_phase = PH_BROWSE;
             break;
+        }
     }
+
+    // ---- Drawing (40x28 text grid, A.4.2) --------------------------------------------------
+    auto compact = [](const char* s, size_t n) -> std::string {
+        std::string out;
+        if (s)
+            for (const char* p = s; *p && out.size() < n; ++p)
+                if (*p != ' ') out += static_cast<char>(toupper(static_cast<unsigned char>(*p)));
+        return out.empty() ? std::string("?") : out;
+    };
+    auto hat_dir = [](int v) -> const char* {
+        switch (v)
+        {
+            case SDL_HAT_UP:        return "U";
+            case SDL_HAT_DOWN:      return "D";
+            case SDL_HAT_LEFT:      return "L";
+            case SDL_HAT_RIGHT:     return "R";
+            case SDL_HAT_RIGHTUP:   return "RU";
+            case SDL_HAT_RIGHTDOWN: return "RD";
+            case SDL_HAT_LEFTUP:    return "LU";
+            case SDL_HAT_LEFTDOWN:  return "LD";
+            default:                return "";
+        }
+    };
+    auto device_present = [&](const device_binding_t* b) -> bool {
+        if (!b) return false;
+        for (const auto& d : input.get_devices())
+        {
+            if (!b->device.empty() && b->device == d.signature) return true;
+            if (b->vid != 0 && b->vid == d.vid && b->pid == d.pid) return true;
+        }
+        return false;
+    };
+
+    ohud.blit_text_new(12, 2, "CONTROL BINDINGS", ohud.GREEN);
+
+    ohud.blit_text_new(1,  4, "CONTROL", ohud.GREEN);
+    ohud.blit_text_new(14, 4, "KEYBOARD", (bind_row != BACK_ROW && bind_col == 0) ? ohud.PINK : ohud.GREEN);
+    ohud.blit_text_new(24, 4, "GAMEPAD",  (bind_row != BACK_ROW && bind_col == 1) ? ohud.PINK : ohud.GREEN);
+    ohud.blit_text_new(33, 4, "WHEEL",    (bind_row != BACK_ROW && bind_col == 2) ? ohud.PINK : ohud.GREEN);
+
+    for (int r = 0; r < DATA_ROWS; r++)
+    {
+        const RowDef& row = ROWS[r];
+        const int y = 6 + r;
+        ohud.blit_text_new(1, y, row.label, (r == bind_row) ? ohud.PINK : ohud.GREEN);
+
+        // Keyboard column.
+        {
+            std::string txt;
+            if (row.kslot < 0) txt = "-";
+            else
+            {
+                int kc = config.controls.keyconfig[row.kslot];
+                txt = (kc < 0) ? std::string("-") : compact(SDL_GetKeyName(kc), 8);
+            }
+            ohud.blit_text_new(14, y, txt.c_str(), (r == bind_row && bind_col == 0) ? ohud.PINK : ohud.GREEN);
+        }
+
+        // GAMEPAD (col 1) and WHEEL (col 2) columns.
+        for (int c = 1; c <= 2; c++)
+        {
+            const int gx  = (c == 1) ? 24 : 33;
+            const int grp = group_of(c);
+            const device_binding_t* b = config.find_binding(grp, row.target);
+            std::string txt;
+            if (!b) txt = "-";
+            else if (c == 1)
+            {
+                if (b->type == device_binding_t::TYPE_AXIS)
+                    txt = compact(SDL_GameControllerGetStringForAxis(static_cast<SDL_GameControllerAxis>(b->index)), 8);
+                else if (b->type == device_binding_t::TYPE_BUTTON)
+                    txt = compact(SDL_GameControllerGetStringForButton(static_cast<SDL_GameControllerButton>(b->index)), 8);
+                else
+                    txt = "H" + std::to_string(b->index) + hat_dir(b->value);
+            }
+            else
+            {
+                if (b->type == device_binding_t::TYPE_AXIS)        txt = "AX" + std::to_string(b->index);
+                else if (b->type == device_binding_t::TYPE_BUTTON) txt = "B"  + std::to_string(b->index);
+                else                                               txt = "H"  + std::to_string(b->index) + hat_dir(b->value);
+            }
+
+            uint16_t col;
+            if (r == bind_row && bind_col == c)      col = ohud.PINK;
+            else if (b && !device_present(b))        col = ohud.GREY; // bound, but the device is absent
+            else                                     col = ohud.GREEN;
+            ohud.blit_text_new(gx, y, txt.c_str(), col);
+        }
+    }
+
+    ohud.blit_text_new(18, 20, "BACK", (bind_row == BACK_ROW) ? ohud.PINK : ohud.GREEN);
+
+    ohud.blit_text_new(1, 22, "ARROWS - SELECT   ENTER - CHANGE", ohud.GREY);
+    ohud.blit_text_new(1, 23, "DEL/BSP - CLEAR   MENU - EXIT", ohud.GREY);
+    ohud.blit_text_new(1, 24, "WHEEL = ALL RAW DEVICES, NO DB NEEDED", ohud.GREY);
+
+    // Dynamic prompt / result line.
+    std::string dyn;
+    if (bind_msg_timer > 0 && !bind_msg.empty())
+        dyn = bind_msg;
+    else if (bind_phase == PH_WAIT_TO_CAPTURE || bind_phase == PH_WAIT_TO_BROWSE)
+        dyn = "RELEASE CONTROL";
+    else if (bind_phase == PH_CAPTURE)
+    {
+        if (bind_col == 0)                                           dyn = "PRESS A KEY";
+        else if (ROWS[bind_row].target == device_binding_t::TARGET_STEER) dyn = "MOVE STEERING AXIS";
+        else if (ROWS[bind_row].target == device_binding_t::TARGET_ACCEL ||
+                 ROWS[bind_row].target == device_binding_t::TARGET_BRAKE) dyn = "MOVE AXIS OR PRESS BUTTON";
+        else                                                        dyn = "PRESS BUTTON OR HAT";
+    }
+    if (!dyn.empty())
+        ohud.blit_text_new(1, 26, dyn.c_str(), ohud.PINK);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Stage 3 (A.4.2): leave the matrix editor. Ends any active capture, rebuilds the resolved binding
+// cache so edits take effect immediately, and returns to the controls menu.
+// ------------------------------------------------------------------------------------------------
+void Menu::leave_editor()
+{
+    input.end_capture();
+    input.rebuild_binding_cache();
+    state = STATE_MENU;
+    refresh_menu();
+}
+
+// ------------------------------------------------------------------------------------------------
+// Stage 3 first-open migration (tools/INPUT_BINDING_DESIGN.md A.2.2): when the editor is opened on a legacy
+// config (bindings_active == false), pre-populate cells from the legacy arrays for the pad_id
+// device so nothing is lost, then switch bindings on. The legacy arrays are left untouched.
+// ------------------------------------------------------------------------------------------------
+void Menu::migrate_legacy_to_bindings()
+{
+    if (config.controls.bindings_active) return;
+
+    const InputDevice* legacy = nullptr;
+    for (const auto& d : input.get_devices())
+        if (d.legacy_device) { legacy = &d; break; }
+
+    if (legacy != nullptr)
+    {
+        // A recognised GameController migrates into the GAMEPAD group (padconfig/axis hold GC enums
+        // after bind_* defaulting); any other device into the WHEEL group (raw indices).
+        const int group = (legacy->controller != nullptr) ? device_binding_t::GROUP_GAMEPAD
+                                                           : device_binding_t::GROUP_WHEEL;
+
+        auto add = [&](int target, int type, int index)
+        {
+            if (index < 0) return;
+            device_binding_t b;
+            b.group  = group;
+            b.target = target;
+            b.type   = type;
+            b.index  = index;
+            b.value  = 0;
+            b.device = legacy->signature;
+            b.vid    = legacy->vid;
+            b.pid    = legacy->pid;
+            b.name   = legacy->name;
+            config.set_binding(b);
+        };
+
+        // Digital button cells - padconfig[0..11], same target order as config.cpp.
+        static const int pad_targets[12] = {
+            device_binding_t::TARGET_ACCEL, device_binding_t::TARGET_BRAKE,
+            device_binding_t::TARGET_GEAR1, device_binding_t::TARGET_GEAR2,
+            device_binding_t::TARGET_START, device_binding_t::TARGET_COIN,
+            device_binding_t::TARGET_MENU,  device_binding_t::TARGET_VIEW,
+            device_binding_t::TARGET_UP,    device_binding_t::TARGET_DOWN,
+            device_binding_t::TARGET_LEFT,  device_binding_t::TARGET_RIGHT,
+        };
+        for (int i = 0; i < 12; i++)
+            add(pad_targets[i], device_binding_t::TYPE_BUTTON, config.controls.padconfig[i]);
+
+        // Analog axis cells - axis[0..2], honouring the legacy ANALOG setting so behaviour is not
+        // silently changed: STEER whenever analog is on, ACCEL/BRAKE only in full-analog mode.
+        // These replace the matching button cell (set_binding is keyed on group+target).
+        if (config.controls.analog != 0)
+            add(device_binding_t::TARGET_STEER, device_binding_t::TYPE_AXIS, config.controls.axis[0]);
+        if (config.controls.analog == 1)
+        {
+            add(device_binding_t::TARGET_ACCEL, device_binding_t::TYPE_AXIS, config.controls.axis[1]);
+            add(device_binding_t::TARGET_BRAKE, device_binding_t::TYPE_AXIS, config.controls.axis[2]);
+        }
+    }
+
+    config.controls.bindings_active = true;
+    input.rebuild_binding_cache();
 }
 
 // ------------------------------------------------------------------------------------------------
