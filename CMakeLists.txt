@@ -274,6 +274,33 @@ SOURCE_GROUP(src\\engine\\audio FILES ${src_engine_audio})
 
 add_executable(cannonball-se ${SRCS})
 
+# --- Third-party: miniz 3.1.2 (vendored, unmodified) ----------------------------
+# Amalgamated single-file ZIP/deflate library, used read-only so cannonball-se can
+# load OutRun ROMs directly from MAME-style ZIP archives (see src/main/romloader.cpp).
+# Source lives in src/third_party/miniz/ and is never edited in place.
+target_sources(cannonball-se PRIVATE "${CMAKE_SOURCE_DIR}/src/third_party/miniz/miniz.c")
+SOURCE_GROUP(src\\third_party\\miniz FILES "${CMAKE_SOURCE_DIR}/src/third_party/miniz/miniz.c")
+
+target_include_directories(cannonball-se PRIVATE "${CMAKE_SOURCE_DIR}/src/third_party/miniz")
+
+# These defines must be visible to every translation unit that includes miniz.h
+# (not just miniz.c itself), because they control which struct fields and function
+# declarations the header exposes; a mismatch between miniz.c and any consumer would
+# cause an ODR violation, so they are applied to the whole target rather than just
+# to miniz.c. Only the read-side ZIP/inflate APIs are needed here, so the
+# compression/archive-writing/time/zlib-name-compat surfaces are compiled out.
+target_compile_definitions(cannonball-se PRIVATE
+    MINIZ_NO_DEFLATE_APIS          # also implies MINIZ_NO_ARCHIVE_WRITING_APIS inside miniz.h
+    MINIZ_NO_TIME
+    MINIZ_NO_ZLIB_COMPATIBLE_NAMES
+)
+
+# miniz.c is vendored and unmodified; do not hold it to this project's warning/werror
+# policy (-Wall -Wextra -Wpedantic below, and QUIET_BUILD's extra -Wno-* flags).
+set_source_files_properties("${CMAKE_SOURCE_DIR}/src/third_party/miniz/miniz.c" PROPERTIES
+    COMPILE_OPTIONS "$<IF:$<C_COMPILER_ID:MSVC>,/w,-w>"
+)
+
 if(WIN32)
     target_compile_features(cannonball-se PRIVATE cxx_std_23)
     target_compile_definitions(cannonball-se PRIVATE
@@ -479,7 +506,9 @@ if(QUIET_BUILD)
             -Wno-unused-variable
             -Wno-missing-field-initializers
             -Wno-sign-compare
-            -Wno-reorder
+            # -Wno-reorder is C++-only (constructor member-init-order warnings); the driver
+            # warns if it's passed while compiling a C source (e.g. miniz.c), so gate it.
+            $<$<COMPILE_LANGUAGE:CXX>:-Wno-reorder>
             -Wno-implicit-fallthrough
             -Wno-format-security)
         if(SUPER_QUIET)

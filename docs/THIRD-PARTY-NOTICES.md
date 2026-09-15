@@ -61,6 +61,21 @@ For the full terms, see [LGPL-2.1.txt](LGPL-2.1.txt).
 
 ---
 
+## miniz
+
+- **Component:** miniz 3.1.2 (vendored, unmodified, `src/third_party/miniz`)
+- **Original author:** Rich Geldreich
+- **Copyright:** © RAD Game Tools and Valve Software; © Rich Geldreich and Tenacious Software LLC
+- **License:** MIT — see the `LICENSE` file in `src/third_party/miniz`
+- **Upstream:** https://github.com/richgel999/miniz
+
+### Notes
+
+Used read-only to load OutRun ROMs directly from MAME-style ZIP archives; the
+compression and archive-writing APIs are compiled out.
+
+---
+
 ## CannonBall DX — User Setup Experience
 
 - **Components:** Menu-Driven Input Binding system and Extended Rumble Effects
