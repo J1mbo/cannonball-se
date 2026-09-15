@@ -113,6 +113,16 @@ Steering wheels, joysticks and gamepads can be setup in the game (menu, settings
 CannonBall needs a copy of the OutRun 'revision B' romset to function. These should be copied to the roms subdirectory
 (usually ~/cannonball-se/roms). Please see the file roms.txt for file names and other information.
 .PP
+Instead of loose files, a MAME-format ROM archive (e.g. a merged outrun.zip) may be placed in the roms
+directory unextracted; ROMs inside it are matched by CRC32 and size rather than by filename, so split
+sets, renamed archives and files inside subdirectories all work. Loose files in the roms directory always
+take priority over an archive. Outside the roms directory, only archives named after a MAME OutRun set
+are searched - outrun.zip, outrunra.zip, outrundx.zip, outrundxa.zip, outrundxj.zip, outruneh.zip,
+outruneha.zip, outrundxeh.zip, outrundxeha.zip, outrunb.zip (case-insensitive) - first in the current
+working directory, then in the directory containing the executable. The
+.B data.rompath
+setting may also name a .zip file directly.
+.PP
 \fBIMPORTANT:\fP Users of CannonBall (and CannonBall-SE) are expected to own licensed copies of the original arcade ROMs that
 are needed for the program to function. The use of ROM images may be restricted by copyright or other laws depending on jurisdiction.
 The end-user assumes all responsibility in respect of the use of original ROMs.

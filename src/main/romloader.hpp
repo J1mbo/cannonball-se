@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include <string>
+
 class RomLoader
 {
 
@@ -33,6 +35,17 @@ public:
     int load_crc32(const char* debug, const int offset, const int length, const int expected_crc, const uint8_t mode = NORMAL, const bool verbose = true);
     int load_binary(const char* filename);
     void unload(void);
+
+    // Distinct sources (a loose ROM directory path, or an archive path)
+    // that have actually supplied a ROM since the CRC/size index was last
+    // built. Comma-separated; "(none)" if nothing has loaded yet.
+    static std::string sources_used();
+
+    // Human-readable list of the locations searched while building the
+    // index (ROM directory loose files, ROM directory *.zip archives,
+    // current working directory and executable directory known MAME
+    // archive names). Comma-separated; "(none)" if never built.
+    static std::string search_locations();
 
     // ----------------------------------------------------------------------------
     // Used by translated 68000 Code

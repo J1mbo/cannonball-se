@@ -64,10 +64,10 @@ very early, before most of the rest of the config file.
 
 | Key | Default | Values | What it does |
 |---|---|---|---|
-| `data.rompath` | `roms/` | path | Directory the game searches for ROM files. |
+| `data.rompath` | `roms/` | path | Directory the game searches for ROM files, or a `.zip` file to search directly. Loose files here take priority; MAME-format ZIP archives (matched by CRC32/size, not filename) are also searched here, then in the current working directory and the executable's directory (recognised MAME OutRun set names only). |
 | `data.respath` | `res/` | path | Directory the game searches for resource files (shaders, fonts, custom music, this config file's fallback copy). |
 | `data.savepath` | `./` | path | Directory used for hi-score files (`hiscores*.xml`), time-trial scores, and the play-stats file. |
-| `data.crc32` | `1` | `0`, `1` | Whether ROM CRC32 checks are performed when loading ROMs. |
+| `data.crc32` | `1` | `0`, `1` | Whether ROMs are looked up by CRC32/size (`1`) or by exact filename (`0`). Loaded ROM data is CRC32-verified either way. |
 
 None of the `data.*` keys are present in the shipped `res/config.xml`; all four take their compiled-in defaults unless added.
 

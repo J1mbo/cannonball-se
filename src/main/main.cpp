@@ -1072,6 +1072,18 @@ int main(int argc, char* argv[]) {
         config.load(); // Load config.XML file, also loads custom music files
         ok = roms.load_revb_roms(config.sound.fix_samples);
 
+        if (ok) {
+            std::cout << "ROMs loaded from: " << RomLoader::sources_used() << std::endl;
+        } else {
+            std::cerr << "Unable to load the OutRun Rev B ROM set." << std::endl;
+            std::cerr << "Searched: " << RomLoader::search_locations() << std::endl;
+            std::cerr << "See roms/roms.txt for the required files or supply a MAME outrun.zip." << std::endl;
+            // quit_func() below exits via _Exit, which skips stdio flushing;
+            // flush explicitly so this message survives redirection.
+            std::fflush(stdout);
+            std::fflush(stderr);
+        }
+
         if (cannonball::dump_enabled && config.video.blargg == 0) {
             std::cout << "Warning: -dump captures the Blargg/NTSC filter's input, but "
                        << "video.blargg is disabled in the config file; no frames will be written.\n";

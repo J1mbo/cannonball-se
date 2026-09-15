@@ -49,8 +49,8 @@ or clone it in Visual Studio 2026 and let the CMake integration do the rest (all
 the first time, while it fetches dependencies).
 
 Either way you'll need your own copy of the **OutRun revision B** ROM set, which is not included
-and never will be. Drop the files in `roms/` — [roms/roms.txt](roms/roms.txt) lists them. You are
-expected to own the originals.
+and never will be. Drop the files in `roms/` — [roms/roms.txt](roms/roms.txt) lists them. A MAME
+`outrun.zip` dropped into `roms/` unextracted also works. You are expected to own the originals.
 
 Full instructions, including a manual build: **[docs/INSTALL.md](docs/INSTALL.md)**.
 

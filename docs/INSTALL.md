@@ -65,7 +65,7 @@ time of writing they are:
 
 ```
 epr-10187.88     epr-10327a.76    epr-10328a.75    epr-10329a.58    epr-10330a.57
-epr-10380b.133   epr-10381a.132   epr-10382b.118   epr-10383b.117
+epr-10380b.133   epr-10381b.132   epr-10382b.118   epr-10383b.117
 mpr-10371.9      mpr-10372.13     mpr-10373.10     mpr-10374.14     mpr-10375.11
 mpr-10376.15     mpr-10377.12     mpr-10378.16
 opr-10185.11     opr-10186.47     opr-10188.71     opr-10189.70     opr-10190.69
@@ -73,8 +73,20 @@ opr-10191.68     opr-10192.67     opr-10193.66
 opr-10230.104    opr-10231.103    opr-10232.102    opr-10266.101    opr-10267.100  opr-10268.99
 ```
 
+Instead of loose files, you can drop a MAME-format ROM archive (a merged `outrun.zip`, or a
+split set) straight into `roms/` — it does not need to be extracted. ROMs inside the archive are
+matched by CRC32 and size rather than by filename, so subdirectories, renamed files and split
+sets all work; any loose file already present in `roms/` still takes priority over the same ROM
+found in an archive. `data.rompath` (see [CONFIGURATION.md](CONFIGURATION.md)) can also point
+directly at a `.zip` file instead of a directory. Outside `roms/`, only archives using one of the
+MAME set names are picked up — `outrun.zip`, `outrunra.zip`, `outrundx.zip`, `outrundxa.zip`,
+`outrundxj.zip`, `outruneh.zip`, `outruneha.zip`, `outrundxeh.zip`, `outrundxeha.zip`,
+`outrunb.zip` (case-insensitive) — searched first in the current working directory, then in the
+directory containing the executable.
+
 `roms/roms.txt` also lists optional files: an alternate set for the Japanese release (different
-track order), and an optional "fixed audio" ROM (`opr-10188.71f`). Neither is required for the
+track order — these are the main/sub CPU ROMs of MAME's `outrundx` set, included in a merged
+`outrun.zip`), and an optional "fixed audio" ROM (`opr-10188.71f`). Neither is required for the
 game to run.
 
 ---
@@ -312,8 +324,12 @@ Most build failures fall into one of three categories:
    package name for your OS release).
 
 3. **Missing ROMs.** The project builds and starts fine without them, but the game itself won't
-   run without a valid OutRun revision B set in `roms/`. See [ROMs](#roms) above and check your
-   file names exactly match `roms/roms.txt`.
+   run without a valid OutRun revision B set. See [ROMs](#roms) above and check your file names
+   exactly match `roms/roms.txt` — or, if using a ZIP archive, that it is a genuine MAME OutRun
+   set (loose files in `roms/` always win over one). Startup prints which ROM sources were
+   actually used; on failure it lists every location it searched — `roms/` (loose files and any
+   `.zip` archives there), then the current working directory and the executable's directory
+   (ZIP archives with a recognised MAME set name only).
 
 If none of these explain it, run `cmake -S . -B build` on its own first and read the last few
 lines of output — it will usually name the missing dependency directly.

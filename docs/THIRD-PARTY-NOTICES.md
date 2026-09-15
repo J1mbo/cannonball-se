@@ -78,7 +78,9 @@ compression and archive-writing APIs are compiled out.
 
 ## CannonBall DX — User Setup Experience
 
-- **Components:** Menu-Driven Input Binding system and Extended Rumble Effects
+- **Components:** Menu-Driven Input Binding system, Extended Rumble Effects, and the
+  ZIP ROM loading layer in `src/main/romloader.cpp` (CRC32-and-size indexing of loose
+  files and ZIP entries)
 - **Author:** Based on work by Endprodukt, cannonball-dx (https://github.com/Endprodukt/cannonball-dx),
   a fork of CannonBall-SE
 - **License:** the CannonBall-SE terms — see [CannonBall-SE-license.txt](CannonBall-SE-license.txt)

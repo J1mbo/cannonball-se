@@ -1,6 +1,18 @@
 -------------------------------------------------------------------------------
-Place OutRun Revision B ROMs in this directory.
-They must be named as follows:
+Place the OutRun Revision B ROMs in this directory, either as loose files or as
+a MAME ZIP archive.
+-------------------------------------------------------------------------------
+
+Instead of loose files, you can also drop a MAME ROM archive (e.g. outrun.zip,
+merged or split) in here unextracted - no need to unzip it, and any subdirectories
+or renamed files inside it are fine, since ROMs are matched by CRC32 and size,
+not by filename. Loose files in this directory always take priority over an
+archive. A same-named archive is also picked up next to the game executable or
+in the current working directory, but only if it uses one of the MAME set names:
+outrun.zip, outrunra.zip, outrundx.zip, outrundxa.zip, outrundxj.zip, outruneh.zip,
+outruneha.zip, outrundxeh.zip, outrundxeha.zip, outrunb.zip (case-insensitive).
+
+If you'd rather use loose files, they must be named as follows:
 -------------------------------------------------------------------------------
 epr-10187.88
 epr-10327a.76
@@ -8,7 +20,7 @@ epr-10328a.75
 epr-10329a.58
 epr-10330a.57
 epr-10380b.133
-epr-10381a.132
+epr-10381b.132
 epr-10382b.118
 epr-10383b.117
 mpr-10371.9
@@ -57,3 +69,8 @@ http://reassembler.blogspot.co.uk/2013/01/outrun-original-game-shipped-with.html
 -------------------------------------------------------------------------------
 
 opr-10188.71f
+
+With this option enabled in config.xml (sound.fix_samples), CannonBall-SE prefers,
+in order: the official corrected ROM as named in MAME's "outruneh" set,
+enhanced_203_opr-10188.71 (CRC c2de09b2); then this patched opr-10188.71f; then
+falls back to the original opr-10188.71 if neither is present.
