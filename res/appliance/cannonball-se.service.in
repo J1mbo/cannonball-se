@@ -1,0 +1,48 @@
+# systemd unit template for CannonBall-SE appliance mode.
+# Rendered by install.sh (sed substitution of @USER@, @GROUP@, @CHECKOUT@)
+# into /etc/systemd/system/cannonball-se.service.
+#
+# Three exit cases, handled by ExecStopPost=power-action.sh:
+#   - Exit status 0 (player quit via Escape/menu/window close): power off.
+#   - Exit status 1 (a configuration problem, e.g. missing ROMs): do not
+#     restart; RestartPreventExitStatus below stops the crash-loop limiter
+#     from being needed, and power-action.sh hands the console back so the
+#     problem can be fixed from tty1.
+#   - Anything else (a crash, killed by a signal): Restart=on-failure
+#     relaunches the game; five failures in five minutes trips
+#     StartLimitAction=poweroff rather than looping forever on a dead screen.
+#
+# Must not use PrivateDevices= or ProtectSystem=strict/full (or similar
+# device/filesystem sandboxing): SDL needs direct access to /dev/input and
+# /dev/dri, and to load libudev.so.1 for input hot-plug detection.
+
+[Unit]
+Description=CannonBall-SE appliance
+After=plymouth-quit-wait.service systemd-user-sessions.service sound.target
+Wants=sound.target
+Conflicts=getty@tty1.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+StartLimitAction=poweroff
+
+[Service]
+User=@USER@
+Group=@GROUP@
+SupplementaryGroups=video render input audio
+WorkingDirectory=@CHECKOUT@
+ExecStart=@CHECKOUT@/build/cannonball-se
+ExecStopPost=+/usr/local/lib/cannonball-se/power-action.sh
+TTYPath=/dev/tty1
+StandardInput=tty
+TTYReset=yes
+TTYVHangup=yes
+StandardOutput=journal
+StandardError=journal
+RuntimeDirectory=cannonball-se
+Environment=XDG_RUNTIME_DIR=%t/cannonball-se
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=1
+
+[Install]
+WantedBy=multi-user.target

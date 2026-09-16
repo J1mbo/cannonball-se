@@ -1,0 +1,38 @@
+# cannonball-se.script - Plymouth splash for the CannonBall-SE appliance.
+#
+# Scales splash.png to fit the screen (preserving aspect ratio, never
+# upscaling) and centres it. Unlike Raspberry Pi OS's "pix" theme, this
+# script draws the image in every mode - boot, shutdown, reboot - with no
+# `Plymouth.GetMode()` guard, so the same splash covers the shutdown screen.
+# No status text or progress indicator is drawn.
+
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+splash_image = Image("splash.png");
+image_width = splash_image.GetWidth();
+image_height = splash_image.GetHeight();
+
+scale = 1;
+if (image_width > screen_width || image_height > screen_height) {
+    scale_x = screen_width / image_width;
+    scale_y = screen_height / image_height;
+    if (scale_x < scale_y)
+        scale = scale_x;
+    else
+        scale = scale_y;
+}
+
+scaled_width = image_width * scale;
+scaled_height = image_height * scale;
+
+if (scale != 1)
+    splash_image = splash_image.Scale(scaled_width, scaled_height);
+
+splash_sprite = Sprite(splash_image);
+splash_sprite.SetX((screen_width - scaled_width) / 2);
+splash_sprite.SetY((screen_height - scaled_height) / 2);
+splash_sprite.SetZ(10000);
+
+# Draw the same splash for every mode (boot, shutdown, reboot, updates) -
+# intentionally no mode check and no refresh/progress callback.

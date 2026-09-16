@@ -221,6 +221,30 @@ and analogue audio instead.
 For systems with a hardware watchdog (including all RaspberryPi boards), CannonBall-SE hooks this so that the system will be
 automatically rebooted if a hang occurs, for example due to aggressive overclocking.
 
+.SH APPLIANCE MODE
+.PP
+On RaspberryPi OS, \fBinstall.sh\fP can optionally set the machine up as a dedicated arcade appliance: it boots straight into
+CannonBall-SE and powers off when you quit, showing a chosen splash image during both boot and shutdown instead of the normal
+console. The prompt for this is skipped on Ubuntu.
+.PP
+Once enabled, the Pi shows the splash image while it boots, then starts the game automatically on
+.B tty1 .
+Pressing Escape in-game, or EXIT from the menu, powers the Pi off, showing the splash image again during shutdown. If the
+game crashes it is restarted automatically after three seconds; five crashes within five minutes powers the Pi off instead
+of retrying further. If the game exits due to a configuration problem, for example no ROMs found, it is
+.B not
+restarted - a normal login prompt is put back on tty1 so the problem can be fixed.
+.PP
+.B tty2
+through
+.B tty6
+(Ctrl+Alt+F2 and so on) and SSH are unaffected, since only the tty1 login prompt is replaced. The game's console output can
+be read at any time with \fBjournalctl -u cannonball-se\fP, and the service can be stopped and restarted without powering
+off using \fBsudo systemctl stop cannonball-se\fP and \fBsudo systemctl start cannonball-se\fP.
+.PP
+Appliance mode is fully reversible with \fB./install.sh --remove-appliance\fP, which removes the systemd service, the boot
+splash theme, the boot options it added, and any packages installed for it, and restores the normal login prompt on tty1.
+
 .SH SEE ALSO
 Full documentation is in the \fIdocs\fP directory of the distribution:
 .RS

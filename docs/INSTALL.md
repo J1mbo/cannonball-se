@@ -96,9 +96,10 @@ game to run.
 ### Automated install (recommended)
 
 `install.sh`, in the root of the repository, automates the whole process. It is interactive —
-it asks for confirmation up front and for your audio device near the end — and it **changes
-system configuration** (user groups, a udev rule, and a PAM limits file), not just the project
-directory, so it's worth knowing exactly what it does before you run it:
+it asks for confirmation up front, and on Raspberry Pi OS whether to set up appliance mode — and
+it **changes system configuration** (user groups, a udev rule, and a PAM limits file, plus, if
+you opt into appliance mode, a boot splash theme, boot options and a systemd service), not just
+the project directory, so it's worth knowing exactly what it does before you run it:
 
 ```bash
 git clone https://github.com/J1mbo/cannonball-se.git
@@ -111,39 +112,49 @@ Step by step, `install.sh`:
 
 1. **Asks for confirmation**: `Do you wish to continue (you will be prompted for sudo)? [y/N]`.
    Answering anything other than y/Y aborts with no changes made.
-2. **Picks a build parallelism** automatically from available RAM (1 thread up to 460 MB, 2 up
+2. **On Raspberry Pi OS only, offers appliance mode**:
+   `Enable appliance mode (boot straight into the game, power off on quit)? [y/N]`. This prompt
+   is skipped entirely on Ubuntu. Answering yes then asks
+   `Splash image PNG [res/appliance/splash.png]:` for the image to show at boot and shutdown.
+   See [Appliance mode](#appliance-mode) below for what this turns on.
+3. **Picks a build parallelism** automatically from available RAM (1 thread up to 460 MB, 2 up
    to 920 MB, 3 up to 1380 MB, otherwise 4). No prompt for this.
-3. **Runs `sudo apt update -y`.**
-4. **Adds your user to the `input` group** (`sudo usermod -aG input "$USER"`), for access to
-   input devices used by wheels/pads.
-5. **Installs a udev rule**, `/etc/udev/rules.d/99-cannonball.rules`, granting world read/write
+4. **Runs `sudo apt update -y`.**
+5. **Adds your user to the `input`, `video` and `render` groups** (`sudo usermod -aG`), for
+   access to input devices used by wheels/pads and to the GPU/DRM devices used for rendering.
+6. **Installs a udev rule**, `/etc/udev/rules.d/99-cannonball.rules`, granting world read/write
    (`MODE="0666"`) on `hidraw*` (needed for force-feedback rumble on some wheels) and
    `watchdog*` devices, then reloads udev rules.
-6. **Adds your user to the `audio` group and installs a PAM limits file**
+7. **Adds your user to the `audio` group and installs a PAM limits file**
    (`/etc/security/limits.d/50-cannonball-audio.conf`, copied from `res/50-cannonball-audio.conf`)
    granting the `audio` group real-time scheduling priority up to 80, `nice -20`, and unlimited
    `memlock`. This only matters if you later turn on `<rt_priority>1</rt_priority>` in
    `config.xml` (it's `0`/off by default) — without the grant, the game would silently fall back
    to normal scheduling for its audio threads.
-7. **Installs build dependencies via apt**:
+8. **Installs build dependencies via apt**:
    `build-essential git cmake libsdl2-dev libglu1-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev`.
-8. **Builds the project**: creates `build/` and `roms/`, runs `cmake -S . -B build`, then
-   `cmake --build build --parallel <N>` using the thread count from step 2.
-9. **Creates a default `config.xml`** by copying `res/config.xml` into the repository root.
-10. **Lists audio devices and asks you to pick one**: it runs
-    `build/cannonball-se -list-audio-devices`, then prompts
-    `Enter the number of the audio device to use for CannonBall [0]:`, and writes your answer
-    into `config.xml`'s `<playback_device>` element.
+9. **Builds the project**: creates `build/` and `roms/`, runs `cmake -S . -B build`, then
+   `cmake --build build --parallel <N>` using the thread count from step 3. No `config.xml` is
+   created here — the game writes its own on first run (see [First run](#first-run)).
+10. **If appliance mode was chosen, sets it up**: installs `plymouth`, `plymouth-themes` and
+    `initramfs-tools` if they're not already present; installs a Plymouth theme that shows the
+    splash image you chose (scaled to fit) during boot and during shutdown; adds
+    `quiet splash plymouth.ignore-serial-consoles loglevel=3 logo.nologo vt.global_cursor_default=0 consoleblank=0`
+    to `/boot/firmware/cmdline.txt` and `disable_splash=1` to `/boot/firmware/config.txt` (this
+    removes the rainbow-square boot logo);
+    and installs a `cannonball-se.service` systemd service that starts the game on `tty1`, as the
+    user running the installer, once the splash has shown — disabling the normal login prompt on
+    `tty1`. See [Appliance mode](#appliance-mode) below for full details.
 11. **Prints a summary** of every step and its status.
 12. **Offers to open the man page**: `Would you like to view the man page now? [y/N]` — if yes,
     runs `man -l docs/cannonball-se.6`.
-13. Finishes with a reminder that you must **reboot** before running the game (the `input`/`audio`
-    group membership changes only take effect on your next login), and that you still need to
-    copy the ROMs into `roms/` if you haven't already.
+13. Finishes with a reminder that you must **reboot** before running the game (the group
+    membership changes only take effect on your next login), and that you still need to copy the
+    ROMs into `roms/` if you haven't already.
 
-`install.sh` does **not** set up any systemd service or auto-start — it only builds the game and
-prepares device permissions. Nothing outside `apt`, the two files above, and the two group
-memberships is touched.
+Outside of appliance mode, `install.sh` does **not** set up any systemd service or auto-start —
+it only builds the game and prepares device permissions. Nothing outside `apt`, the files listed
+above, and the group memberships is touched.
 
 After it finishes and you've rebooted, with the ROMs in place:
 
@@ -151,6 +162,57 @@ After it finishes and you've rebooted, with the ROMs in place:
 cd ~/cannonball-se
 build/cannonball-se
 ```
+
+The game starts with its built-in default settings and writes `config.xml` into the directory
+you ran it from on first run — there's nothing to copy or edit beforehand. Sound output, and any
+wheel or gamepad, are set up afterwards from the in-game menu (*Settings → Sound → Output
+Device*, *Settings → Controls*). If you chose appliance mode, none of this applies — the Pi boots
+straight into the game instead; see [Appliance mode](#appliance-mode) below.
+
+### Appliance mode
+
+Appliance mode turns a Raspberry Pi running CannonBall-SE into a dedicated arcade machine: it
+boots straight into the game and powers off when you quit, with your own splash image shown
+during both boot and shutdown instead of the normal console. It's offered by `install.sh` only
+on Raspberry Pi OS — the prompt is skipped on Ubuntu — and only if you say yes to it; a plain
+install behaves exactly as described above.
+
+What happens after you reboot:
+
+- The Pi shows your splash image while it boots, then the game starts automatically on `tty1`.
+- Pressing **Escape** in-game (or **EXIT** from the menu) powers the Pi off, showing the splash
+  image again while it shuts down.
+- If the game crashes, it's restarted automatically after three seconds. If it crashes five times
+  within five minutes, the Pi powers off instead of retrying indefinitely.
+- If the game exits because of a configuration problem — for example, no ROMs found — it is
+  **not** restarted; a normal login prompt is put back on `tty1` instead, so you can fix the
+  problem. ROMs still need to be copied into `roms/` before appliance mode can start the game;
+  see [ROMs](#roms) above.
+- `tty2` to `tty6` (`Ctrl+Alt+F2` and so on) and SSH keep working normally for maintenance, since
+  only `tty1`'s login prompt is replaced.
+
+Useful commands, run over SSH or on another tty:
+
+```bash
+journalctl -u cannonball-se     # the game's console output
+sudo systemctl status cannonball-se
+sudo systemctl stop cannonball-se    # stop the game without powering off
+sudo systemctl start cannonball-se   # start it again
+```
+
+To remove appliance mode and go back to a normal login on `tty1`:
+
+```bash
+./install.sh --remove-appliance
+```
+
+(equivalently, `sudo res/appliance/uninstall-appliance.sh`). This removes the
+`cannonball-se.service` systemd service, the Plymouth theme, the boot options added to
+`cmdline.txt`/`config.txt`, and any packages `install.sh` installed for appliance mode, then
+re-enables the normal login prompt on `tty1`. A state file,
+`/etc/cannonball-se/appliance.state`, records exactly what was changed so removal can undo it
+precisely. The appliance assets themselves (theme, systemd unit template, splash image, the
+uninstall script) live under `res/appliance/` in the repository.
 
 ### Manual build (without the script)
 
@@ -172,12 +234,12 @@ mkdir -p build roms
 cmake -S . -B build
 cmake --build build --parallel $(nproc)
 
-# Default config file
-cp res/config.xml .
-
 # Copy your ROMs into ./roms, then run:
 build/cannonball-se
 ```
+
+`config.xml` is not something you need to create yourself — the game writes one into the current
+directory on first run, seeded from its built-in defaults.
 
 Check your compiler version first if you're on a Pi (`g++ --version`) — see
 [Requirements](#requirements) above.

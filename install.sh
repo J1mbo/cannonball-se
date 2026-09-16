@@ -36,6 +36,23 @@ function run_step() {
   fi
 }
 
+# Detect Raspberry Pi OS: appliance mode is only offered there.
+function is_raspberry_pi() {
+  [[ -f /proc/device-tree/model ]] || return 1
+  [[ -f /boot/firmware/cmdline.txt ]] || return 1
+  grep -q "^Raspberry Pi" /proc/device-tree/model
+}
+
+# --remove-appliance: revert appliance mode and exit, before any other prompt.
+if [[ "${1:-}" == "--remove-appliance" ]]; then
+  if is_raspberry_pi; then
+    exec sudo bash "$(dirname "$0")/res/appliance/uninstall-appliance.sh"
+  else
+    echo "Appliance mode is only available on Raspberry Pi OS."
+    exit 0
+  fi
+fi
+
 # 1. Confirm with user
 echo "Install script for CannonBall-SE, a CannonBall fork by James Pearce"
 echo "Copyright (c) 2025, James Pearce"
@@ -52,7 +69,40 @@ else
   exit 0
 fi
 
-# 2. Determine build threads based on RAM
+# 2. Offer appliance mode (Raspberry Pi OS only)
+APPLIANCE_MODE=0
+SPLASH_PNG=""
+if is_raspberry_pi; then
+  read -rp "Enable appliance mode (boot straight into the game, power off on quit)? [y/N] " appliance_confirm
+  STEP_ORDER+=("Appliance mode prompt")
+  if [[ "$appliance_confirm" =~ ^[Yy] ]]; then
+    STATUS["Appliance mode prompt"]="Accepted"
+    while true; do
+      read -rp "Splash image PNG [res/appliance/splash.png]: " splash_input
+      splash_input=${splash_input:-res/appliance/splash.png}
+      if [[ ! -f "$splash_input" ]]; then
+        echo "    [ERROR] File not found: $splash_input"
+        continue
+      fi
+      if [[ "$(head -c 8 "$splash_input" | od -An -tx1 | tr -d ' 
+')" != "89504e470d0a1a0a" ]]; then
+        echo "    [ERROR] Not a PNG file: $splash_input"
+        continue
+      fi
+      SPLASH_PNG=$(cd "$(dirname "$splash_input")" && pwd)/$(basename "$splash_input")
+      break
+    done
+    APPLIANCE_MODE=1
+    STEP_ORDER+=("Splash image selection")
+    STATUS["Splash image selection"]="$SPLASH_PNG"
+  else
+    STATUS["Appliance mode prompt"]="Declined"
+  fi
+else
+  echo "Appliance mode is only offered on Raspberry Pi OS; skipping."
+fi
+
+# 3. Determine build threads based on RAM
 STEP_ORDER+=("Determine build threads")
 {
   mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
@@ -70,13 +120,15 @@ STEP_ORDER+=("Determine build threads")
   export NUMTHREADS=1
 }
 
-# 3. Update APT
+# 4. Update APT
 run_step "APT update" sudo apt update -y
 
-# 4. Grant input group access
+# 5. Grant input, video and render group access
 run_step "Grant input group access" sudo usermod -aG input "$USER"
+run_step "Grant video group access" sudo usermod -aG video "$USER"
+run_step "Grant render group access" bash -c 'if getent group render >/dev/null; then sudo usermod -aG render "$USER"; fi'
 
-# 5. Configure udev rules
+# 6. Configure udev rules
 run_step "Configure udev rules" bash -c '
   sudo tee /etc/udev/rules.d/99-cannonball.rules > /dev/null <<EOF
 KERNEL=="hidraw*", SUBSYSTEM=="hidraw", MODE="0666"
@@ -86,8 +138,8 @@ EOF
   sudo udevadm trigger
 '
 
-# 5a. OPTIONAL - tighter hidraw permissions for the rumble subsystem's raw-HID profiles
-#     (tools/INPUT_BINDING_DESIGN.md B.7.7). Step 5 above already grants world read/write on every
+# 6a. OPTIONAL - tighter hidraw permissions for the rumble subsystem's raw-HID profiles
+#     (tools/INPUT_BINDING_DESIGN.md B.7.7). Step 6 above already grants world read/write on every
 #     hidraw node (0666), which is sufficient for HID_REPORT rumble to work, so this step is
 #     NOT run automatically. If you would rather restrict hidraw access to members of the
 #     `input` group and scope it to a specific vendor (e.g. Thrustmaster, 0x044f) instead of
@@ -103,7 +155,7 @@ EOF
 #     Note this rule only takes effect for a matching device if it is more specific than (or
 #     applied instead of) the blanket 99-cannonball.rules rule above.
 
-# 6. Grant real-time audio scheduling (rtprio), used by the audio mix/SDL
+# 7. Grant real-time audio scheduling (rtprio), used by the audio mix/SDL
 #    threads to avoid ALSA underruns under CPU load (see
 #    tools/AUDIO_PERF_PLAN.md). Falls back gracefully at runtime if this
 #    step is skipped or fails - the game just runs without RT priority.
@@ -112,28 +164,126 @@ run_step "Grant audio group rtprio access" bash -c '
   sudo cp res/50-cannonball-audio.conf /etc/security/limits.d/50-cannonball-audio.conf
 '
 
-# 7. Install dependencies
+# 8. Install dependencies
 run_step "Install dependencies" sudo apt install -y \
   build-essential git cmake libsdl2-dev libglu1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev
 
-# 8. Prepare and build CannonBall
+# 9. Prepare and build CannonBall
 run_step "Prepare build directories" mkdir -p build roms
 run_step "Configure Project with CMake" cmake -S . -B build
 run_step "Compile" cmake --build build --parallel $NUMTHREADS
 #cd build && cmake ../cmake && make -j"$NUMTHREADS"'
-run_step "Create default config file" bash -c 'cp res/config.xml .'
 
-# 9. List and select audio device
-env_command="build/cannonball-se -list-audio-devices"
-run_step "List audio devices" bash -c "$env_command"
-read -rp "Enter the number of the audio device to use for CannonBall [0]: " audio_device
-audio_device=${audio_device:-0}
-run_step "Configure audio device" bash -c 'sed -i "s|<playback_device>.*</playback_device>|<playback_device>'"$audio_device"'</playback_device>|" config.xml'
+# 10. Appliance mode setup (only when chosen above, on Raspberry Pi OS)
+if [[ "$APPLIANCE_MODE" -eq 1 ]]; then
+  STATE_DIR=/etc/cannonball-se
+  STATE_FILE=$STATE_DIR/appliance.state
 
-# 10. Final summary
+  # 10a. Install appliance packages, recording only the ones we install so
+  #      uninstall-appliance.sh removes only what we added.
+  run_step "Install appliance packages" bash -c '
+    set -e
+    sudo install -d '"$STATE_DIR"'
+    sudo touch '"$STATE_FILE"'
+    to_install=""
+    newly_installed=""
+    for p in plymouth plymouth-themes initramfs-tools; do
+      if ! dpkg -s "$p" >/dev/null 2>&1; then
+        to_install="$to_install $p"
+        newly_installed="$newly_installed $p"
+      fi
+    done
+    if [[ -n "$to_install" ]]; then
+      # shellcheck disable=SC2086
+      sudo apt install -y $to_install
+    fi
+    old=$(grep "^packages_installed=" '"$STATE_FILE"' 2>/dev/null | cut -d= -f2-)
+    combined=$(printf "%s\n" $old $newly_installed | sed "/^$/d" | sort -u | tr "\n" " ")
+    combined=${combined% }
+    sudo sed -i "/^packages_installed=/d" '"$STATE_FILE"'
+    echo "packages_installed=$combined" | sudo tee -a '"$STATE_FILE"' > /dev/null
+  '
+
+  # 10b. Install the splash theme.
+  run_step "Install splash theme" bash -c '
+    set -e
+    sudo install -d /usr/share/plymouth/themes/cannonball-se
+    sudo install -m 0644 "$1" /usr/share/plymouth/themes/cannonball-se/splash.png
+    sudo install -m 0644 res/appliance/cannonball-se.plymouth /usr/share/plymouth/themes/cannonball-se/cannonball-se.plymouth
+    sudo install -m 0644 res/appliance/cannonball-se.script /usr/share/plymouth/themes/cannonball-se/cannonball-se.script
+    sudo install -d '"$STATE_DIR"'
+    if [[ -f /etc/plymouth/plymouthd.conf ]] && [[ ! -f '"$STATE_DIR"'/plymouthd.conf.orig ]]; then
+      sudo cp /etc/plymouth/plymouthd.conf '"$STATE_DIR"'/plymouthd.conf.orig
+    fi
+    sudo touch '"$STATE_FILE"'
+    sudo sed -i "/^theme=/d" '"$STATE_FILE"'
+    echo "theme=cannonball-se" | sudo tee -a '"$STATE_FILE"' > /dev/null
+    sudo plymouth-set-default-theme -R cannonball-se
+  ' _ "$SPLASH_PNG"
+
+  # 10c. Configure boot options: cmdline.txt (single line, word-match append)
+  #      and config.txt (disable_splash=1 under a trailing [all] section).
+  run_step "Configure boot options" bash -c '
+    set -e
+    cmdline_file=/boot/firmware/cmdline.txt
+    config_file=/boot/firmware/config.txt
+    added=""
+    for opt in quiet splash plymouth.ignore-serial-consoles loglevel=3 logo.nologo vt.global_cursor_default=0 consoleblank=0; do
+      if ! grep -qw -- "$opt" "$cmdline_file"; then
+        sudo sed -i "1 s/\$/ $opt/" "$cmdline_file"
+        added="$added $opt"
+      fi
+    done
+    config_added=""
+    if ! grep -q "^disable_splash=1" "$config_file" 2>/dev/null; then
+      printf "\n[all]\ndisable_splash=1\n" | sudo tee -a "$config_file" > /dev/null
+      config_added="disable_splash=1"
+    fi
+    sudo install -d '"$STATE_DIR"'
+    sudo touch '"$STATE_FILE"'
+    old_cmdline=$(grep "^cmdline_added=" '"$STATE_FILE"' 2>/dev/null | cut -d= -f2-)
+    combined_cmdline=$(printf "%s\n" $old_cmdline $added | sed "/^$/d" | sort -u | tr "\n" " ")
+    sudo sed -i "/^cmdline_added=/d" '"$STATE_FILE"'
+    echo "cmdline_added=${combined_cmdline% }" | sudo tee -a '"$STATE_FILE"' > /dev/null
+    old_config=$(grep "^config_added=" '"$STATE_FILE"' 2>/dev/null | cut -d= -f2-)
+    combined_config=$(printf "%s\n" $old_config $config_added | sed "/^$/d" | sort -u | tr "\n" " ")
+    sudo sed -i "/^config_added=/d" '"$STATE_FILE"'
+    echo "config_added=${combined_config% }" | sudo tee -a '"$STATE_FILE"' > /dev/null
+  '
+
+  # 10d. Install the appliance service unit and the power-action helper.
+  run_step "Install appliance service" bash -c '
+    set -e
+    svc_user="${USER:-$(id -un)}"
+    svc_group="$(id -gn "$svc_user")"
+    checkout="$(pwd)"
+    sed -e "s|@USER@|$svc_user|g" -e "s|@GROUP@|$svc_group|g" -e "s|@CHECKOUT@|$checkout|g" \
+      res/appliance/cannonball-se.service.in | sudo tee /etc/systemd/system/cannonball-se.service > /dev/null
+    sudo install -d /usr/local/lib/cannonball-se
+    sudo install -o root -g root -m 0755 res/appliance/power-action.sh /usr/local/lib/cannonball-se/power-action.sh
+    sudo install -d '"$STATE_DIR"'
+    sudo touch '"$STATE_FILE"'
+    sudo sed -i "/^user=/d;/^checkout=/d" '"$STATE_FILE"'
+    { echo "user=$svc_user"; echo "checkout=$checkout"; } | sudo tee -a '"$STATE_FILE"' > /dev/null
+  '
+
+  # 10e. Enable the service (do not start it now; it starts on next boot).
+  run_step "Enable appliance service" bash -c '
+    set -e
+    sudo systemctl disable getty@tty1.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable cannonball-se.service
+    sudo install -d '"$STATE_DIR"'
+    sudo touch '"$STATE_FILE"'
+    sudo sed -i "/^getty_disabled=/d" '"$STATE_FILE"'
+    echo "getty_disabled=1" | sudo tee -a '"$STATE_FILE"' > /dev/null
+  '
+fi
+
+# 11. Final summary
 print_summary
 
-# 11. Prompt to view the man page
+# 12. Prompt to view the man page
 read -rp "Would you like to view the man page now? [y/N] " view_man
 STEP_ORDER+=("View man page prompt")
 if [[ "$view_man" =~ ^[Yy] ]]; then
@@ -144,16 +294,24 @@ else
   echo "You can view it later with: man -l docs/cannonball-se.6"
 fi
 echo "****************************************************************************************"
-echo "IMPORTANT: You must reboot before running CannonBall-SE, and remember to copy in the"
-echo "           ROMS. After rebooting, start CannonBall-SE from this directory using:"
-echo ""
-echo "           build/cannonball-se"
-echo ""
-echo "           If you have no audio, run 'alsa-mixer' and check the <Master> volume is not"
-echo "           at zero. Also check the SDL device order hasn't changed using:"
-echo ""
-echo "           build/cannonball-se -list-audio-devices"
-echo ""
+if [[ "$APPLIANCE_MODE" -eq 1 ]]; then
+  echo "IMPORTANT: You must reboot before running CannonBall-SE, and remember to copy in the"
+  echo "           ROMS. After rebooting, the Pi will boot straight into the game."
+  echo ""
+  echo "           Press Escape in-game to quit and power off. A login is still available"
+  echo "           on tty2 (Ctrl+Alt+F2) and over ssh."
+  echo ""
+  echo "           Sound output, wheels and gamepads are configured from the in-game menu."
+  echo ""
+  echo "           To revert appliance mode, run: ./install.sh --remove-appliance"
+else
+  echo "IMPORTANT: You must reboot before running CannonBall-SE, and remember to copy in the"
+  echo "           ROMS. After rebooting, start CannonBall-SE from this directory using:"
+  echo ""
+  echo "           build/cannonball-se"
+  echo ""
+  echo "           Sound output, wheels and gamepads are configured from the in-game menu."
+fi
 echo "****************************************************************************************"
 echo ""
 

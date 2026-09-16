@@ -137,6 +137,42 @@ frozen screen. If this happens repeatedly, back off any overclock and check cool
 
 ---
 
+## Appliance mode
+
+### Black screen after boot, or the game never starts
+
+Check the service actually ran and see what it printed:
+
+```bash
+sudo systemctl status cannonball-se
+journalctl -u cannonball-se
+```
+
+The most common cause is missing ROMs — appliance mode does not restart the game after a
+configuration problem such as no ROMs found; instead it puts a normal login prompt back on
+`tty1` so you can fix it. Make sure your ROMs are in `roms/` (loose files or a MAME
+`outrun.zip`) — see [ROMs](INSTALL.md#roms) in INSTALL.md — then reboot or run
+`sudo systemctl start cannonball-se`.
+
+If the service is repeatedly restarting and failing, five crashes within five minutes will make
+the Pi power off rather than keep retrying; check `journalctl -u cannonball-se` for what the
+game printed before each crash.
+
+### I need a shell / the game is in the way
+
+`tty2` to `tty6` (`Ctrl+Alt+F2` and so on) and SSH are unaffected by appliance mode — only the
+login prompt on `tty1` is replaced. To stop the game without powering off, run
+`sudo systemctl stop cannonball-se`; `sudo systemctl start cannonball-se` resumes it.
+
+### Removing appliance mode
+
+Run `./install.sh --remove-appliance` from the repository (or
+`sudo res/appliance/uninstall-appliance.sh` directly). This removes the `cannonball-se.service`
+service, the boot splash theme, the boot options it added, and any packages it installed for
+appliance mode, and restores the normal login prompt on `tty1`.
+
+---
+
 ## Reporting a problem
 
 Please open an issue at <https://github.com/J1mbo/cannonball-se/issues>. Include your board

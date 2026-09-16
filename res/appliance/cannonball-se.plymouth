@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=cannonball-se
+Description=CannonBall-SE appliance splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/cannonball-se
+ScriptFile=/usr/share/plymouth/themes/cannonball-se/cannonball-se.script
