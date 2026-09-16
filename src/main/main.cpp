@@ -1103,7 +1103,9 @@ int main(int argc, char* argv[]) {
                 config.video.crt_shape     =  1;        // enable shape overlay
                 config.video.noise         =  10;       // as Blargg filter is disabled, add more analogue noise
                 config.sound.rate          =  22050;    // 22kHz audio rate
-                config.sound.callback_rate =  1;        // 16ms sound callbacks
+                // AUTO resolves to 16ms sound callbacks on these boards (via cputier.hpp /
+                // singlecore_mode) and, unlike a hard-coded 1, persists as AUTO if saved.
+                config.sound.callback_rate =  sound_settings_t::CALLBACK_AUTO;
                 if (cannonball::fps_lock == 0) cannonball::fps_lock = 30; // lock to 30fps unless user has overriden
             }
         }

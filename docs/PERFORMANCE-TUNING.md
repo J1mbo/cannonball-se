@@ -46,7 +46,10 @@ regardless of settings. Sufficient power is also a problem - USB chargers are ge
 
 On Pi 1, Pi Zero (W) and the 2014 Pi B+ the game detects the board at launch and applies
 reduced settings automatically: original resolution, 30fps, full shader, NTSC filter
-disabled, and a 16ms sound callback. You do not need to configure anything.
+disabled, and the callback rate set to auto, which resolves to a 16ms sound callback on
+these boards. You do not need to configure anything. Pi 2 and Pi 3-class boards (Cortex-A7
+and Cortex-A53) also get the 16ms callback automatically under auto, even though they are not
+single-core and do not get the other reduced settings above.
 
 These boards do need their clocks raised to reach 30fps. Use HDMI audio.
 
@@ -149,8 +152,8 @@ settings.
 | `video.crt_shape` | 0, 1 | GPU | ~1.5ms/frame on a Pi 2, combining the warp maths and the overlay fetch. |
 | `video.mask_size` | 3–6 | none | Visual only; changing it re-bakes the mask texture once. |
 | `video.fps` | 0, 1 | — | Starting frame rate. The game auto-switches upward if the hardware sustains it. |
-| `sound.callback_rate` | 0 (8ms), 1 (16ms) | CPU | 16ms halves the callback frequency. Use it if you get audio dropouts. |
-| `sound.rt_priority` | 0, 1 | CPU | Off by default. Setting 1 gives the audio threads real-time priority, which can *cost* frame rate by pre-empting the render threads. Prefer `callback_rate=1`. |
+| `sound.callback_rate` | 0 (8ms), 1 (16ms), 2 (auto) | CPU | 16ms halves the callback frequency. Use it if you get audio dropouts. Auto (the default) picks 16ms on Pi 1/2/3-class CPUs and 8ms elsewhere. |
+| `sound.rt_priority` | 0, 1 | CPU | Off by default. Setting 1 gives the audio threads real-time priority, which can *cost* frame rate by pre-empting the render threads. Prefer `callback_rate=2` (auto) or `1`. |
 
 Command-line flags that affect performance:
 

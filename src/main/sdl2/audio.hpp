@@ -117,6 +117,18 @@ public:
     const std::string& active_device_name() const { return active_device_name_; }
     bool device_open() const { return dev != 0; }
 
+    // Resolves the configured sound.callback_rate (0/1/2=AUTO) to the 0 (8ms)
+    // or 1 (16ms) value actually used to size the SDL audio buffer. 0/1 pass
+    // through unchanged; AUTO resolves to 16ms when running single-core-Pi
+    // mode or on a detected "slow" CPU tier (see cputier.hpp), else 8ms. Any
+    // other configured value is treated as AUTO. Static so the SOUND menu can
+    // preview the resolved value without an Audio instance.
+    static int resolve_callback_rate(int configured);
+
+    // The callback rate (0/1) actually in effect, fixed by start_audio() and
+    // used by fill_and_mix() every callback - see resolve_callback_rate().
+    int effective_callback_rate() const { return callback_rate_effective_; }
+
 private:
     // Stereo. Could be changed, requires some recoding.
     static const uint32_t CHANNELS = 2;
@@ -143,6 +155,10 @@ private:
     // a sane value (4ms, i.e. an 8ms period) in case it's ever read before
     // start_audio() runs.
     std::chrono::microseconds callback_wait{4000};
+
+    // Callback rate (0=8ms, 1=16ms) actually used, resolved from
+    // config.sound.callback_rate by start_audio() via resolve_callback_rate().
+    int callback_rate_effective_ = 0;
 
     void clear_buffers();
 

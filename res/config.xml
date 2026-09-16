@@ -135,9 +135,12 @@
 	     keeps working even if its index changes between boots. Leave empty to use the index. Also
 	     selectable live from the in-game SOUND menu (OUTPUT DEVICE). -->
 	<playback_device_name></playback_device_name>
-	<!-- Callback Rate - either 0 (8ms) or 1 (16ms). 16ms will double the audio latency but may reduce dropouts on some systems. -->
-	<callback_rate>0</callback_rate>
-	<!-- Real-time audio scheduling - 0 (off, default) or 1. When 1, the audio threads request SCHED_FIFO (needs an rtprio grant, see res/50-cannonball-audio.conf). Off by default: on some boards RT audio preempts the render threads and costs frame rate. Use callback_rate=1 to avoid dropouts instead. -->
+	<!-- Audio callback interval - 0 (8ms), 1 (16ms), or 2 (auto). 16ms doubles the audio
+	     latency but may reduce dropouts on some systems. Auto selects 16ms on Raspberry
+	     Pi 1/2/3-class CPUs (ARM1176/Cortex-A7/Cortex-A53) and 8ms elsewhere; also
+	     selectable live from the in-game SOUND menu (AUDIO CALLBACK INTERVAL). -->
+	<callback_rate>2</callback_rate>
+	<!-- Real-time audio scheduling - 0 (off, default) or 1. When 1, the audio threads request SCHED_FIFO (needs an rtprio grant, see res/50-cannonball-audio.conf). Off by default: on some boards RT audio preempts the render threads and costs frame rate. Leave callback_rate on auto (2), or set 1 (16ms), to avoid dropouts instead. -->
 	<rt_priority>0</rt_priority>
 	<!-- Custom Music: Put .WAV, .MP3, or .YM files in res/ folder named as:
          [01–99]_Track_Display_Name.[wav|mp3|ym] - e.g. 04_AHA_Take_On_Me.mp3

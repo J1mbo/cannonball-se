@@ -287,8 +287,13 @@ void Config::load()
     sound.preview     = cfg.get_int("sound.preview",     1);
     sound.fix_samples = cfg.get_int("sound.fix_samples", 1);
     sound.music_timer = cfg.get_int("sound.music_timer", 0);
-    // JJP - allow either standard 8ms audio callbacks, or a slower 16ms rate (required with WSL2)
-    sound.callback_rate   = cfg.get_int("sound.callback_rate",0);
+    // JJP - allow either standard 8ms audio callbacks, a slower 16ms rate (required with
+    // WSL2), or AUTO (resolved from the detected CPU tier - see cputier.hpp)
+    sound.callback_rate   = cfg.get_int("sound.callback_rate", sound_settings_t::CALLBACK_AUTO);
+    if (sound.callback_rate < 0 || sound.callback_rate > sound_settings_t::CALLBACK_AUTO) {
+        std::cerr << "Warning: sound.callback_rate out of range, defaulting to AUTO\n";
+        sound.callback_rate = sound_settings_t::CALLBACK_AUTO;
+    }
     // JJP - request SCHED_FIFO for the audio threads. Default 0 (off): on some
     // boards RT audio preempts the render threads and costs fps; keep off until
     // that is tuned (core affinity / poll cadence). R3's robust consumer +
@@ -666,7 +671,7 @@ bool Config::save()
     cfg.put_int("sound.preview",            sound.preview);
     cfg.put_int("sound.fix_samples",        sound.fix_samples);
     cfg.put_int("sound.rate",               sound.rate);             // audio sampling rate e.g. 44100 (Hz)
-    cfg.put_int("sound.callback_rate",      sound.callback_rate);    // JJP - 0=8ms callbacks, 1=16ms
+    cfg.put_int("sound.callback_rate",      sound.callback_rate);    // JJP - 0=8ms callbacks, 1=16ms, 2=AUTO
     cfg.put_int("sound.rt_priority",        sound.rt_priority);      // JJP - 0=off (default), 1=SCHED_FIFO audio threads
     cfg.put_int("sound.playback_device",    sound.playback_device);  // JJP - Index of SDL playback device to request, -1 for default
     cfg.put_string("sound.playback_device_name", sound.playback_device_name); // JJP - Name of SDL playback device; takes priority over index when set

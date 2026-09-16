@@ -189,7 +189,7 @@ Full shader
 .IP \(bu 2
 Blargg NTSC filter disabled
 .IP \(bu 2
-16ms sound callback
+Sound callback interval set to auto, which resolves to 16ms on these boards
 .RE
 .PP
 Use HDMI audio for best performance.
@@ -206,7 +206,8 @@ Unforutnately, on Pi2 v1.2, Pi3 and Pi-Zero2W, this appears to prevent most USB 
 generally OK). Workaround is to use a bluetooth keyboard or to SSH.
 .IP \(bu 2
 The system may struggle to keep up with the sound callback rate. This is most noticable on the Pi2 when using 60fps mode with the
-analogue audio output. Fix is to switch the game from 8ms to 16ms callback (Menu/Settings/Sound/Music/Callback Rate).
+analogue audio output. Fix is to switch the game from 8ms to 16ms callback (Menu/Settings/Sound/Audio Callback Interval), which
+cycles 8MS, 16MS and AUTO. AUTO (the default) resolves to 16ms on Pi1/2/3-class boards and 8ms elsewhere.
 .IP \(bu 2
 HDMI audio on Pi boards is handled by the GPU, so is almost free. Analogue audio and USB connected devices are processed on CPU,
 which impacts frame-rate on Pi1 and Pi2 boards and may introduce stutter.

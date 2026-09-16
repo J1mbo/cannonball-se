@@ -33,7 +33,8 @@
 #endif
 
 #include "sdl2/audio.hpp"
-#include "main.hpp"          // cannonball::verbose (-verbose command line option)
+#include "main.hpp"          // cannonball::verbose (-verbose command line option), cannonball::singlecore_mode
+#include "cputier.hpp"       // detect_cpu_tier()/cpu_tier_description() for callback_rate AUTO
 
 //#include "frontend/config.hpp" // fps
 #include "engine/audio/osoundint.hpp"
@@ -186,6 +187,22 @@ void Audio::refresh_playback_devices()
     }
 }
 
+// Resolves the configured sound.callback_rate (0/1/2=AUTO) to the 0 (8ms) or
+// 1 (16ms) value actually used to size the audio buffer. Static: also used
+// by the SOUND menu to preview the resolved value without touching an Audio
+// instance.
+int Audio::resolve_callback_rate(int configured)
+{
+    if (configured == sound_settings_t::CALLBACK_8MS || configured == sound_settings_t::CALLBACK_16MS)
+        return configured;
+
+    // AUTO (2), or any other/invalid value: 16ms in single-core-Pi mode or on
+    // a detected "slow" (Pi 1/2/3-class) CPU tier, else 8ms.
+    if (cannonball::singlecore_mode || detect_cpu_tier() == CpuTier::Slow)
+        return sound_settings_t::CALLBACK_16MS;
+    return sound_settings_t::CALLBACK_8MS;
+}
+
 void Audio::start_audio(bool list_devices_only)
 {
     if (!sound_enabled)
@@ -241,8 +258,22 @@ void Audio::start_audio(bool list_devices_only)
         desired.format   = AUDIO_S16SYS;
         desired.channels = CHANNELS;
         // The arcade used a fixed 8ms audio tick rate. This is problematic when running under WSL, which needs a 16ms
-        // tick to play smoothly.
-        if (config.sound.callback_rate==0) {
+        // tick to play smoothly. AUTO (config value 2) resolves to one or the other here, once,
+        // and the resolved value (not the raw config) is what fill_and_mix() uses every callback.
+        callback_rate_effective_ = resolve_callback_rate(config.sound.callback_rate);
+        if (cannonball::verbose) {
+            std::cout << "Audio callback: " << (callback_rate_effective_ == 0 ? "8ms" : "16ms");
+            if (config.sound.callback_rate == sound_settings_t::CALLBACK_AUTO) {
+                if (detect_cpu_tier() == CpuTier::Unknown)
+                    std::cout << " (AUTO, unknown CPU)";
+                else
+                    std::cout << " (AUTO, " << cpu_tier_description() << " class CPU)";
+            } else {
+                std::cout << " (configured)";
+            }
+            std::cout << std::endl;
+        }
+        if (callback_rate_effective_==0) {
             desired.samples = FREQ/125;
         } else {
             desired.samples = 2*FREQ/125;
@@ -456,13 +487,14 @@ void Audio::mixing_loop() {
 
 void Audio::fill_and_mix(uint8_t *stream, int len)
 {
-    // Call-back routine - provides SDL with 8ms (or 16ms if config.sound.callback_rate != 0) of audio samples
+    // Call-back routine - provides SDL with 8ms (or 16ms if callback_rate_effective_ != 0) of audio samples.
+    // Uses the rate resolved once by start_audio(), not config.sound.callback_rate directly, so an AUTO
+    // setting (or a live config change) can never desync from the buffer size actually negotiated with SDL.
 
     int16_t *out       = reinterpret_cast<int16_t*>(stream);
-    int cycles         = (config.sound.callback_rate == 0 ? 1 : 2);
+    int cycles         = (callback_rate_effective_ == 0 ? 1 : 2);
     uint32_t samples   = static_cast<uint32_t>(len >> cycles);
     static int fadein  = 0;
-    //(config.sound.callback_rate == 0 ? len : len >> 1);
 
     if (audio_paused) return;
 

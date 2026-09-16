@@ -44,6 +44,11 @@ prepare_thread (or main, -t<4) --audio.tick()--> spawns ONCE: mixThread [std::th
 
 Facts that matter:
 
+* `sound.callback_rate` also has a third setting, `2` (auto), added after this analysis was
+  written. It does not change the mechanism below: at startup it simply resolves to one of the
+  two states already analysed here, `0` or `1`, based on the detected CPU (`1`/16ms on
+  Raspberry Pi 1/2/3-class parts, `0`/8ms otherwise), and the rest of this section continues to
+  refer to the resolved `callback_rate=0`/`callback_rate=1` behaviour.
 * Period = `FREQ/125` frames (`audio.cpp:192-196`): 352 frames = 7.98 ms at 44100; 176 frames =
   7.98 ms at 22050. `callback_rate=1` doubles it to 704 frames = 16 ms. **The period is
   rate-invariant in time**, which is why changing to 22 kHz alone changes nothing.

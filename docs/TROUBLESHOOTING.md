@@ -42,8 +42,12 @@ or connect over SSH, if you need a keyboard on those boards.
 
 **2. The sound callback rate is too aggressive for the board.** Most noticeable on a Pi 2 in
 60fps mode with analogue audio. Switch from an 8ms to a 16ms callback:
-*Menu → Settings → Sound/Music → Callback Rate*, or set `sound.callback_rate` to `1` in
-`res/config.xml`. This doubles audio latency, which is not perceptible in play.
+*Menu → Settings → Sound → Audio Callback Interval*, or set `sound.callback_rate` to `1` in
+`res/config.xml`. The menu entry cycles 8MS → 16MS → AUTO; AUTO shows the resolved value, e.g.
+"AUTO - 16MS". Auto (`sound.callback_rate` `2`, the default) resolves to 16ms on Raspberry Pi
+1/2/3-class boards and 8ms elsewhere, so on a Pi it needs no changing; recommend leaving it on
+auto, or setting `1` (16ms) explicitly on WSL2, where auto resolves to 8ms because the CPU is
+not a Pi-class ARM. This doubles audio latency, which is not perceptible in play.
 
 **3. The audio output itself is costing CPU.** HDMI audio on Raspberry Pi boards is handled by
 the GPU and is close to free. Analogue and USB audio are processed on the CPU, which costs
@@ -58,7 +62,7 @@ audio instead.
 There is an optional mode that gives the audio threads real-time (`SCHED_FIFO`) priority,
 enabled with `sound.rt_priority` set to `1`. It is **off by default and usually the wrong
 lever** — on several boards the real-time audio threads pre-empt the render threads and cost
-frame rate. Try `callback_rate=1` first.
+frame rate. Try `callback_rate=2` (auto) or `callback_rate=1` first.
 
 If you do want it, the process needs an `rtprio` grant. `install.sh` copies
 `res/50-cannonball-audio.conf` to `/etc/security/limits.d/` for you; the grant applies to

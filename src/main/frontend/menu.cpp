@@ -171,7 +171,6 @@ void Menu::populate()
     menu_musictest.push_back(ENTRY_MUSIC1);
     menu_musictest.push_back(ENTRY_MUSIC2);
     menu_musictest.push_back(ENTRY_WAVEVOLUME);
-    menu_musictest.push_back(ENTRY_CALLBACK_RATE);
     menu_musictest.push_back(ENTRY_BACK);
 
     menu_about.push_back(std::string("CANNONBALL-SE ") + CANNONBALL_SE_VERSION);
@@ -277,6 +276,7 @@ void Menu::populate_for_pc()
 
     menu_sound.push_back(ENTRY_MUTE);
     menu_sound.push_back(ENTRY_OUTPUT_DEVICE);
+    menu_sound.push_back(ENTRY_CALLBACK_RATE);
     menu_sound.push_back(ENTRY_ADVERTISE);
     menu_sound.push_back(ENTRY_PREVIEWSND);
     menu_sound.push_back(ENTRY_FIXSAMPLES);
@@ -1169,6 +1169,20 @@ void Menu::tick_menu()
                         display_message("AUDIO DEVICE FAILED TO OPEN");
                 }
             }
+            else if (SELECTED(ENTRY_CALLBACK_RATE))
+            {
+                // SDL audio callback interval: 0=8ms, 1=16ms, 2=AUTO (resolved from the
+                // detected CPU tier - see cputier.hpp / Audio::resolve_callback_rate()).
+                config.sound.callback_rate = (config.sound.callback_rate + 1) % 3;
+                // Apply live, mirroring OUTPUT DEVICE above - config.save() (SAVE AND
+                // RETURN) persists the choice, this just makes it audible now.
+                if (config.sound.enabled) {
+                    cannonball::audio.stop_audio();
+                    cannonball::audio.start_audio();
+                    if (!cannonball::audio.device_open())
+                        display_message("AUDIO DEVICE FAILED TO OPEN");
+                }
+            }
             else if (SELECTED(ENTRY_ADVERTISE))
                 config.sound.advertise ^= 1;
             else if (SELECTED(ENTRY_PREVIEWSND))
@@ -1383,14 +1397,6 @@ void Menu::tick_menu()
                 // gain applied to .wav file playback, 1-8 in 2dB steps where 5=0dB (as recorded)
                 if (++config.sound.wave_volume > 8) config.sound.wave_volume = 1;
             }
-            else if (SELECTED(ENTRY_CALLBACK_RATE))
-            {
-                // SDL Audio callback rate. 0=8ms (default), 1=16ms (which can provide smoother audio under WSL and on Pi-1)
-                if (++config.sound.callback_rate > 1) config.sound.callback_rate = 0;
-                // changing this setting requires re-initialising the audio subsystem
-                cannonball::audio.stop_audio();
-                cannonball::audio.init();
-            }
             else if (SELECTED(ENTRY_BACK))
             {
                 cannonball::audio.clear_wav();
@@ -1499,6 +1505,19 @@ void Menu::refresh_menu()
                 size_t max_len = strlen(ENTRY_OUTPUT_DEVICE) < 40 ? 40 - strlen(ENTRY_OUTPUT_DEVICE) : 0;
                 if (text.size() > max_len) text = text.substr(0, max_len);
                 set_menu_text(ENTRY_OUTPUT_DEVICE, text);
+            }
+            else if (SELECTED(ENTRY_CALLBACK_RATE))
+            {
+                // Shows the CONFIGURED interval; AUTO also appends the resolved value
+                // (e.g. "AUTO - 16MS") so it's clear what's actually in effect, without
+                // needing sound enabled/an Audio instance to have started audio yet.
+                std::string text = CALLBACK_RATE_LABELS[config.sound.callback_rate];
+                if (config.sound.callback_rate == sound_settings_t::CALLBACK_AUTO) {
+                    int resolved = Audio::resolve_callback_rate(config.sound.callback_rate);
+                    text += " - ";
+                    text += (resolved == sound_settings_t::CALLBACK_16MS ? "16MS" : "8MS");
+                }
+                set_menu_text(ENTRY_CALLBACK_RATE, text);
             }
             else if (SELECTED(ENTRY_ADVERTISE))     set_menu_text(ENTRY_ADVERTISE, config.sound.advertise ? "ON" : "OFF");
             else if (SELECTED(ENTRY_PREVIEWSND))    set_menu_text(ENTRY_PREVIEWSND, config.sound.preview ? "ON" : "OFF");
@@ -1745,10 +1764,6 @@ void Menu::refresh_menu()
                 set_menu_text(ENTRY_WAVEVOLUME,
                     Utils::to_string(config.sound.wave_volume*2-10) + "dB"
                 );
-            }
-            else if (SELECTED(ENTRY_CALLBACK_RATE)) {
-                // Allows the user to switch being 8ms (default) and 16ms callback rate.
-                set_menu_text(ENTRY_CALLBACK_RATE, (config.sound.callback_rate==0 ? "8ms" : "16ms"));
             }
         }
     }

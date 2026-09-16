@@ -146,7 +146,11 @@ struct sound_settings_t
     int fix_samples;
     int music_timer;
     std::vector <music_t> music;
-    int callback_rate;   // 0 = 8ms, 1 = 16ms (needed for WSL2)
+    // Audio callback interval: 0 = 8ms, 1 = 16ms (needed for WSL2), 2 = AUTO (resolved
+    // at start_audio() from the detected CPU tier / single-core mode - see cputier.hpp
+    // and Audio::resolve_callback_rate()).
+    enum { CALLBACK_8MS = 0, CALLBACK_16MS = 1, CALLBACK_AUTO = 2 };
+    int callback_rate;
     int rt_priority;     // 0 = off (default), 1 = request SCHED_FIFO for the audio threads (needs rtprio grant; can cost fps via render-thread preemption - see AUDIO_PERF_PLAN.md)
     int playback_device; // omit from config file or set to -1 to use system default
     std::string playback_device_name; // SDL device name; takes priority over playback_device index when set (matched exactly, then as a substring). Empty = use the index.

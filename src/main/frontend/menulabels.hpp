@@ -167,7 +167,7 @@ const static char* ENTRY_MUSIC1             = "PLAY TRACK";
 const static char* ENTRY_MUSIC2             = "TRACK - ";
 const static char* ENTRY_MUSIC3             = "LAST WAVE";
 const static char* ENTRY_WAVEVOLUME         = "CUSTOM MUSIC PLAYBACK LEVEL "; // JJP .WAV FILE VOLUME ADJUST
-const static char* ENTRY_CALLBACK_RATE      = "CALLBACK RATE ";        // JJP - 8ms or 16ms callback rates
+const static char* ENTRY_CALLBACK_RATE      = "AUDIO CALLBACK INTERVAL "; // JJP - 8ms, 16ms or AUTO callback rate
 
 const static char* COLOR_LABELS[5] = { "RED", "BLUE", "YELLOW", "GREEN", "CYAN" };
 const static char* DIP_DIFFICULTY[4] = { "EASY", "NORMAL", "HARD", "HARDEST" };
@@ -180,4 +180,6 @@ const static char* RUMBLE_LABELS[5] = { "OFF", "LOW", "MED", "HIGH", "FULL" };
 // Order must match rumble::Backend (AUTO=0, SDL_CONTROLLER=1, SDL_HAPTIC=2, HID_REPORT=3, FFB=4,
 // OFF=5) and controls.rumble_backend's on-disk auto|sdl|haptic|hid|ffb|off mapping (config.cpp).
 const static char* RUMBLE_BACKEND_LABELS[6] = { "AUTO", "SDL", "SDL HAPTIC", "HID REPORT", "FORCE FEEDBACK", "OFF" };
+// Order must match sound_settings_t::CALLBACK_8MS/CALLBACK_16MS/CALLBACK_AUTO (config.hpp).
+const static char* CALLBACK_RATE_LABELS[3] = { "8MS", "16MS", "AUTO" };
 const static char* CAB_LABELS[3] = { "MOVING", "UPRIGHT", "MINI" };
