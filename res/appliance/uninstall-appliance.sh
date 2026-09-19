@@ -69,11 +69,13 @@ if [[ -f "$config_file" ]] && [[ "$(state_get config_added)" == *disable_splash=
   sed -i '/^disable_splash=1$/d' "$config_file"
 fi
 
-# 4. Remove only the packages we installed.
+# 4. Remove only the packages we installed. Purge (not plain remove) so none is
+#    left in the "config-files" state, which would otherwise fool a later
+#    reinstall into thinking the package is still present.
 packages_installed=$(state_get packages_installed)
 if [[ -n "$packages_installed" ]]; then
   # shellcheck disable=SC2086
-  apt remove -y $packages_installed || true
+  apt purge -y $packages_installed || true
 fi
 
 # 5. Remove the state file, the plymouth backup, and the (now empty) directory last.

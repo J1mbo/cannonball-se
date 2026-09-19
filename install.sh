@@ -188,7 +188,11 @@ if [[ "$APPLIANCE_MODE" -eq 1 ]]; then
     to_install=""
     newly_installed=""
     for p in plymouth plymouth-themes initramfs-tools; do
-      if ! dpkg -s "$p" >/dev/null 2>&1; then
+      # Check for the fully-installed state specifically: a package left in
+      # "config-files" state by a plain apt remove still satisfies "dpkg -s",
+      # but its programs (e.g. plymouth-set-default-theme) are gone, so it
+      # must be reinstalled.
+      if ! dpkg-query -W -f="\${Status}" "$p" 2>/dev/null | grep -q "^install ok installed$"; then
         to_install="$to_install $p"
         newly_installed="$newly_installed $p"
       fi
