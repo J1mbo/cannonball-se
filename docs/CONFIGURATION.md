@@ -238,9 +238,10 @@ code** and has no effect.
 | `controls.analog.haptic.min_force` | `8500` | `0` to `max_force` | Minimum force-feedback force to apply. The shipped `res/config.xml` ships with `7000`. |
 | `controls.analog.haptic.force_duration` | `20` | — | Length of each force-feedback effect, in `1/x` seconds; `1/20` is suggested. |
 
-There is no separate invert setting read for the wheel axis itself
-(`controls.axis[0]`) — only accelerator and brake axes support the
-`invert` attribute.
+The accelerator and brake `invert` attributes above are the legacy analogue-axis flags read from
+`controls.analog.axis`. When a wheel or pedal is bound through the in-game Configure Inputs editor,
+its direction is instead detected automatically during capture, and the resulting invert state is
+stored per binding in the input-binding matrix rather than under `controls.analog.axis`.
 
 `controls.analog.axis.motor` is not present in the shipped
 `res/config.xml`. All other `controls.analog.*` keys are present.

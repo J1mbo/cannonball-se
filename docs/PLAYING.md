@@ -44,11 +44,21 @@ the effects are costing you in frame rate.
 ## Wheels and gamepads
 
 USB steering wheels, joysticks and gamepads are supported. Set them up in
-*Menu → Settings → Controls → Redefine Gamepad*.
+*Menu → Settings → Controls → Configure Inputs*.
+
+Configure Inputs is a grid of controls (steering, accelerate, brake, gears, start, coin, menu and
+so on) against three columns — Keyboard, Gamepad and Wheel. Pick a cell, then press the button or
+move the axis you want bound. Steering and pedals auto-detect their direction as you capture them
+— steering shows a "Turn Wheel Left" prompt and works out whether the axis needs inverting — so a
+reversed wheel or pedal doesn't need any manual invert setting. Save applies the changes; Cancel
+discards them. `INPUT MODE` on the same menu switches which device group, Gamepad or Wheel, is
+actually used during play.
 
 Force feedback works on wheels that support it. If the wheel pulls the wrong way, make both
-`max_force` and `min_force` negative in `config.xml`. For wheels without SDL rumble, the game can
-drive rumble through `/dev/hidraw` — `install.sh` sets up the permissions for this.
+`max_force` and `min_force` negative in `config.xml`. This is a separate setting from the axis
+direction handled in Configure Inputs above — one is for force-feedback direction, the other for
+the input axis itself. For wheels without SDL rumble, the game can drive rumble through
+`/dev/hidraw` — `install.sh` sets up the permissions for this.
 
 If some buttons are not recognised, the device needs a mapping entry in `res/gamecontrollerdb.txt`.
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
