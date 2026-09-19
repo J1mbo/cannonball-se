@@ -63,6 +63,17 @@ the input axis itself. For wheels without SDL rumble, the game can drive rumble 
 If some buttons are not recognised, the device needs a mapping entry in `res/gamecontrollerdb.txt`.
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
+## Sound
+
+Pick which output the game plays through in *Menu → Settings → Sound → Output Device*. It cycles
+the system default and each detected device, and switches immediately. The choice is stored by
+name, so it keeps working even if the device order changes between boots.
+
+*Audio Callback Interval* on the same menu trades latency against stability (`8MS`, `16MS` or
+`AUTO`). Leave it on `AUTO`, which picks the right value for your board; only reach for `16MS` if
+you hear dropouts. If you get no sound, the wrong device, or stutters, see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
 ## Custom music
 
 As well as the three tracks in the ROMs, you can add your own. Put `.wav`, `.mp3` or `.ym` files
