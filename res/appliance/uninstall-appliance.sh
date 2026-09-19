@@ -76,8 +76,8 @@ if [[ -n "$packages_installed" ]]; then
   apt remove -y $packages_installed || true
 fi
 
-# 5. Remove the state file/directory last.
-rm -f "$STATE_FILE"
+# 5. Remove the state file, the plymouth backup, and the (now empty) directory last.
+rm -f "$STATE_FILE" "$STATE_DIR/plymouthd.conf.orig"
 rmdir "$STATE_DIR" 2>/dev/null || true
 
 systemctl daemon-reload || true
