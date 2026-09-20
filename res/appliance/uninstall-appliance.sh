@@ -39,6 +39,12 @@ if [[ "$getty_disabled" == "1" ]]; then
   systemctl enable getty@tty1.service >/dev/null 2>&1 || true
 fi
 
+retain_dropin=$(state_get retain_dropin)
+if [[ "$retain_dropin" == "1" ]]; then
+  rm -f /etc/systemd/system/plymouth-quit.service.d/retain-splash.conf
+  rmdir --ignore-fail-on-non-empty /etc/systemd/system/plymouth-quit.service.d 2>/dev/null || true
+fi
+
 # 2. Restore the plymouth theme/config.
 if [[ -f "$STATE_DIR/plymouthd.conf.orig" ]]; then
   cp "$STATE_DIR/plymouthd.conf.orig" /etc/plymouth/plymouthd.conf 2>/dev/null || true
@@ -46,8 +52,19 @@ elif command -v plymouth-set-default-theme >/dev/null 2>&1; then
   plymouth-set-default-theme -R -r >/dev/null 2>&1 || true
 fi
 rm -rf /usr/share/plymouth/themes/cannonball-se
-# The initramfs carries a copy of plymouthd.conf and the theme; rebuild it so a
-# still-installed plymouth does not keep booting with the removed theme.
+
+# Remove only the initramfs modules install.sh added (DeviceTimeout is
+# already reverted above by restoring plymouthd.conf.orig).
+modules_file=/etc/initramfs-tools/modules
+if [[ -f "$modules_file" ]]; then
+  for m in $(state_get modules_added); do
+    sed -i "/^${m}\$/d" "$modules_file"
+  done
+fi
+
+# The initramfs carries a copy of plymouthd.conf, the theme and the modules
+# list; rebuild it so a still-installed plymouth does not keep booting with
+# the removed theme/modules.
 if command -v update-initramfs >/dev/null 2>&1; then
   update-initramfs -u >/dev/null 2>&1 || true
 fi

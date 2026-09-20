@@ -117,40 +117,53 @@ Step by step, `install.sh`:
    is skipped entirely on Ubuntu. Answering yes then asks
    `Splash image PNG [res/appliance/splash.png]:` for the image to show at boot and shutdown.
    See [Appliance mode](#appliance-mode) below for what this turns on.
-3. **Picks a build parallelism** automatically from available RAM (1 thread up to 460 MB, 2 up
+3. **On Raspberry Pi 2 and Pi 3-class boards (Cortex-A7 or Cortex-A53), offers a recommended
+   overclock**, independently of appliance mode: `Apply recommended overclocks for <model>? [y/N]`.
+   This needs a **2.5A power supply and a heatsink on the CPU**; accepting it appends a `gpu_freq`
+   setting to `/boot/firmware/config.txt` under a marker comment (450MHz on Pi 2, 350MHz on Pi 3).
+   It is not reverted by `--remove-appliance` — remove the marked block by hand if you want it
+   back out.
+4. **Picks a build parallelism** automatically from available RAM (1 thread up to 460 MB, 2 up
    to 920 MB, 3 up to 1380 MB, otherwise 4). No prompt for this.
-4. **Runs `sudo apt update -y`.**
-5. **Adds your user to the `input`, `video` and `render` groups** (`sudo usermod -aG`), for
+5. **Runs `sudo apt update -y`.**
+6. **Adds your user to the `input`, `video` and `render` groups** (`sudo usermod -aG`), for
    access to input devices used by wheels/pads and to the GPU/DRM devices used for rendering.
-6. **Installs a udev rule**, `/etc/udev/rules.d/99-cannonball.rules`, granting world read/write
+7. **Installs a udev rule**, `/etc/udev/rules.d/99-cannonball.rules`, granting world read/write
    (`MODE="0666"`) on `hidraw*` (needed for force-feedback rumble on some wheels) and
    `watchdog*` devices, then reloads udev rules.
-7. **Adds your user to the `audio` group and installs a PAM limits file**
+8. **Adds your user to the `audio` group and installs a PAM limits file**
    (`/etc/security/limits.d/50-cannonball-audio.conf`, copied from `res/50-cannonball-audio.conf`)
    granting the `audio` group real-time scheduling priority up to 80, `nice -20`, and unlimited
    `memlock`. This only matters if you later turn on `<rt_priority>1</rt_priority>` in
    `config.xml` (it's `0`/off by default) — without the grant, the game would silently fall back
    to normal scheduling for its audio threads.
-8. **Installs build dependencies via apt**:
+9. **Installs build dependencies via apt**:
    `build-essential git cmake libsdl2-dev libglu1-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev`.
-9. **Builds the project**: creates `build/` and `roms/`, runs `cmake -S . -B build`, then
-   `cmake --build build --parallel <N>` using the thread count from step 3. No `config.xml` is
-   created here — the game writes its own on first run (see [First run](#first-run)).
-10. **If appliance mode was chosen, sets it up**: installs `plymouth`, `plymouth-themes` and
+10. **Builds the project**: creates `build/` and `roms/`, runs `cmake -S . -B build`, then
+    `cmake --build build --parallel <N>` using the thread count from step 4. No `config.xml` is
+    created here — the game writes its own on first run (see [First run](#first-run)).
+11. **If appliance mode was chosen, sets it up**: installs `plymouth`, `plymouth-themes` and
     `initramfs-tools` if they're not already present; installs a Plymouth theme that shows the
-    splash image you chose (scaled to fit) during boot and during shutdown; adds
-    `quiet splash plymouth.ignore-serial-consoles loglevel=3 logo.nologo vt.global_cursor_default=0 consoleblank=0`
+    splash image you chose (scaled to fit) during boot and during shutdown, with
+    `i2c_bcm2835`/`vc4` ordered correctly in `/etc/initramfs-tools/modules` and
+    `DeviceTimeout=20` set in `plymouthd.conf` so the graphical splash actually appears instead of
+    a grey text screen, plus a `plymouth-quit` drop-in that keeps the splash on screen until the
+    game itself draws; adds
+    `quiet splash plymouth.ignore-serial-consoles loglevel=3 logo.nologo vt.global_cursor_default=0 consoleblank=0 systemd.show_status=0 rd.systemd.show_status=0`
     to `/boot/firmware/cmdline.txt` and `disable_splash=1` to `/boot/firmware/config.txt` (this
     removes the rainbow-square boot logo);
     and installs a `cannonball-se.service` systemd service that starts the game on `tty1`, as the
     user running the installer, once the splash has shown — disabling the normal login prompt on
     `tty1`. See [Appliance mode](#appliance-mode) below for full details.
-11. **Prints a summary** of every step and its status.
-12. **Offers to open the man page**: `Would you like to view the man page now? [y/N]` — if yes,
+12. **Prints a summary** of every step and its status.
+13. **Offers to open the man page**: `Would you like to view the man page now? [y/N]` — if yes,
     runs `man -l docs/cannonball-se.6`.
-13. Finishes with a reminder that you must **reboot** before running the game (the group
+14. Finishes with a reminder that you must **reboot** before running the game (the group
     membership changes only take effect on your next login), and that you still need to copy the
-    ROMs into `roms/` if you haven't already.
+    ROMs into `roms/` if you haven't already. On a Raspberry Pi, it then checks `vcgencmd
+    get_throttled` and prints a bright-yellow warning if under-voltage was detected at any point
+    during the install — a sign the power supply may not be adequate to run CannonBall-SE at
+    60fps.
 
 Outside of appliance mode, `install.sh` does **not** set up any systemd service or auto-start —
 it only builds the game and prepares device permissions. Nothing outside `apt`, the files listed

@@ -43,6 +43,10 @@ function is_raspberry_pi() {
   grep -q "^Raspberry Pi" /proc/device-tree/model
 }
 
+# ARM CPU part id (e.g. 0xc07 for Cortex-A7, 0xd03 for Cortex-A53), used to
+# decide whether a recommended overclock is offered.
+function cpu_part() { grep -m1 -i "^CPU part" /proc/cpuinfo | awk '{print tolower($NF)}'; }
+
 # --remove-appliance: revert appliance mode and exit, before any other prompt.
 if [[ "${1:-}" == "--remove-appliance" ]]; then
   if is_raspberry_pi; then
@@ -100,6 +104,26 @@ if is_raspberry_pi; then
   fi
 else
   echo "Appliance mode is only offered on Raspberry Pi OS; skipping."
+fi
+
+# 2a. Offer a recommended overclock (Raspberry Pi 2/3-class boards only,
+#     independent of appliance mode).
+OVERCLOCK=0
+GPU_FREQ=""
+if is_raspberry_pi; then
+  part="$(cpu_part)"
+  if [[ "$part" == "0xc07" || "$part" == "0xd03" ]]; then
+    model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)"
+    read -rp "Apply recommended overclocks for $model? Note: this requires a 2.5A PSU and a heatsink on the CPU. [y/N] " oc_confirm
+    STEP_ORDER+=("Overclock prompt")
+    if [[ "$oc_confirm" =~ ^[Yy] ]]; then
+      OVERCLOCK=1
+      if [[ "$part" == "0xc07" ]]; then GPU_FREQ=450; else GPU_FREQ=350; fi
+      STATUS["Overclock prompt"]="Accepted (gpu_freq=$GPU_FREQ)"
+    else
+      STATUS["Overclock prompt"]="Declined"
+    fi
+  fi
 fi
 
 # 3. Determine build threads based on RAM
@@ -222,6 +246,30 @@ if [[ "$APPLIANCE_MODE" -eq 1 ]]; then
     sudo touch '"$STATE_FILE"'
     sudo sed -i "/^theme=/d" '"$STATE_FILE"'
     echo "theme=cannonball-se" | sudo tee -a '"$STATE_FILE"' > /dev/null
+    # Make sure the initramfs carries the I2C DDC adapter before the vc4 KMS
+    # driver (vc4 defers its HDMI component on i2c_bcm2835), so the splash
+    # theme actually shows during boot instead of a grey text screen. Order
+    # matters; only record modules we did not already find present.
+    modules_file=/etc/initramfs-tools/modules
+    sudo touch "$modules_file"
+    modules_added=""
+    for m in i2c_bcm2835 vc4; do
+      grep -qx "$m" "$modules_file" 2>/dev/null || modules_added="$modules_added $m"
+      sudo sed -i "/^${m}\$/d" "$modules_file"
+    done
+    for m in i2c_bcm2835 vc4; do
+      echo "$m" | sudo tee -a "$modules_file" > /dev/null
+    done
+    sudo sed -i "/^modules_added=/d" '"$STATE_FILE"'
+    echo "modules_added=${modules_added# }" | sudo tee -a '"$STATE_FILE"' > /dev/null
+    # Give Plymouth longer to wait for the display device to appear before
+    # falling back to a text splash.
+    sudo sed -i "/^DeviceTimeout=/d" /etc/plymouth/plymouthd.conf
+    if grep -q "^\[Daemon\]" /etc/plymouth/plymouthd.conf 2>/dev/null; then
+      sudo sed -i "/^\[Daemon\]/a DeviceTimeout=20" /etc/plymouth/plymouthd.conf
+    else
+      printf "\n[Daemon]\nDeviceTimeout=20\n" | sudo tee -a /etc/plymouth/plymouthd.conf > /dev/null
+    fi
     sudo plymouth-set-default-theme -R cannonball-se
   ' _ "$SPLASH_PNG"
 
@@ -232,7 +280,7 @@ if [[ "$APPLIANCE_MODE" -eq 1 ]]; then
     cmdline_file=/boot/firmware/cmdline.txt
     config_file=/boot/firmware/config.txt
     added=""
-    for opt in quiet splash plymouth.ignore-serial-consoles loglevel=3 logo.nologo vt.global_cursor_default=0 consoleblank=0; do
+    for opt in quiet splash plymouth.ignore-serial-consoles loglevel=3 logo.nologo vt.global_cursor_default=0 consoleblank=0 systemd.show_status=0 rd.systemd.show_status=0; do
       if ! grep -qw -- "$opt" "$cmdline_file"; then
         sudo sed -i "1 s/\$/ $opt/" "$cmdline_file"
         added="$added $opt"
@@ -275,12 +323,29 @@ if [[ "$APPLIANCE_MODE" -eq 1 ]]; then
   run_step "Enable appliance service" bash -c '
     set -e
     sudo systemctl disable getty@tty1.service
+    # Leave the splash logo on screen after Plymouth quits, until the game
+    # itself draws, instead of dropping back to a blank/text console.
+    sudo install -d /etc/systemd/system/plymouth-quit.service.d
+    printf "[Service]\nExecStart=\nExecStart=-/usr/bin/plymouth quit --retain-splash\n" | sudo tee /etc/systemd/system/plymouth-quit.service.d/retain-splash.conf > /dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable cannonball-se.service
     sudo install -d '"$STATE_DIR"'
     sudo touch '"$STATE_FILE"'
-    sudo sed -i "/^getty_disabled=/d" '"$STATE_FILE"'
-    echo "getty_disabled=1" | sudo tee -a '"$STATE_FILE"' > /dev/null
+    sudo sed -i "/^getty_disabled=/d;/^retain_dropin=/d" '"$STATE_FILE"'
+    { echo "getty_disabled=1"; echo "retain_dropin=1"; } | sudo tee -a '"$STATE_FILE"' > /dev/null
+  '
+fi
+
+# 10f. Apply the recommended overclock, if accepted above. Independent of
+#      appliance mode, and not reverted by --remove-appliance; the marker
+#      comment lets a user remove it by hand.
+if [[ "$OVERCLOCK" -eq 1 ]]; then
+  run_step "Apply recommended overclock" bash -c '
+    set -e
+    config_file=/boot/firmware/config.txt
+    if ! grep -q "^# CannonBall-SE recommended overclock" "$config_file" 2>/dev/null; then
+      printf "\n# CannonBall-SE recommended overclock\n[all]\ngpu_freq='"$GPU_FREQ"'\n" | sudo tee -a "$config_file" > /dev/null
+    fi
   '
 fi
 
@@ -318,5 +383,14 @@ else
 fi
 echo "****************************************************************************************"
 echo ""
+
+# 13. Warn if under-voltage was seen during install (bit 0 = currently
+#     throttled, bit 16 = has occurred since boot).
+if is_raspberry_pi && command -v vcgencmd >/dev/null 2>&1; then
+  thr="$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)"
+  if [[ -n "$thr" ]] && (( thr & 0x10001 )); then
+    printf '\033[1;33m%s\033[0m\n' "Undervoltage was recorded during install. PSU may not be adequate to run Cannonball-SE at 60fps."
+  fi
+fi
 
 # End of install.sh
