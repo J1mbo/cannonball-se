@@ -2,7 +2,7 @@
 .TH "cannonball-se" "6" "September 2026" "CannonBall SE 1.50" "CannonBall SE Configuration Help"
 .SH OVERVIEW
 \fBCannonBall-SE\fP is a fork of Chris White's incredible cross-platform OutRun engine optimised for home-brew arcade cabinets.
-It adds adding enhanced image processing to provide an authentic CRT look, MP3 playback, and performance optimisations.
+It adds enhanced image processing to provide an authentic CRT look, MP3 playback, and performance optimisations.
 
 .SH OPTIONS
 Command line options:
@@ -29,25 +29,7 @@ Command line options:
 Use this to check whether your board has headroom for a heavier shader or hi-res mode.
 .RE
 .PP
-The following options exist for development and diagnostic use. They are documented for
-completeness; they are not needed to play the game.
-.RS
-.IP \(bu 2
--dump <dir> [interval] [count]
-: Write the NTSC filter's input frames to <dir> every 'interval' rendered frames
-(default 30) until 'count' frames (default 60) have been written, then quit.
-.IP \(bu 2
--dumpspr <dir> [interval] [count]
-: Write sprite RAM and before/after frame captures to <dir> every 'interval' rendered
-frames (default 37) until 'count' frames (default 300) have been written. Does not quit.
-Only present in builds configured with \fBSPRITE_DUMP\fP.
-.IP \(bu 2
--noglow / -glow     : Disable or enable the System 16 sprite glow quirk (hardware pixel
-accuracy). The build default is set by the \fBPIXEL_ACCURACY\fP CMake option.
-.IP \(bu 2
--spritereplay N     : Select the sprite colour-replay strategy - 0 = span-copy,
-1 = shared-load. Both produce identical output; this is a performance knob only.
-.RE
+Additional development and diagnostic options exist; run \fB-h\fP to list them.
 
 .SH GETTING STARTED
 The following assumes that the game was downloaded and built in your home directory as ~/cannonball-se.
@@ -92,19 +74,20 @@ The function keys are fixed and cannot be redefined:
 .IP \(bu 2
 F1  - Pause
 .IP \(bu 2
-F2  - Advance one frame while paused
+F2  - Frame step (while paused)
 .IP \(bu 2
-F3  - Toggle the game timer
+F3  - Toggle game timer
 .IP \(bu 2
-F5  - Open the menu
+F5  - Open menu
 .IP \(bu 2
-F7  - Toggle hi-res sprites. Only works while the hi-res engine is active.
+F7  - Toggle hi-res sprites
 .IP \(bu 2
-F8  - Toggle all video processing between fully off and the default CRT look.
-Useful for seeing what the filters are doing, and for a quick frame-rate comparison.
+F8  - Toggle all video processing on/off
 .IP \(bu 2
-F9  - Toggle the shadow mask on and off, when the shader-based mask is in use.
+F9  - Toggle shadow mask
 .RE
+.PP
+See \fIdocs/PLAYING.md\fP for full control and configuration details.
 
 .SH STEERING WHEELS
 Steering wheels, joysticks and gamepads can be setup in the game (menu, settings, controls, configure inputs).
@@ -115,15 +98,10 @@ Configure Inputs auto-detects axis direction during capture (the "turn wheel lef
 CannonBall needs a copy of the OutRun 'revision B' romset to function. These should be copied to the roms subdirectory
 (usually ~/cannonball-se/roms). Please see the file roms.txt for file names and other information.
 .PP
-Instead of loose files, a MAME-format ROM archive (e.g. a merged outrun.zip) may be placed in the roms
-directory unextracted; ROMs inside it are matched by CRC32 and size rather than by filename, so split
-sets, renamed archives and files inside subdirectories all work. Loose files in the roms directory always
-take priority over an archive. Outside the roms directory, only archives named after a MAME OutRun set
-are searched - outrun.zip, outrunra.zip, outrundx.zip, outrundxa.zip, outrundxj.zip, outruneh.zip,
-outruneha.zip, outrundxeh.zip, outrundxeha.zip, outrunb.zip (case-insensitive) - first in the current
-working directory, then in the directory containing the executable. The
-.B data.rompath
-setting may also name a .zip file directly.
+Instead of loose files, a MAME-format ROM archive (e.g. a merged or split outrun.zip) may be placed in the
+roms directory unextracted, since ROMs inside it are matched by content rather than filename; loose files
+in the roms directory always take priority over an archive. See \fIroms.txt\fP for the full list of
+accepted archive names and where else they are searched for.
 .PP
 \fBIMPORTANT:\fP Users of CannonBall (and CannonBall-SE) are expected to own licensed copies of the original arcade ROMs that
 are needed for the program to function. The use of ROM images may be restricted by copyright or other laws depending on jurisdiction.
@@ -131,121 +109,54 @@ The end-user assumes all responsibility in respect of the use of original ROMs.
 
 .SH CUSTOM MUSIC
 .PP
-As well as the three seminal tracks provided in the Outrun ROMs, CannonBall-SE supports custom music playback via .WAV and .MP3
-files. These can be used to replace the built-in music, or to add additional tracks to the list on the radio screen at the start of
-the game. To use this feature, simply copy your music tracks in .WAV or .MP3 format to the res directory, and name them as:
-.PP
-[01–99]_Track_Display_Name.[wav|mp3|ym] - e.g. 04_AHA_Take_On_Me.mp3
-.PP
-Indexes 01–03 will replace the built‑in tracks (01=Magical Sound Shower), and indexes 04 and higher will add tracks to the list.
-To ensure compatibility, set the game to 44.1kHz sample rate in config.xml (this is the default) and ensure your files are
-also 44.1kHz, 16-bit stereo.
+CannonBall-SE supports custom music via .WAV and .MP3 files placed in the \fIres\fP directory and named
+[01-99]_Track_Display_Name.[wav|mp3] - e.g. 04_AHA_Take_On_Me.mp3. Indexes 01-03 replace the built-in
+tracks and 04 and higher add tracks to the radio screen list; files should be 44.1kHz, 16-bit stereo.
+See \fIdocs/PLAYING.md\fP for full detail.
 
 .SH FUNCTIONALITY
 .PP
 On top of the game port provided by CannonBall, CannonBall-SE provides:
 .RS
 .IP \(bu 2
-Video-processing enhancements - an accurate NTSC filter (Blargg's SNES library), subtle screen curvature effect, analogue noise,
-shadow mask effect, and a smooth bezel mask.
+Video-processing enhancements - NTSC filter, screen curvature, analogue noise, shadow mask, and bezel mask.
 .IP \(bu 2
-Enhanced audio module that provides consistent, pop-free audio and custom music via MP3 playback.
+Enhanced audio module for consistent, pop-free audio and custom music via MP3 playback.
 .IP \(bu 2
 Enhanced rumble support for compatible steering wheels (rumbles on tyre smoke).
 .IP \(bu 2
-Performance enhacements and automatic frame rate selection.
+Performance enhancements and automatic frame rate selection.
 .IP \(bu 2
 Play count and 'machine hours' tracking (menu, about).
 .IP \(bu 2
-Various stablity and bug fixes.
+Various stability and bug fixes.
 .RE
 
 .SH CHOOSING A PLATFORM
 .PP
-Cannonball-SE is optimised for RaspberryPi boards with RaspberryPi OS, and also runs on any Intel/AMD PC with Ubuntu. All
-RaspberryPi boards are supported.
+Cannonball-SE runs on Raspberry Pi boards with Raspberry Pi OS, and on Intel/AMD PCs with Ubuntu. Every quad-core Pi reaches
+60fps at 1280x1024, though Pi 2 and Pi 3 class boards may need the fast shader or a small GPU clock bump to do so; single-core
+boards run at 30fps. A CPU heatsink is recommended on multi-core Pis.
 .PP
-If you have a spare Pi, PC, or laptop - it can probably run CannonBall-SE and any USB steering wheel should work - Thrustmaster
-Ferarri branded wheels are readily available on popular auction sites.
-.PP
-Pi4 easily achieves 60fps at 1080p and its 4 USB ports provide connectivity for a steering wheel, external amplifier/DSP, case
-fan, and a keyboard for diagnostics when needed. Higher resolution screens will need more power (Pi5 or Intel/AMD). When using any
-multi-core Pi, a CPU heatsink is required.
-.PP
-The game has automatic frame-rate control and drops frames as needed to keep gameplay at full speed on all systems.
-In summary, at 1280x1024: every quad-core Pi reaches 60fps, though the Pi 2 and Pi 3 class boards
-may need the fast shader or a GPU clock bump to do so; single-core boards run at 30fps.
-.PP
-Run \fBcannonball-se -perftest\fP to measure what your own board sustains. The full board-by-board
-guide, including which setting to change first and the clock recipes, is in
-\fIdocs/PERFORMANCE-TUNING.md\fP.
-.PP
-For single-core Pi Boards e.g. Pi1 and Pi-Zero(W), the following settings are automatically applied at launch:
-.RS
-.IP \(bu 2
-Orignal resolution
-.IP \(bu 2
-30 FPS
-.IP \(bu 2
-Full shader
-.IP \(bu 2
-Blargg NTSC filter disabled
-.IP \(bu 2
-Sound callback interval set to auto, which resolves to 16ms on these boards
-.RE
-.PP
-Use HDMI audio for best performance.
-.PP
+Run \fBcannonball-se -perftest\fP to measure what your own board sustains; see \fIdocs/PERFORMANCE-TUNING.md\fP for the full
+board-by-board guide.
+
 .SH STUTTERING AUDIO
 .PP
-Potential causes of stuttering audio include:
-.RS
-.IP \(bu 2
-The Pi USB stack is known to be problematic with USB audio devices (see
-<http://www.raspyfi.com/anatomy-of-a-pi-usb-audio-quality-and-related-issues-on-pi/>). For Pi2, Pi3, and Pi-Zero2W users,
-USB ports need to be put in 'full speed' mode when using external USB audio (add 'dwc_otg.speed=1' to /boot/firmware/cmdline.txt).
-Unforutnately, on Pi2 v1.2, Pi3 and Pi-Zero2W, this appears to prevent most USB keyboards working (though steering wheels are
-generally OK). Workaround is to use a bluetooth keyboard or to SSH.
-.IP \(bu 2
-The system may struggle to keep up with the sound callback rate. This is most noticable on the Pi2 when using 60fps mode with the
-analogue audio output. Fix is to switch the game from 8ms to 16ms callback (Menu/Settings/Sound/Audio Callback Interval), which
-cycles 8MS, 16MS and AUTO. AUTO (the default) resolves to 16ms on Pi1/2/3-class boards and 8ms elsewhere.
-.IP \(bu 2
-HDMI audio on Pi boards is handled by the GPU, so is almost free. Analogue audio and USB connected devices are processed on CPU,
-which impacts frame-rate on Pi1 and Pi2 boards and may introduce stutter.
-.IP \(bu 2
-The fkms video driver (which is needed for HDMI audio on Pi 1 boards) causes lower frame rates and stuttering audio. Use kms driver
-and analogue audio instead.
-.RE
-.PP
+If audio stutters, try switching the sound callback interval to 16MS (Menu/Settings/Sound/Audio Callback Interval - AUTO
+already resolves to this on Pi 1/2/3), and prefer HDMI audio, which is handled by the GPU. See \fIdocs/TROUBLESHOOTING.md\fP
+for USB-audio and video-driver specifics.
+
 .SH WATCHDOG SUPPORT
 .PP
-For systems with a hardware watchdog (including all RaspberryPi boards), CannonBall-SE hooks this so that the system will be
+On systems with a hardware watchdog (including all Raspberry Pi boards), CannonBall-SE hooks this so the system is
 automatically rebooted if a hang occurs, for example due to aggressive overclocking.
 
 .SH APPLIANCE MODE
 .PP
-On RaspberryPi OS, \fBinstall.sh\fP can optionally set the machine up as a dedicated arcade appliance: it boots straight into
-CannonBall-SE and powers off when you quit, showing a chosen splash image during both boot and shutdown instead of the normal
-console. The prompt for this is skipped on Ubuntu.
-.PP
-Once enabled, the Pi shows the splash image while it boots, then starts the game automatically on
-.B tty1 .
-Pressing Escape in-game, or EXIT from the menu, powers the Pi off, showing the splash image again during shutdown. If the
-game crashes it is restarted automatically after three seconds; five crashes within five minutes powers the Pi off instead
-of retrying further. If the game exits due to a configuration problem, for example no ROMs found, it is
-.B not
-restarted - a normal login prompt is put back on tty1 so the problem can be fixed.
-.PP
-.B tty2
-through
-.B tty6
-(Ctrl+Alt+F2 and so on) and SSH are unaffected, since only the tty1 login prompt is replaced. The game's console output can
-be read at any time with \fBjournalctl -u cannonball-se\fP, and the service can be stopped and restarted without powering
-off using \fBsudo systemctl stop cannonball-se\fP and \fBsudo systemctl start cannonball-se\fP.
-.PP
-Appliance mode is fully reversible with \fB./install.sh --remove-appliance\fP, which removes the systemd service, the boot
-splash theme, the boot options it added, and any packages installed for it, and restores the normal login prompt on tty1.
+On Raspberry Pi OS, \fBinstall.sh\fP can optionally set the machine up as a dedicated appliance that boots straight into the
+game with a splash screen and powers off when you quit. Other consoles (Ctrl+Alt+F2 and so on) and SSH remain available
+throughout. It is fully reversible with \fB./install.sh --remove-appliance\fP; see \fIdocs/INSTALL.md\fP for details.
 
 .SH SEE ALSO
 Full documentation is in the \fIdocs\fP directory of the distribution:
