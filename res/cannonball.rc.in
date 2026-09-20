@@ -1,0 +1,48 @@
+/***************************************************************************
+    Windows resource script for CannonBall-SE.
+
+    Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
+
+    This file is a template. CMake parses CANNONBALL_SE_VERSION and the fork's
+    copyright line out of src/main/globals.hpp and configures this into the
+    build directory, so the version Explorer reports cannot drift from the one
+    the game prints at startup. Edit globals.hpp, not the generated .rc.
+***************************************************************************/
+
+#include <winver.h>
+
+IDI_ICON1 ICON DISCARDABLE "@CB_ICON_PATH@"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    @CB_VERSION_MAJOR@,@CB_VERSION_MINOR@,@CB_VERSION_PATCH@,0
+ PRODUCTVERSION @CB_VERSION_MAJOR@,@CB_VERSION_MINOR@,@CB_VERSION_PATCH@,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS      VS_FF_DEBUG
+#else
+ FILEFLAGS      0x0L
+#endif
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        /* 0809 = English (United Kingdom), 04B0 = Unicode (1200) */
+        BLOCK "080904B0"
+        BEGIN
+            VALUE "CompanyName",      "James Pearce"
+            VALUE "FileDescription",  "CannonBall-SE - an enhanced build of the SEGA OutRun engine"
+            VALUE "FileVersion",      "@CB_VERSION_STRING@"
+            VALUE "InternalName",     "cannonball-se"
+            VALUE "LegalCopyright",   "@CB_COPYRIGHT@ Based on CannonBall by Chris White."
+            VALUE "OriginalFilename", "cannonball-se.exe"
+            VALUE "ProductName",      "CannonBall-SE"
+            VALUE "ProductVersion",   "@CB_VERSION_STRING@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x809, 1200
+    END
+END

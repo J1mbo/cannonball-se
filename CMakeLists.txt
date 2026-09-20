@@ -242,8 +242,60 @@ set(src_directx
     )
 
 if(WIN32)
+    # Embed version metadata in the .exe so Explorer's Properties > Details
+    # reports it. src/main/globals.hpp is the single source of truth for the
+    # version, so parse it here rather than repeating the number: a hardcoded
+    # copy in the resource script would silently drift from the version the
+    # game prints at startup.
+    file(READ "${main_cpp_base}/globals.hpp" _cb_globals_hpp)
+
+    string(REGEX MATCH "CANNONBALL_SE_VERSION[ \t]+\"([^\"]+)\"" _cb_unused "${_cb_globals_hpp}")
+    if(NOT CMAKE_MATCH_1)
+        message(FATAL_ERROR
+            "Could not parse CANNONBALL_SE_VERSION from globals.hpp. "
+            "res/cannonball.rc.in needs it; fix the parse rather than hardcoding a version.")
+    endif()
+    set(CB_VERSION_STRING "${CMAKE_MATCH_1}")
+
+    # "1.50" -> 1,50,0  and "1.50.2" -> 1,50,2. VERSIONINFO wants numeric fields.
+    string(REPLACE "." ";" _cb_version_parts "${CB_VERSION_STRING}")
+    list(LENGTH _cb_version_parts _cb_version_count)
+    list(GET _cb_version_parts 0 CB_VERSION_MAJOR)
+    if(_cb_version_count GREATER 1)
+        list(GET _cb_version_parts 1 CB_VERSION_MINOR)
+    else()
+        set(CB_VERSION_MINOR 0)
+    endif()
+    if(_cb_version_count GREATER 2)
+        list(GET _cb_version_parts 2 CB_VERSION_PATCH)
+    else()
+        set(CB_VERSION_PATCH 0)
+    endif()
+
+    # Take the copyright from the same header so it cannot drift either. A
+    # missing match is not fatal: fall back rather than break the build.
+    string(REGEX MATCH "(Copyright \\(c\\) [0-9][^.\n]*James Pearce)" _cb_unused "${_cb_globals_hpp}")
+    if(CMAKE_MATCH_1)
+        set(CB_COPYRIGHT "${CMAKE_MATCH_1}.")
+    else()
+        set(CB_COPYRIGHT "Copyright (c) James Pearce.")
+    endif()
+
+    # The generated .rc lives in the build tree, so the icon needs an absolute
+    # path. Forward slashes are fine for rc.exe and avoid escaping problems.
+    set(CB_ICON_PATH "${CMAKE_SOURCE_DIR}/res/cannonball.ico")
+
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/res/cannonball.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/cannonball.rc"
+        @ONLY
+    )
+
+    message(STATUS "CannonBall-SE version ${CB_VERSION_STRING} "
+                   "(resource ${CB_VERSION_MAJOR},${CB_VERSION_MINOR},${CB_VERSION_PATCH},0)")
+
     list(APPEND src_directx
-        "${CMAKE_SOURCE_DIR}/res/cannonball.rc"
+        "${CMAKE_CURRENT_BINARY_DIR}/cannonball.rc"
     )
 endif()
 
