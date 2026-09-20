@@ -138,7 +138,7 @@ Step by step, `install.sh`:
    `config.xml` (it's `0`/off by default) — without the grant, the game would silently fall back
    to normal scheduling for its audio threads.
 9. **Installs build dependencies via apt**:
-   `build-essential git cmake libsdl2-dev libglu1-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev`.
+   `build-essential git cmake libsdl2-dev libglu1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev`.
 10. **Builds the project**: creates `build/` and `roms/`, runs `cmake -S . -B build`, then
     `cmake --build build --parallel <N>` using the thread count from step 4. No `config.xml` is
     created here — the game writes its own on first run (see [First run](#first-run)).
@@ -238,7 +238,7 @@ real-time audio scheduling — the game runs and plays fine without them.
 # Install dependencies (same list install.sh uses)
 sudo apt update
 sudo apt install -y build-essential git cmake libsdl2-dev libglu1-mesa-dev \
-  libmpg123-dev pkg-config alsa-utils libtinyxml2-dev
+  libegl1-mesa-dev libgles2-mesa-dev libmpg123-dev pkg-config alsa-utils libtinyxml2-dev
 
 # Fetch and build
 git clone https://github.com/J1mbo/cannonball-se.git
