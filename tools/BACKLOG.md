@@ -3,7 +3,7 @@
 Open work, indexed. Each item names the document that holds the full reasoning, so this file
 stays a list rather than becoming a second source of truth.
 
-Last reviewed 2026-09-09.
+Last reviewed while gating `3889f79`.
 
 ---
 
@@ -20,7 +20,7 @@ ARMv7 (Cortex-A7). R3 was to add a path for targets with **no** NEON at all — 
 the Pi 1, Pi Zero (W) and the 2014 Pi B+ — by promoting a scalar legacy kernel behind a build
 selector.
 
-Evidence it did not ship, re-verified 2026-09-08:
+Evidence it did not ship, re-verified against the current tree:
 
 - No `SPRITE_KERNEL` option in `CMakeLists.txt` (the file declares 14 `option()` entries; this is
   not among them).
@@ -71,35 +71,34 @@ Tier 1 shipped in `c94f086`. Tier 2 items are conditional and want confirming me
 
 ## Test gates
 
-### Golden frame checksums are stale
+### Golden frame checksums re-baselined — CLOSED
 
-**Status: confirmed stale, needs a decision then a re-baseline.** The four values in
-[`road_tiles/analysis/GOLDEN_CHECKSUMS.md`](road_tiles/analysis/GOLDEN_CHECKSUMS.md) no longer
-match the tree and have not for some time. Established 2026-09-09 while gating `0f1fe9a`: the run
-recipe is still correct (rebuilding `fcf9d05`, the commit that introduced `CB_FRAME_CKSUM`, from a
-pristine `git archive` reproduces all four documented values exactly), so this is real code drift,
-not a broken procedure. The pixels moved at least twice — somewhere in the sprite S0-R2 / Tier 1
-series, all of which were described as bit-exact, and again at `bd06b6e`, which changed
-default-path sprite geometry and where a move was expected.
+**Status: done.** The four values in
+[`road_tiles/analysis/GOLDEN_CHECKSUMS.md`](road_tiles/analysis/GOLDEN_CHECKSUMS.md) had drifted
+from the tree. They have now been re-measured and blessed, and the drift was traced first so the
+new numbers are explained rather than merely current.
 
-Current values at `0f1fe9a` (600 frames, `-perftest -t 1`, offscreen SDL), measured independently
-by three agents in separate build trees:
+What the bisect established:
 
-| mode | hires | widescreen | checksum |
-|---|---|---|---|
-| hires_nw | 1 | 0 | `0x05d98764ff87acd5` |
-| lores_nw | 0 | 0 | `0x6630b4b099cf1157` |
-| hires_wide | 1 | 1 | `0x432cb013834a6d87` |
-| lores_wide | 0 | 1 | `0x20674347e186b8e3` |
+- The recipe was never broken: `fcf9d05` still reproduces all four original values exactly under
+  a current toolchain, so the drift was real code drift.
+- The NTSC filter rework, the road/tile NEON work and both branch merges are **bit-exact**
+  (`32fb472` and `b991a80` both reproduce the original values). The earlier suspicion that the
+  NTSC rework might have contributed was wrong.
+- The first pixel-moving commit is **`f045a26` (Sprite S1: LINEBUF core)**; `ce38d8c` before it
+  is clean. The change was intentional, but shipped described as bit-exact, which it was not.
+- Later intended sprite work moved them again, notably `bd06b6e` and `3889f79`.
 
-Why it needs a decision rather than a straight overwrite: the "bit-exact" claim on the S0-R2 /
-Tier 1 commits is either wrong or the gate was not run on them, and blessing the current numbers
-without knowing which would bake in whatever changed. Worth identifying the commit that moved the
-pixels first. Until then the gate is only usable as a *relative* check between two commits, which
-is how `0f1fe9a` was verified.
+Every move traces to deliberate sprite work, so the current values are now the baseline. The four
+mode config files are also recorded in that document, which closes the second half of this item.
 
-Also unrecorded: the document does not say what the four config files contain, so the recipe has to
-be reconstructed each time. Record them alongside the values.
+Still open, carried from the original entry: the gate covers attract mode only. A gameplay-input
+baseline would be needed to gate player-driven content (dense traffic, road foreground modes that
+attract may not exercise).
+
+Two traps worth knowing before attempting a bisect across this range, both documented in
+`GOLDEN_CHECKSUMS.md`: `CB_MAX_FRAMES` does not exist on the `ntsc-rearch` line, and `dc67ee2`
+never reaches the frame cap and must be run under `timeout`.
 
 ---
 
@@ -131,7 +130,7 @@ Building `ntsc_bench` for a baseline target (`-march=x86-64`) produces different
 Captured frames give `0xe3557fa06310379d` on **both**, so the blitter's integer work is
 bit-portable and the shipped game is unaffected. The cause is FMA contraction in the
 floating-point table generation (`snes_ntsc_init` / `snes_ntsc_impl.h`): building native with
-`-ffp-contract=off` reproduces the baseline value exactly. Reproduced 2026-09-08 on x86-64,
+`-ffp-contract=off` reproduces the baseline value exactly. Reproduced on x86-64,
 GCC 13.3.
 
 Why it is still worth a decision:
