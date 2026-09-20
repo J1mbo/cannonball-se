@@ -6,7 +6,7 @@
  *
  * Part of CannonBall-SE, https://github.com/J1mbo/cannonball-se
  *
- * This file Copyright (c) 2025 James Pearce.
+ * This file Copyright (c) 2025, 2026 James Pearce.
  *
  *
  * Dependencies:

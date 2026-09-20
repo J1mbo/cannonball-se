@@ -15,7 +15,7 @@
     spirit, now scoped to whichever device the rumble subsystem picks as its
     target rather than only the legacy pad_id device.
 
-    Copyright (c) 2026 James Pearce.
+    Copyright (c) 2025, 2026 James Pearce.
     See license.txt for more details.
 ***************************************************************************/
 

@@ -1,5 +1,5 @@
 #pragma once
-// Copyright (c) 2026 James Pearce.  Part of Cannonball-SE.
+// Copyright (c) 2025, 2026 James Pearce.  Part of Cannonball-SE.
 // CRT shadow-mask weight bake. Reproduces, per output pixel, the {0,1} weight
 // w = condA * (1.0 - extraMask) that fastmask() in res/Cannonball-Shader-Fragment*.glsl used to
 // compute per fragment. Design and proof of equivalence: tools/GLSL_SHADER_PERFORMANCE_ANALYSIS.md section 3.

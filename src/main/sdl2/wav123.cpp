@@ -1,5 +1,5 @@
 /*****************************************************************************
-  wav123.h, Copyright (c) 2025 James Pearce
+  wav123.h, Copyright (c) 2025, 2026 James Pearce
 
   Exposes the same interface as mpg123 for the functions used by audio.cpp
   in CannonBall-SE, to enable background loading of .wav files.

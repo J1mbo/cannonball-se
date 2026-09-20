@@ -25,7 +25,7 @@
       priority table so Stage 4c can start driving them with no API
       changes, but nothing calls set_level()/event() for them yet.
 
-    Copyright (c) 2026 James Pearce.
+    Copyright (c) 2025, 2026 James Pearce.
     See license.txt for more details.
 ***************************************************************************/
 

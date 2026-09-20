@@ -1,4 +1,4 @@
-// Copyright (c) 2026 James Pearce.  Part of Cannonball-SE.
+// Copyright (c) 2025, 2026 James Pearce.  Part of Cannonball-SE.
 // Checks shadow_mask::weight()/bake() against a literal fp32 transliteration of fastmask().
 #include "shadow_mask_bake.hpp"
 #include <cmath>

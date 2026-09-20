@@ -19,7 +19,7 @@
     calls it lazily so that switching the rumble backend to FORCE FEEDBACK
     at runtime works even if haptic was off at boot.
 
-    Copyright (c) 2026 James Pearce.
+    Copyright (c) 2025, 2026 James Pearce.
     See license.txt for more details.
 ***************************************************************************/
 

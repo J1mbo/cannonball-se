@@ -28,7 +28,7 @@
     session disable all live in rumble.cpp (write_frame()) - this file only
     renders bytes and reports success/failure honestly.
 
-    Copyright (c) 2026 James Pearce.
+    Copyright (c) 2025, 2026 James Pearce.
     See license.txt for more details.
 ***************************************************************************/
 

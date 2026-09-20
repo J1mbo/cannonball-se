@@ -178,7 +178,7 @@ void Menu::populate()
     menu_about.push_back("CANNONBALL IS FREE AND MAY NOT BE SOLD");
     menu_about.push_back("COPYRIGHT 2012-2024 CHRIS WHITE");
     menu_about.push_back("");
-    menu_about.push_back("SE BUILD COPYRIGHT 2025 JAMES PEARCE");
+    menu_about.push_back("SE COPYRIGHT 2025-2026 JAMES PEARCE");
 
     // Redefine menu text
     text_redefine.push_back("PRESS UP");

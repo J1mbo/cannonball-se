@@ -1,6 +1,6 @@
 /* Portable 128-bit-wide (4 x uint32) SIMD layer for the NTSC filter re-architecture.
 
-Modifications for Cannonball-SE are Copyright (c) 2026 James Pearce.
+Modifications for Cannonball-SE are Copyright (c) 2025, 2026 James Pearce.
 
 Part D of tools/ntsc_bench/analysis/ARCHITECTURE.md (section 7): a small header giving
 snes_ntsc_blit_hires_vec() (see snes_ntsc.cpp) one v4u32 type and a dozen operations on

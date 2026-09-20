@@ -23,7 +23,7 @@
          while a test is already running; the Stage 4b editor's raw HID
          TEST ON/PULSE actions share it too (see hid_test() below).
 
-    Copyright (c) 2026 James Pearce.
+    Copyright (c) 2025, 2026 James Pearce.
     See license.txt for more details.
 ***************************************************************************/
 

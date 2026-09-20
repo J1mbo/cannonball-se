@@ -5,7 +5,7 @@
     Copyright (c) Chris White.
     See license.txt for more details.
 
-    Modifications for CannonBall-SE Copyright (c) 2025, James Pearce
+    Modifications for CannonBall-SE Copyright (c) 2025, 2026 James Pearce
 ***************************************************************************/
 
 #pragma once

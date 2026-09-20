@@ -1,6 +1,6 @@
 /* Based on snes_ntsc 0.2.2. http://www.slack.net/~ant/
 
-Updates for CannonBall-SE are Copyright (c) 2025 James Pearce:
+Updates for CannonBall-SE are Copyright (c) 2025, 2026 James Pearce:
 - S16 emulation at 24-bit output depth
 - threaded initialisation
 Updates Sep-25:  added scalar fall-back for Pi1 and PiZero

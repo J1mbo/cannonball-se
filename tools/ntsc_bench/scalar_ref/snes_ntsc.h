@@ -2,7 +2,7 @@
 
 /* Based on snes_ntsc 0.2.2
 
-Updates for CannonBall-SE are Copyright (c) 2025, James Pearce:
+Updates for CannonBall-SE are Copyright (c) 2025, 2026 James Pearce:
 - to provide S16 emulation at 24-bit output depth.
 */
 

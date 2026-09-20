@@ -2,7 +2,7 @@
 // Minimal OpenGL ES 2.0 backend for CannonBall-SE.
 // Header-only. Uses SDL2 to create the context and <SDL_opengles2.h> for GL.
 // Link with -lSDL2 -lGLESv2 on Linux/Raspberry Pi.
-// Copyright (c) 2025, 2026, James Pearce.
+// Copyright (c) 2025, 2026 James Pearce.
 //
 // Overlay textures are applied as 8-bit (1 byte/pixel) alpha masks.
 // 0xFF = transparent and 0x0 = fully black.

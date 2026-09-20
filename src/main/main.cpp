@@ -1062,7 +1062,7 @@ int main(int argc, char* argv[]) {
 #endif
     std::cout << "CannonBall-SE " << CANNONBALL_SE_VERSION << "\n";
     std::cout << "  An enhanced build of the SEGA Outrun engine by Chris White (https://github.com/djyt/cannonball)\n";
-    std::cout << "  CannonBall-SE is Copyright (c) 2025, James Pearce (https://github.com/J1mbo/cannonball)\n";
+    std::cout << "  CannonBall-SE is Copyright (c) 2025, 2026 James Pearce (https://github.com/J1mbo/cannonball)\n";
     std::cout << std::endl;
 
     // Parse command line arguments (config file location, LayOut data)

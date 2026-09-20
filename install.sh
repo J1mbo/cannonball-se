@@ -59,7 +59,7 @@ fi
 
 # 1. Confirm with user
 echo "Install script for CannonBall-SE, a CannonBall fork by James Pearce"
-echo "Copyright (c) 2025, James Pearce"
+echo "Copyright (c) 2025, 2026 James Pearce"
 echo "Supports Ubuntu 24.04 and RaspberryPi OS (CLI only)"
 echo ""
 read -rp "Do you wish to continue (you will be prompted for sudo)? [y/N] " confirm

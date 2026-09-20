@@ -9,7 +9,7 @@
 
     See tools/INPUT_BINDING_DESIGN.md Deliverable B, B.2.3, B.3.
 
-    Copyright (c) 2026 James Pearce.
+    Copyright (c) 2025, 2026 James Pearce.
     See license.txt for more details.
 ***************************************************************************/
 

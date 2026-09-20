@@ -1,6 +1,6 @@
 /***************************************************************************
     Fixed-width integer types — boost-free replacement.
-    Copyright (c) 2025, James Pearce
+    Copyright (c) 2025, 2026 James Pearce
 
     This header replaces any Boost <cstdint> usage with the standard C++
     <cstdint> header and provides a few convenience aliases that some parts
