@@ -1,12 +1,12 @@
 # The System 16 "glowy edge" quirk: minimal reproduction in a span renderer
 
-Status: 2026-09-04, branch `ntsc-rearch`. Settles the `PIXEL_ACCURACY` question
+Status: branch `ntsc-rearch`. Settles the `PIXEL_ACCURACY` question
 raised in `../README.md` (formerly `PROBLEM_STATEMENT.md` section 11). Reference is the upstream
-`PIXEL_ACCURACY` macro (`scratchpad/upstream/hwsprites.cpp` lines 155-170); the
+`PIXEL_ACCURACY` macro (upstream `djyt/cannonball` `hwsprites.cpp` lines 155-170); the
 shipped fork carries the same macro at `hwsprites.cpp:182-209` but its unguarded
 `#define PIXEL_ACCURACY 0` at line 58 means it has never executed in any build.
 Every equivalence claim below was checked by script
-(`scratchpad/glow_check.py`): 30.2 million single-row cases and 200,000 random
+(a standalone verification script, not checked in): 30.2 million single-row cases and 200,000 random
 two-sprite pairs, zero mismatches where equivalence is claimed, and a concrete
 mismatch wherever it is denied.
 

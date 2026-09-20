@@ -267,7 +267,7 @@ what the `cb_zip1q_u16`/`cb_zip2q_u16`/`cb_zip1_u8` shims above provide for
 
 ## 6. ARMv6 fallback (R3): planned, but not implemented
 
-> Tracked in `tools/BACKLOG.md`. Re-verified 2026-09-08 as still unimplemented: no
+> Tracked in `tools/BACKLOG.md`. Re-verified as still unimplemented: no
 > `SPRITE_KERNEL` CMake option and no `render_legacy` symbol in the tree.
 
 **Status: this plan was never carried out.** No `SPRITE_KERNEL` CMake

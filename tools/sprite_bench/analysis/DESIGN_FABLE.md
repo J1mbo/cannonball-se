@@ -1,7 +1,7 @@
 # Sprite renderer: independent design for Cortex-A7 / Cortex-A53
 
 Scope: `hwsprites::render()` as specified by the upstream reference
-(`scratchpad/upstream/hwsprites.cpp`, cited below by line). Written without
+(upstream `djyt/cannonball` `hwsprites.cpp`, cited below by line). Written without
 reading the existing optimised implementation.
 
 Facts established from the reference before designing (all verified

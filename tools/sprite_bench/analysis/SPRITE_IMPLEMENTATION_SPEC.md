@@ -13,7 +13,7 @@ dependency order (S0.10).
 
 Facts that are fixed and must not be re-derived:
 
-- Target Cortex-A53 AArch64 (Pi Zero 2 W `test mule`, Pi 3 `pi3`, Pi 2 v1.2 `pi2-local`). The tree
+- Target Cortex-A53 AArch64 (Pi Zero 2 W `test mule`, Pi 3, Pi 2 v1.2). The tree
   must also build on x86-64 GCC/Clang/MSVC and ARM without NEON. NEON is guarded by `CB_HAVE_NEON`
   from `hwarch.hpp:66-71` with a scalar fallback; `CB_FORCE_SCALAR` selects the fallback everywhere.
 - Frame buffer: 16-bit palette slots, `pixels` 64-aligned with a 64-halfword front pad and two spare
@@ -180,7 +180,7 @@ if (shadow && n == 0xa)        row[x] |= 0x1000;
 else if (n != 0 && n != 15)  { if (glow && x > x1) row[x-1] &= 0xfff;  row[x] = n | color; }
 ```
 
-This is upstream `scratchpad/upstream/hwsprites.cpp:155-170, 250-330` with the fork's record layout,
+This is upstream `djyt/cannonball` `hwsprites.cpp:155-170, 250-330` with the fork's record layout,
 normalisation and `|=` shadow; `ex[]` is `uint8_t[SPR_EX_LEN = 12288]`: `p < pend + 8*512` (one word
 at `zoom = 1`), and `pend = x2 - xpos <= 808 + 2*(0xbe - 0x80) + 2*0x7ff + 4 = 5026` because
 `xpos >= -(0xbe - 0x80)` after the `0x200` wrap for right-to-left records, `-0xbe` otherwise, less
@@ -599,7 +599,7 @@ the test anyway).
 leftmost pixel), then scatter into `line` by the run table with `vst1q_lane_u16`/`vst1_u16` patterns
 per run-length class, or the `tbl` index-vector form of `DESIGN_FABLE.md` section 4 with the index
 vector generated per sprite from `run[]`. Kill rule: less than 10% on the S4b build, or any
-regression on `pi2-local`.
+regression on the Pi 2 v1.2.
 
 ### S4.3 Must not change
 

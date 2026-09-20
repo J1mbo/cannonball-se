@@ -332,7 +332,7 @@ static bool load_roms(const std::string& roms_dir, std::vector<uint8_t>& road_ro
     }
 
     if (!ok) {
-        // Synthetic fallback (documented above and in the task report): a
+        // Synthetic fallback (documented above): a
         // deterministic PRNG fill of the same size, so init()'s decode/format
         // conversion has real, reproducible bytes to work with.
         std::mt19937 rng(seed ^ 0x524f4d21u); // "ROM!" - distinct stream from the RAM fills
@@ -731,7 +731,7 @@ static int run_unit_s5(const std::string& roms_dir, unsigned seed)
         // buffers, then memcmp) DOES detect a masking bug -- specifically,
         // masking a layer (text) that draws AFTER the road foreground, so
         // nothing later actually overwrites the rows a wrong implementation
-        // would skip. Confirmed by hand (see the task report) to report a
+        // would skip. Confirmed by hand to report a
         // mismatch on every mode; left disabled here so a normal `unit s5`
         // run, which expects 0 failures, doesn't trip over an
         // intentionally-failing check. hwtiles::render_text_layer itself is

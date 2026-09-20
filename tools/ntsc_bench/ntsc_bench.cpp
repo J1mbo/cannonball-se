@@ -1,6 +1,7 @@
 /*****************************************************************************
  * ntsc_bench.cpp - minimal throughput/correctness harness for the Blargg
- *                  SNES NTSC hires blitters. See DESIGN.md in this directory.
+ *                  SNES NTSC hires blitters. See analysis/ARCHITECTURE.md and
+ *                  analysis/ALGORITHM.md in this directory.
  *
  * One binary tests exactly one blitter, selected at compile time so the same
  * source builds unmodified against any revision of snes_ntsc.{cpp,h} - the

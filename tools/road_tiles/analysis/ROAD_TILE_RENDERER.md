@@ -198,7 +198,7 @@ it is bandwidth-bound, so it is left as is.
 
 ## 3. Correctness hazards
 
-### 3.1 The two road passes are complementary by row, not stacked (verbatim from `STRATEGY.md`, maintainer-verified 2026-09-04)
+### 3.1 The two road passes are complementary by row, not stacked (verbatim from `STRATEGY.md`, maintainer-verified)
 
 The names mislead. The two passes are complementary by row, not stacked:
 
@@ -265,7 +265,7 @@ would still look plausible, just wrong on odd rows).
 - `nPaletteOffset` in the tile kernels is a dead parameter — computed via a
   non-trivial `ColourOff`/`TILEMAP_COLOUR_OFFSET` expression at every call site but
   never referenced in any of the four `render8x8_tile_mask*` bodies. Maintainer-
-  resolved 2026-09-04: no known colour/palette problems in the shipped game, so this
+  resolved: no known colour/palette problems in the shipped game, so this
   is vestigial code safe to delete for clarity, not a defect to chase.
 
 ---
@@ -304,7 +304,7 @@ this specific core, for this specific workload, is that the A53 already streams 
 lines on a plain store with no read penalty to remove; the measured floor is set by
 line-fill latency and issue width, not by a removable read. Do not re-attempt `DC
 ZVA` for the road background or foreground fills without a fresh microbenchmark on
-the target hardware — the 2026-09-04 result above is the reason it is absent from
+the target hardware — the result above is the reason it is absent from
 the shipped code, not an oversight.
 
 ---

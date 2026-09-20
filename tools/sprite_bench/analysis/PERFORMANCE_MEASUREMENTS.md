@@ -24,9 +24,9 @@ cheaper per-nibble fill (R1b) turned it into a net win, confirmed in-game (campa
 
 ---
 
-## Campaign 1: sprite kernel store-strategy bench + first in-situ frame split (2026-09-04)
+## Campaign 1: sprite kernel store-strategy bench + first in-situ frame split
 
-**Machine/method:** Raspberry Pi 3 Model A+ (`pi3mule`), BCM2837, 4x Cortex-A53 at
+**Machine/method:** Raspberry Pi 3 Model A+, BCM2837, 4x Cortex-A53 at
 1.4 GHz nominal, GCC 14.2, `-O3 -mcpu=cortex-a53`, `taskset -c 3`, governor
 `performance`; counters read directly via `perf_event_open` (cycles, instructions,
 L1D/L2D refill, branch mispredicts, A53 store-stall), fastest of 11 reps. Workload: 26
@@ -98,7 +98,7 @@ than 1400MHz during actual gameplay, so all wall-clock figures taken under load 
 whole-game frame rates) on this board are unreliable by roughly 2x. The idle-bench
 cycle counts themselves are frequency-independent and are not affected. All later
 in-game measurements in this document were retaken on properly-powered boards
-(`test mule`, `pi2-local`) for exactly this reason.
+(`test mule`, the Pi 2 v1.2) for exactly this reason.
 
 ### Part B: in-situ measurement under real concurrent load (same date, `test mule`)
 
@@ -155,7 +155,7 @@ road/tiles optimisation effort recorded in `ROAD_TILE_RENDERER.md`.
 
 ---
 
-## Campaign 2: prepare-thread phase profile (2026-09-04, `test mule`)
+## Campaign 2: prepare-thread phase profile (`test mule`)
 
 **Machine/method:** `test mule`, Pi Zero 2 W, 4x Cortex-A53 @ 1.0GHz, governor
 `performance`, `throttled=0x0` before/after every run. Hi-res 640x448, widescreen off,
@@ -226,7 +226,7 @@ built from it.
 
 ---
 
-## Campaign 3: pre-rewrite memory-behaviour study, M-A/M-B/M-C (2026-09-05, `test mule`)
+## Campaign 3: pre-rewrite memory-behaviour study, M-A/M-B/M-C (`test mule`)
 
 **Machine/method:** `test mule`, Pi Zero 2 W, 4x Cortex-A53 @ 1.0GHz, governor
 `performance`, `throttled=0x0` verified before every run. Hi-res, widescreen off,
@@ -317,7 +317,7 @@ these windows (0% elsewhere), confirming real load rather than noise.
 
 ---
 
-## Campaign 4: S1 (LINEBUF) in-situ regression (2026-09-05, `test mule`)
+## Campaign 4: S1 (LINEBUF) in-situ regression (`test mule`)
 
 **Machine/method:** `test mule`, Pi Zero 2 W, 4x Cortex-A53 @ 1.0GHz, governor
 `performance`, `throttled=0x0` verified before/after every run. Clean `git archive`
@@ -357,9 +357,9 @@ scenes get busier (the regime that matters most for frame budget).
 
 ---
 
-## Campaign 5: S4 (NEON) in-situ — does vectorising the copy fix it? (2026-09-05, `pi2-local`)
+## Campaign 5: S4 (NEON) in-situ — does vectorising the copy fix it? (Pi 2 v1.2)
 
-**Machine/method:** `pi2-local`, Raspberry Pi 2 Rev 1.2 (BCM2837, 4x Cortex-A53,
+**Machine/method:** Raspberry Pi 2 Rev 1.2 (BCM2837, 4x Cortex-A53,
 aarch64, NEON active), ARM clock fixed 900MHz, governor `performance`,
 `throttled=0x0` before/after every run, peak 66.1°C (chosen specifically to test
 whether campaign 4's regression was a thermal artifact of the heatsink-less
@@ -387,7 +387,7 @@ Load-resolved (terciles by shipped per-frame sprite cost):
 | ALL | 30 | 1,853,626 | 1.326 | 1.231 | 1.205 |
 
 **Verdict A — thermal test: the S1 regression is real, not a thermal artifact.**
-S1/shipped is 1.29-1.39x on `pi2-local` at 64-66°C with `throttled=0x0` throughout,
+S1/shipped is 1.29-1.39x on the Pi 2 v1.2 at 64-66°C with `throttled=0x0` throughout,
 reproducing (slightly exceeding) the `test mule` finding — not caused by a missing
 heatsink; inherent to the LINEBUF rewrite.
 
@@ -407,7 +407,7 @@ is not robust across A53 SKUs.)
 
 ---
 
-## Campaign 6: R0 attribution — where the S4 deficit actually goes (2026-09-05, `test mule`)
+## Campaign 6: R0 attribution — where the S4 deficit actually goes (`test mule`)
 
 **Machine/method:** `test mule`, Pi Zero 2 W, 4x Cortex-A53, governor `performance`
 verified pinned immediately before the run set (all four cores fixed at 1,000,000kHz).
@@ -510,9 +510,9 @@ right next move rather than more vectorisation.
 
 ---
 
-## Campaign 7: R1 in-situ validation — did de-glue fix it? (2026-09-06, `pi2-local`)
+## Campaign 7: R1 in-situ validation — did de-glue fix it? (Pi 2 v1.2)
 
-**Machine/method:** `pi2-local`, Pi 2 Rev 1.2, A53 aarch64, 900MHz fixed, governor
+**Machine/method:** Pi 2 Rev 1.2, A53 aarch64, 900MHz fixed, governor
 `performance`, `throttled=0x0` before/after every run, peak 61.8°C. Same box, method
 and 9000-frame deterministic-attract protocol as campaign 5, so directly comparable to
 the S4 baseline measured there. Three clean `git archive` trees, `-j2`, CMake Release

@@ -1,6 +1,6 @@
 # Per-frame memory-work inventory (bus-contention reduction)
 
-Date 2026-09-06. Consolidated from three read-only Sonnet sweeps (hwvideo +
+Consolidated from three read-only Sonnet sweeps (hwvideo +
 video.cpp; sdl2/NTSC/GL; engine + main.cpp). Goal: cut the ~3 MB/frame the CPU
 render pipeline pushes through the shared L2 on the Pi 2 (A7), to free 60fps
 headroom and reduce the memory-bus contention that starves the audio thread.

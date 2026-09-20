@@ -64,7 +64,7 @@ at commit `180c093` and confirmed byte-identical on x86-64 and 32-bit ARMv7 (Cor
 Deliberate changes to engine output re-baseline them - `0xe3557fa06310379d` was the value before
 `7100ec0` restored exact ROM sprite sizes.
 
-Two caveats on this table, both verified 2026-09-08:
+Two caveats on this table, both verified against the working tree of that era:
 
 - **The synthetic-pattern rows are specific to an FMA-capable build.** They were produced
   with `-march=native`. A baseline build (`-march=x86-64`), or `-ffp-contract=off` on a
@@ -298,10 +298,10 @@ modes, always present (0/off by default, like `hugepages`):
 ## Reference checksums (640x448, table built like the game: composite preset, merge_fields = 0)
 
 The bench clears `merge_fields` exactly as `RenderSurface::init_blargg_filter()` does.
-Earlier runs (before 2026-09-02 evening) used the raw preset, whose literal has
+Earlier runs (before the bench adopted the composite preset) used the raw preset, whose literal has
 `merge_fields = 1`, so their checksums differ from the ones below. Timings are unaffected.
 
-**This table is a historical record of the Stage 3/4 rework (2026-09-03) and is not
+**This table is a historical record of the Stage 3/4 rework and is not
 reproducible at HEAD.** "working tree" means the tree as it stood then, and its captured-frame
 column is the pre-`7100ec0` corpus (`0xe3557fa06310379d`); today's corpus checksums
 `0xe12371d9049c3d61`. The table is kept because it is the evidence for the `ROTATE_OUT_SSE4`

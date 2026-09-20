@@ -816,7 +816,7 @@ void OSprites::do_sprite(oentry* input)
     // take it with opposite signs -- x2 is not x1 + calc_width. Measured against
     // the default path over every table x zoom cell, the right-hand term is out
     // by up to 40 hi-res px if the offset is added twice (as it was before
-    // 0f1fe9a) and by up to 16 if it is modelled as a translation; with the
+    // 3889f79) and by up to 16 if it is modelled as a translation; with the
     // signs as below the two agree to within 1 px on all 39,680 cells.
     // Rounded away from zero by division rather than a shift, so the negative
     // case does not lean on >> semantics, and because away-from-zero is the

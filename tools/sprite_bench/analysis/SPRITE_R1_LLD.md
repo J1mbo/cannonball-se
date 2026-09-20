@@ -1,6 +1,6 @@
 # R1 low-level design: de-glue (R1a) and specialise (R1b) the LINEBUF sprite renderer
 
-Status: 2026-09-05, branch `sprite-rework`. Design deliverable only; no renderer code changed.
+Status: branch `sprite-rework`. Design deliverable only; no renderer code changed.
 Implements section 3 of `SPRITE_REPLAN_FABLE.md` against the findings of
 `PERFORMANCE_MEASUREMENTS.md` campaign 6, in the vocabulary of `SPRITE_IMPLEMENTATION_SPEC.md`.
 Line numbers refer to `src/main/hwvideo/hwsprites.cpp` (1711 lines) and `hwsprites.hpp` (373 lines)
@@ -625,7 +625,7 @@ void hwsprites::draw_sprite_fast(const SpriteRec& r, uint16_t* pixels, int32_t p
 
 Harness (sec. 7.1) green on both driver targets, WSL x86-64 and an ARM box; S0.8 (sec. 7.2);
 codegen checks of 3.1-3.6 (sec. 7.3); in-situ (sec. 7.4) **<= 1.00x shipped in every band** on
-`pi2-local`, `test mule` as cross-check. If R1a lands above parity, do not re-plan: R1b's fill
+Pi 2 v1.2, `test mule` as cross-check. If R1a lands above parity, do not re-plan: R1b's fill
 change is the next lever and its gate is the binding one.
 
 ---
@@ -809,7 +809,7 @@ HEAD `ld1`/`st1` pair pattern.
 ### 4.4 D vs D'
 
 **Compiled default: D (`replay_mode = 0`).** Measured: D won on `test mule`, D' edged D by 2.1% on
-`pi2-local` (`PERFORMANCE_MEASUREMENTS.md` campaign 5, 1.231 vs 1.205 overall) -- inside SKU variance, and both
+the Pi 2 v1.2 (`PERFORMANCE_MEASUREMENTS.md` campaign 5, 1.231 vs 1.205 overall) -- inside SKU variance, and both
 measurements were taken with the `n < 8` path calling `memcpy` per row, which is where D' had
 its edge (its scalar path had no libc call). The R1b ladder removes that asymmetry for `n < 8`
 (the two modes are the same code there), leaving the `n >= 8` NEON loops as the only
@@ -1123,8 +1123,8 @@ subject to these checks.
 
 ### 7.4 In-situ (the campaign 5 / campaign 6 procedure of `PERFORMANCE_MEASUREMENTS.md`)
 
-Deciding box `pi2-local` (Pi 2 v1.2, A53, 900 MHz fixed, heatsinked); cross-check `test mule`
-(Zero 2 W, 1 GHz, `-j1` builds, stop `autostream autostream_monitor owntone vibra-mini` first).
+Deciding box: Pi 2 v1.2 (A53, 900 MHz fixed, heatsinked); cross-check `test mule`
+(Zero 2 W, 1 GHz, `-j1` builds, stop any background services that compete for CPU first).
 
 1. `echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`; log
    `scaling_governor` and `scaling_cur_freq` immediately before the run set **and at the start of

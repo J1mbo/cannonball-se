@@ -5,7 +5,7 @@
 // hwsprites.cpp/.hpp reference exactly config.s16_width, config.s16_x_off,
 // config.s16_height, config.video.hires and config.video.hiresprites
 // (verified by grep -n "config\\." over both files before writing this
-// stub -- see the S0 task report). This directory is placed FIRST on the
+// stub -- see the S0 harness notes). This directory is placed FIRST on the
 // include path by tools/sprite_bench/test/CMakeLists.txt, so this header
 // shadows the real one and the sprite_test driver never needs SDL2/
 // TinyXML2. If a later stage adds another config member to either file,

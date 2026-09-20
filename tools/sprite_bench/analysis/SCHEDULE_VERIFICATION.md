@@ -2,12 +2,11 @@
 
 This is a brute-force check of whether the OutRun/X-Board hardware sprite
 scaler's two accumulator loops (`hwsprites::render()`, upstream MAME-derived
-source) can be replaced by closed-form index functions. The program that
-performs the check lives at
-`C:/Users/pearc/AppData/Local/Temp/claude/c--VS-Code-Work-cannonball-se/7bc9e1e7-00cf-4bb5-a117-22274489fbf2/scratchpad/verify_schedule.cpp`
-(build: `g++ -O2 -std=c++17 -o verify_schedule verify_schedule.cpp`; run
-against `src/main/engine/data/ozoom_lookup.hpp`); raw output is saved
-alongside it as `verify_output.txt`.
+source) can be replaced by closed-form index functions. The check is performed
+by a standalone verifier (`verify_schedule.cpp`, not checked in; build with
+`g++ -O2 -std=c++17 -o verify_schedule verify_schedule.cpp` and run it against
+`src/main/engine/data/ozoom_lookup.hpp`). The results it produced are recorded
+in full below, so the program is not needed to read this document.
 
 No file under `src/` was modified. The two loops modeled are:
 

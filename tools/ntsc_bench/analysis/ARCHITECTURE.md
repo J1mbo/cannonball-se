@@ -1,8 +1,10 @@
 # Proposed re-architecture of the hires NTSC filter
 
-Status: proposal, nothing implemented. Date: 2026-09-03.
-Inputs: ALGORITHM.md, ../../GRAPHICS_SETUP.md, the (since-retired) idea-shortlist and review notes,
-the test mule measurements in README.md, and the captured frames in `frames/`.
+Status: proposal, nothing implemented. Written on branch `ntsc-rearch`, before
+any of the staged work below was committed.
+Inputs: ALGORITHM.md, ../../GRAPHICS_SETUP.md, the design discussion and review
+that preceded this document (not preserved), the test mule measurements in
+README.md, and the captured frames in `frames/`.
 
 ## 1. Design goals
 
@@ -21,7 +23,7 @@ the test mule measurements in README.md, and the captured frames in `frames/`.
 | Even/odd pixels of a pair use the same 14-word block, odd delayed by one output | ALGORITHM.md 6.3 | a precomputed pair kernel handles an identical pair with one load |
 | Flat colour gives a constant output for every position and every phase | ALGORITHM.md 3.6 | steady-state runs are a single precomputed RGBA per slot |
 | Wrap-around 32-bit adds, no saturating arithmetic | ALGORITHM.md 6.5 | partial sums can be precomputed and stay exact |
-| Scalar cost at 256 colours: 33 issue + 16 micro-TLB + 16 L2 cycles per output | README sweep, REVIEW addendum | need a cheaper kernel and page compaction and line reuse |
+| Scalar cost at 256 colours: 33 issue + 16 micro-TLB + 16 L2 cycles per output | README sweep, Stage 3 review notes | need a cheaper kernel and page compaction and line reuse |
 | No transparent huge pages on the target | README | page compaction must be done by the table layout |
 | The emulator's frame buffer already holds slot indices 0..8191 | ../../GRAPHICS_SETUP.md 6(a) | index the kernel table by slot; delete the per-frame colour conversion |
 | Palette writes go through `convert_palette()` for exactly two rows each | ../../GRAPHICS_SETUP.md 6(b) | regenerate kernels per slot on palette write |
@@ -649,7 +651,7 @@ is worth recording because it looks alarming and is not a bug in the filter.
 
 ### 17.1 Floating-point contraction changes the synthetic-pattern checksums
 
-Reproduced 2026-09-08 on x86-64 (GCC 13.3, current working tree, `snes_ntsc_blit_hires_vec`):
+Reproduced on x86-64 (GCC 13.3, current working tree, `snes_ntsc_blit_hires_vec`):
 
 | Build | random/256 | mixed/256 | runs/256 | captured frames |
 |---|---|---|---|---|

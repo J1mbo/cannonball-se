@@ -35,7 +35,7 @@
                  (SPRITE_IMPLEMENTATION_SPEC.md S0.7). Reports "no frames
                  found" and exits 0 if --frames names an empty/missing/
                  non-matching directory (no capture was made available to
-                 this run) -- see the task report for how to produce one.
+                 this run) -- see the S0 harness notes for how to produce one.
 
       unit [s1a|s1b|s1c|s2a|s2b|s2c|s3|s4a|s4b] - S1.4's schedule/nibrev/
                  record-partition proofs against the LINEBUF core
@@ -855,7 +855,7 @@ static bool f1_row_matches(const SpriteTestAccess::SpriteRec& rec, int y)
 // x1==0 that does not affect the ordinary case. The row/column pairing
 // below follows the spec text verbatim; SPRITE_IMPLEMENTATION_SPEC.md's own
 // derivation was not independently re-derivable from flat-index arithmetic
-// during this implementation (flagged in the task report as a low-
+// during this implementation (flagged during review as a low-
 // confidence area -- unexercised by any of this task's required
 // verification, since it needs a real capture of a sprite actively
 // crossing a screen edge).
@@ -1362,11 +1362,11 @@ static bool run_unit_s1c(unsigned seed)
 //
 // s2a ports DESIGN_GLOW.md's Test 1 (the single-row rule, output-pixel
 // space) against draw_sprite_fast(glow=true): the boundary cases named in
-// the task report (clip-edge run at lo==cx0 and lo==cx0+1, the rtl
+// review (clip-edge run at lo==cx0 and lo==cx0+1, the rtl
 // shadow-before-colour boundary, a colour run of length 1, adjacent colour
 // runs), plus an exhaustive per-pixel type sweep over a short row, both
 // directions, and a systematic x1 sweep across every possible clip-edge
-// alignment within the row (see the task report for why this replaces
+// alignment within the row (see below for why this replaces
 // DESIGN_GLOW.md's three fixed windows). s2b is the source-space companion
 // (DESIGN_GLOW.md 5.2): random real nibble rows across the shipping zoom
 // bands, both flip values, both directions, single-row sprites, both glow
