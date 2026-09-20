@@ -5,7 +5,7 @@
 
 #include "stdint.hpp"
 
-#define CANNONBALL_SE_VERSION "1.42"
+#define CANNONBALL_SE_VERSION "1.50"
 
 // ------------------------------------------------------------------------------------------------
 // Compiler Settings

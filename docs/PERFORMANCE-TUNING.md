@@ -38,7 +38,7 @@ GPU work scales with output pixels, so 1920x1080 is roughly 1.6x the shader cost
 On any multi-core Pi, fit a CPU heatsink. A board that thermally throttles will miss frames
 regardless of settings. Sufficient power is also a problem - USB chargers are generally not sufficient to sustain overclocked boards and the official Raspberry Pi PSUs should be used instead.
 
-> These figures are reported from the maintainer's own boards. Version 1.42 cut GPU shader
+> These figures are reported from the maintainer's own boards. Version 1.50 cut GPU shader
 > cost by 13–18% (see section 5) and the CPU cost of the game engine and NTSC filter. Use
 > `-perftest` on your own hardware rather than treating the table as a promise.
 
@@ -124,7 +124,7 @@ gpu_freq=400
 gpu_freq=450
 ```
 
-**Pi 2 v1.1 — full shader at 60fps (v1.42 and later):**
+**Pi 2 v1.1 — full shader at 60fps (v1.50 and later):**
 
 ```ini
 arm_freq=1000
@@ -147,7 +147,7 @@ settings.
 | `video.hiresprites` | 0, 1 | CPU | Moderate, sprite renderer only. No effect unless `hires` is 1. |
 | `video.blargg` | 0-3 | CPU | Moderate. Auto-disabled on single-core boards. |
 | `video.shader_mode` | 0, 1, 2 | GPU | High. Measured on a Pi 2 at 1280x1024: full 9.03ms/frame, fast 7.23ms/frame. |
-| `video.shadow_mask` | 0, 1, 2 | GPU | Low since 1.42 — the pattern is now baked into a texture at startup rather than computed per pixel. |
+| `video.shadow_mask` | 0, 1, 2 | GPU | Low since 1.50 — the pattern is now baked into a texture at startup rather than computed per pixel. |
 | `video.noise` | 0–20 | GPU | ~1.4ms/frame on a Pi 2 at 1280x1024 when enabled. |
 | `video.crt_shape` | 0, 1 | GPU | ~1.5ms/frame on a Pi 2, combining the warp maths and the overlay fetch. |
 | `video.mask_size` | 3–6 | none | Visual only; changing it re-bakes the mask texture once. |
@@ -177,7 +177,7 @@ Measured per-effect cost on a Pi 2 (VideoCore IV at 500MHz, 1280x1024):
 
 | Effect | Cost per frame |
 |---|---|
-| Shadow mask, before the 1.42 bake | 2.54ms |
+| Shadow mask, before the 1.50 bake | 2.54ms |
 | Analogue noise | 1.36ms |
 | Desaturation and vignette | 0.86ms |
 | Screen warp | 0.83ms |
@@ -189,7 +189,7 @@ it is writing the finished image to memory, which is limited by the shared memor
 shader setting can reduce that floor.** It is why turning effects off gives diminishing
 returns.
 
-Version 1.42 bakes the shadow-mask pattern into a texture at startup instead of computing it
+Version 1.50 bakes the shadow-mask pattern into a texture at startup instead of computing it
 per pixel, cutting 1.97ms from the full shader (−17.9%) and 1.06ms from the fast shader
 (−12.8%) with bit-identical output.
 

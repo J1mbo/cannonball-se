@@ -99,7 +99,7 @@ controls, wheel setup and adding your own music.
 | [Configuration](docs/CONFIGURATION.md) | Every setting explained |
 | [Screen filters](docs/SCREEN-FILTERS.md) | How the arcade-monitor look works |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Sound, controllers, video |
-| [Changelog](CHANGELOG) | What's new in each release |
+| [Changelog](CHANGELOG.md) | What's new in each release |
 
 ## Built a cabinet with it?
 
