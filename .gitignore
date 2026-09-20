@@ -23,6 +23,7 @@ dist-win/
 # Working research, designs and measurements (local only)
 # ---------------------------------------------------------------------------
 working-docs/
+docs/working/
 
 # ---------------------------------------------------------------------------
 # tools/ntsc_bench
