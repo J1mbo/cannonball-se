@@ -272,6 +272,7 @@ struct engine_settings_t
     bool fix_bugs;
     bool fix_bugs_backup;
     bool fix_timer;
+    bool fix_traffic;       // Reset a spawned car's near-speed. Off = original arcade behaviour.
     bool layout_debug;
     bool hiscore_delete;  // Allow deletion of last entry in score table
     int hiscore_timer;    // Override default timer on high-score entry screen

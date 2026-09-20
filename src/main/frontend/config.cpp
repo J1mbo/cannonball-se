@@ -591,6 +591,7 @@ void Config::load()
     engine.fix_bugs_backup = 
     engine.fix_bugs        = cfg.get_int("engine.fix_bugs",      1) != 0;
     engine.fix_timer       = cfg.get_int("engine.fix_timer",     0) != 0;
+    engine.fix_traffic     = cfg.get_int("engine.fix_traffic",   0) != 0;
     engine.layout_debug    = cfg.get_int("engine.layout_debug",  0) != 0;
     engine.hiscore_delete  = cfg.get_int("scores.delete_last_entry", 1);
     engine.hiscore_timer   = cfg.get_int("scores.hiscore_timer", 0);
@@ -830,6 +831,7 @@ bool Config::save()
     cfg.put_int("engine.levelobjects",    engine.level_objects);
     cfg.put_int("engine.fix_bugs",        (int) engine.fix_bugs);
     cfg.put_int("engine.fix_timer",       (int) engine.fix_timer);
+    cfg.put_int("engine.fix_traffic",     (int) engine.fix_traffic);
     cfg.put_int("engine.new_attract",     engine.new_attract);
     cfg.put_int("engine.offroad",         (int) engine.offroad);
     cfg.put_int("engine.grippy_tyres",    (int) engine.grippy_tyres);

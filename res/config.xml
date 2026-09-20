@@ -317,6 +317,11 @@
 	<!-- Tile on music select screen, ms value at checkpoint etc. -->
 	<fix_bugs>1</fix_bugs>
 	<fix_timer>1</fix_timer>
+	<!-- Fix the unpredictable brake-check: a newly spawned traffic car could
+	     inherit a stale "car ahead" speed from the previous use of its sprite
+	     slot, and so slow sharply when the player pulled alongside it with
+	     nothing actually in front. 0 = original arcade behaviour. -->
+	<fix_traffic>0</fix_traffic>
 	<new_attract>0</new_attract>
 	<freeplay>1</freeplay>
 	<offroad>0</offroad>

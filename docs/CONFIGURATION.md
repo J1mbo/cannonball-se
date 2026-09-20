@@ -264,6 +264,7 @@ bug-fixes, and handling tweaks.
 | `engine.randomgen` | `1` | `0`, `1` | Use the original random-number-generator seed to match the original game's setup (affects initial traffic patterns in attract mode, for example). Disable for a truly random setup. |
 | `engine.fix_bugs` | `1` | `0`, `1` | Fix minor bugs present in the original engine (e.g. a tile glitch on the music-select screen, checkpoint millisecond value). |
 | `engine.fix_timer` | `0` | `0`, `1` | Purpose not fully documented beyond its name; grouped with `fix_bugs` as an engine timer-related fix. The shipped `res/config.xml` ships with `1`, overriding the compiled-in default of `0`. |
+| `engine.fix_traffic` | `0` | `0`, `1` | Reset a newly spawned traffic car's "car ahead" speed so it cannot brake sharply on stale data when only the player is alongside it. `0` keeps the original arcade behaviour. |
 | `engine.layout_debug` | `0` | `0`, `1` | Purpose not documented in code beyond its name (debug aid for level layout). Not present in the shipped `res/config.xml`. |
 | `engine.new_attract` | `1` | `0`, `1` | Use the "new" attract-mode behaviour. The shipped `res/config.xml` ships with `0`, overriding the compiled-in default of `1`. |
 | `engine.offroad` | `0` | `0`, `1` | Handling: allow driving off-road. |

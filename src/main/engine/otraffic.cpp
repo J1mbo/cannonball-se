@@ -122,6 +122,10 @@ void OTraffic::tick()
                 continue;
             }
             sprite->traffic_orig_speed = 0xD4;
+            // JJP - the stage 1 pre-placed cars never pass through spawn_car(),
+            // so apply the same stale near-speed fix here. See spawn_car().
+            if (config.engine.fix_traffic)
+                sprite->traffic_near_speed = sprite->traffic_orig_speed;
             sprite->function_holder = TRAFFIC_ENTRY;
         }
 
@@ -242,6 +246,17 @@ void OTraffic::spawn_car(oentry* sprite)
     // hack////////////////////////////////////////////////////////////////////////////
 
     sprite->traffic_speed = traffic_speed_avg;
+
+    // JJP - stale near-speed fix. traffic_near_speed is only ever written by
+    // traffic_logic() when a car is detected ahead in the same lane, so a
+    // recycled sprite slot carries the previous occupant's value (0 at start of
+    // play). move_spawned_sprite() reads it in the "hemmed in on both sides"
+    // branch, which the player alone can trigger against an outer-lane car via
+    // the Rev A road-edge bit - so a car with nothing ahead of it could brake to
+    // 0x70 on stale data. Start it at the car's own cruise speed instead.
+    // Off = original behaviour (field left as the slot happened to hold it).
+    if (config.engine.fix_traffic)
+        sprite->traffic_near_speed = sprite->traffic_orig_speed;
 
     // Randomize Type of traffic to spawn
     uint8_t spawn_index = (rnd >> 2) + 0x20;
