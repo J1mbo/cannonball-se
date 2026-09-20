@@ -60,8 +60,8 @@ direction handled in Configure Inputs above — one is for force-feedback direct
 the input axis itself. For wheels without SDL rumble, the game can drive rumble through
 `/dev/hidraw` — `install.sh` sets up the permissions for this.
 
-If some buttons are not recognised, the device needs a mapping entry in `res/gamecontrollerdb.txt`.
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+If some buttons or axes are not recognised, bind them yourself in
+*Menu → Settings → Controls → Configure Inputs*. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Sound
 

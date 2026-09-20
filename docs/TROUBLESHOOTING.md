@@ -76,9 +76,9 @@ works.
 
 ### Some buttons or controls on my wheel are not recognised
 
-Some steering wheels expose more buttons or axes than SDL maps by default. The device needs a
-mapping entry in `res/gamecontrollerdb.txt`. Entries for many devices are already present; if
-yours is missing you can add one (the SDL community maintains this database upstream).
+Bind them directly in *Menu → Settings → Controls → Configure Inputs*. The editor captures
+whatever button or axis you press or move, so any wheel, pedal set or gamepad can be mapped
+without an external device database.
 
 ### The wrong controller is being used
 

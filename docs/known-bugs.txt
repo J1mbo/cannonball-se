@@ -1,10 +1,13 @@
-As of September 2026:
+Known issues:
 
-- Audio may not play after system restart. This is caused by the SDL device ordering
-  changing on some systems at each boot. Future revision may include the option to select
-  audio device by name to resolve this.
-  
-- Some steering wheels expose more buttons or controls than SDL can use, and in these cases
-  some buttons or controls may not be recognised. A mapping entry is required in
-  res/gamecontrollerdb.txt for affected devices.
+- No known issues at this time.
 
+Previously listed, now resolved:
+
+- Audio not playing after a restart because SDL's device order changed between boots.
+  The output device can now be selected by name (in-game SOUND menu, or
+  sound.playback_device_name in config.xml), which survives reordering.
+
+- Some steering-wheel buttons or controls not recognised. All controls can now be bound
+  directly from the in-game Configure Inputs editor, which captures whatever you press or
+  move, so no external device-mapping database is needed.

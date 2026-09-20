@@ -1126,10 +1126,6 @@ int main(int argc, char* argv[]) {
     // Load machine stats e.g. playcount and runtime (defaults to 0 each if file not present)
     config.load_stats();
 
-    // Load gamecontrollerdb.txt mappings
-    if (SDL_GameControllerAddMappingsFromFile((config.data.res_path + "gamecontrollerdb.txt").c_str()) == -1)
-        std::cout << "Warning: Unable to load game controller mapping file." << std::endl;
-
     // Initialize timer and video systems
     // On Linux with RPi4 in desktop environment, x11 is default but will cap full-screen to 30fps with vsync enabled.
     // Wayland allows 60fps full-screen.
