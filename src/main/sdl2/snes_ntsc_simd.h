@@ -52,7 +52,7 @@ x86-64 host regardless of -march. */
         #define SNES_NTSC_SIMD_HAVE_SSE2 1
     #endif
 #elif defined(__riscv) && defined(__riscv_v)
-    #include <riscv_vector.h>
+    #include <string.h> /* memcpy: RVV backend loads/stores */
     #define SNES_NTSC_SIMD_HAVE_RVV 1
 #endif
 
@@ -108,24 +108,26 @@ template<int N> static inline v4u32 snes_v4_shl_imm(v4u32 v)   { return _mm_slli
 #elif defined(SNES_NTSC_SIMD_HAVE_RVV)
 
 #define SNES_NTSC_SIMD_BACKEND_NAME "RVV"
-typedef vuint32m1_t v4u32;
+/* Not vuint32m1_t: RVV intrinsic types are sizeless, so they cannot be array elements
+   or struct members, and snes_ntsc_blit_hires_vec() keeps an accumulator array
+   (v4u32 A[10]). A fixed 16-byte GCC/Clang vector is a normal sized type; with the V
+   extension enabled the compiler lowers it to fixed-length RVV code (vle32/vadd/vsrl/
+   vse32 with vl=4). It needs VLEN >= 128, which V itself guarantees (Zvl128b). */
+typedef uint32_t v4u32 __attribute__((vector_size(16)));
 
-static inline v4u32 snes_v4_zero(void)                        { return __riscv_vmv_v_x_u32m1(0, 4); }
-static inline v4u32 snes_v4_splat(uint32_t x)                  { return __riscv_vmv_v_x_u32m1(x, 4); }
-static inline v4u32 snes_v4_load_u(const uint32_t* p)           { return __riscv_vle32_v_u32m1(p, 4); }
-static inline v4u32 snes_v4_load_a(const uint32_t* p)           { return __riscv_vle32_v_u32m1(p, 4); }
-static inline void  snes_v4_store_a(uint32_t* p, v4u32 v)       { __riscv_vse32_v_u32m1(p, v, 4); }
-static inline void  snes_v4_store_u(uint32_t* p, v4u32 v)       { __riscv_vse32_v_u32m1(p, v, 4); } /* RVV has no separate unaligned store */
-static inline v4u32 snes_v4_add(v4u32 a, v4u32 b)               { return __riscv_vadd_vv_u32m1(a, b, 4); }
-static inline v4u32 snes_v4_sub(v4u32 a, v4u32 b)               { return __riscv_vsub_vv_u32m1(a, b, 4); }
-static inline v4u32 snes_v4_and(v4u32 a, v4u32 b)               { return __riscv_vand_vv_u32m1(a, b, 4); }
-static inline v4u32 snes_v4_or(v4u32 a, v4u32 b)                { return __riscv_vor_vv_u32m1(a, b, 4); }
-static inline v4u32 snes_v4_andnot(v4u32 a, v4u32 b) /* (~a) & b */ {
-    v4u32 not_a = __riscv_vxor_vx_u32m1(a, 0xFFFFFFFFu, 4);
-    return __riscv_vand_vv_u32m1(not_a, b, 4);
-}
-template<int N> static inline v4u32 snes_v4_shr_imm(v4u32 v)   { return __riscv_vsrl_vx_u32m1(v, (size_t)N, 4); }
-template<int N> static inline v4u32 snes_v4_shl_imm(v4u32 v)   { return __riscv_vsll_vx_u32m1(v, (size_t)N, 4); }
+static inline v4u32 snes_v4_zero(void)                        { v4u32 r = {0u, 0u, 0u, 0u}; return r; }
+static inline v4u32 snes_v4_splat(uint32_t x)                  { v4u32 r = {x, x, x, x}; return r; }
+static inline v4u32 snes_v4_load_u(const uint32_t* p)           { v4u32 r; memcpy(&r, p, sizeof r); return r; }
+static inline v4u32 snes_v4_load_a(const uint32_t* p)           { return snes_v4_load_u(p); }
+static inline void  snes_v4_store_a(uint32_t* p, v4u32 v)       { memcpy(p, &v, sizeof v); }
+static inline void  snes_v4_store_u(uint32_t* p, v4u32 v)       { memcpy(p, &v, sizeof v); }
+static inline v4u32 snes_v4_add(v4u32 a, v4u32 b)               { return a + b; }
+static inline v4u32 snes_v4_sub(v4u32 a, v4u32 b)               { return a - b; }
+static inline v4u32 snes_v4_and(v4u32 a, v4u32 b)               { return a & b; }
+static inline v4u32 snes_v4_or(v4u32 a, v4u32 b)                { return a | b; }
+static inline v4u32 snes_v4_andnot(v4u32 a, v4u32 b) /* (~a) & b */ { return ~a & b; }
+template<int N> static inline v4u32 snes_v4_shr_imm(v4u32 v)   { return v >> N; }
+template<int N> static inline v4u32 snes_v4_shl_imm(v4u32 v)   { return v << N; }
 
 #else /* plain-C fallback: no vector ISA detected, or SNES_NTSC_FORCE_SCALAR_SIMD */
 
